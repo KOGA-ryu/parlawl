@@ -1,0 +1,10 @@
+ALTER TABLE tactical_events ADD COLUMN pinned_critical_piece_type TEXT NOT NULL DEFAULT 'no_clear_pinned_critical_piece';
+ALTER TABLE tactical_events ADD COLUMN pinned_critical_piece_summary TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tactical_events ADD COLUMN defender_removal_exposure_type TEXT NOT NULL DEFAULT 'no_clear_defender_removal_exposure';
+ALTER TABLE tactical_events ADD COLUMN defender_removal_exposure_summary TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tactical_events ADD COLUMN king_color_complex_state TEXT NOT NULL DEFAULT 'no_clear_color_complex_weakness';
+ALTER TABLE tactical_events ADD COLUMN king_color_complex_summary TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tactical_events ADD COLUMN target_zone_imbalance_type TEXT NOT NULL DEFAULT 'balanced_target_zone';
+ALTER TABLE tactical_events ADD COLUMN target_zone_imbalance_summary TEXT NOT NULL DEFAULT 'balanced';
+ALTER TABLE tactical_events ADD COLUMN structural_v2_summary TEXT NOT NULL DEFAULT 'no_clear_structural_v2';
+ALTER TABLE tactical_events ADD COLUMN structural_v2_confidence TEXT NOT NULL DEFAULT 'low';

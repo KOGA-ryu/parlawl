@@ -1,0 +1,6 @@
+#pragma once
+
+#define PARLAWL_SOURCE_DIR "@CMAKE_CURRENT_SOURCE_DIR@"
+#define PARLAWL_DEFAULT_WORKER_PYTHON "@CMAKE_CURRENT_SOURCE_DIR@/.venv/bin/python3"
+#define PARLAWL_DEFAULT_WORKER_SCRIPT "@CMAKE_CURRENT_SOURCE_DIR@/workers/analysis_py/worker.py"
+#define PARLAWL_DEFAULT_STOCKFISH_PATH "/opt/homebrew/bin/stockfish"

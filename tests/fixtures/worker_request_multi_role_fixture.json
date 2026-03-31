@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "multi-role-run",
+    "puzzle_id": "multi-role-puzzle",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T12:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "multi-role-puzzle",
+    "puzzle_rating": 1200,
+    "time_control": "60+0",
+    "white_player": "w",
+    "white_rating": 1200,
+    "black_player": "b",
+    "black_rating": 1200,
+    "side_to_move": "black",
+    "source_game_id": "fixture-multi-role",
+    "fetched_at": "2026-03-28T12:00:00.000Z",
+    "initial_fen": "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2",
+    "last_move": "g2g4",
+    "solved": true,
+    "raw_puzzle_json": "{\"puzzle\":{\"id\":\"multi-role-puzzle\",\"fen\":\"rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2\",\"rating\":1200,\"themes\":[\"mate\",\"opening\"],\"solution\":[\"d8h4\"],\"initialPly\":3}}",
+    "raw_activity_json": "{}",
+    "solution_moves_json": "[\"d8h4\"]",
+    "themes_json": "[\"mate\",\"opening\"]"
+  },
+  "source_game": {
+    "source_game_id": "fixture-multi-role",
+    "pgn_text": "[Event \"test\"]\n[Site \"https://lichess.org/fixture-multi-role\"]\n[White \"w\"]\n[Black \"b\"]\n[Result \"0-1\"]\n[Opening \"Barnes Opening\"]\n\n1. f3 e5 2. g4 Qh4# 0-1",
+    "opening_name": "Barnes Opening",
+    "fetched_at": "2026-03-28T12:00:01.000Z"
+  }
+}

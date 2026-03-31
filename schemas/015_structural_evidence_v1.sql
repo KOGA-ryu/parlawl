@@ -1,0 +1,13 @@
+ALTER TABLE tactical_events ADD COLUMN king_exposure_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN king_exposure_severity TEXT;
+ALTER TABLE tactical_events ADD COLUMN loose_piece_count INTEGER DEFAULT 0;
+ALTER TABLE tactical_events ADD COLUMN loose_piece_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN overloaded_defender_count INTEGER DEFAULT 0;
+ALTER TABLE tactical_events ADD COLUMN overloaded_defender_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN back_rank_state TEXT;
+ALTER TABLE tactical_events ADD COLUMN luft_state TEXT;
+ALTER TABLE tactical_events ADD COLUMN king_line_pressure_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN king_square_pressure_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN critical_piece_imbalance_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN structural_feature_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN structural_feature_confidence TEXT;

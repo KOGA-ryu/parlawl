@@ -1,0 +1,9 @@
+ALTER TABLE tactical_events ADD COLUMN king_zone_target_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN king_zone_target_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN vulnerable_piece_target_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN vulnerable_piece_target_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN pressure_lane_target_type TEXT;
+ALTER TABLE tactical_events ADD COLUMN pressure_lane_target_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN decisive_imbalance_target TEXT;
+ALTER TABLE tactical_events ADD COLUMN local_target_summary TEXT;
+ALTER TABLE tactical_events ADD COLUMN local_target_confidence TEXT;

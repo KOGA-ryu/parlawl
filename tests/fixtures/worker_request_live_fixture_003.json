@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "live-fixture-run-003",
+    "puzzle_id": "MakVJ",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T22:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "MakVJ",
+    "puzzle_rating": 2205,
+    "time_control": "3+2",
+    "white_player": "Alex_Molchanov",
+    "white_rating": 2532,
+    "black_player": "PurpleInferno",
+    "black_rating": 2278,
+    "side_to_move": "black",
+    "source_game_id": "Fmk3OTwn",
+    "fetched_at": "2026-03-28T22:00:00.000Z",
+    "initial_fen": "r5kr/pp4pp/2Pp1b2/8/3P1q2/3Q4/PPP3PP/RN2R1K1 b - - 0 1",
+    "last_move": "d5c6",
+    "solved": true,
+    "raw_puzzle_json": "{\"game\":{\"id\":\"Fmk3OTwn\",\"perf\":{\"key\":\"blitz\",\"name\":\"Blitz\"},\"rated\":true,\"players\":[{\"name\":\"Alex_Molchanov\",\"id\":\"alex_molchanov\",\"color\":\"white\",\"rating\":2532},{\"name\":\"PurpleInferno\",\"id\":\"purpleinferno\",\"color\":\"black\",\"rating\":2278}],\"pgn\":\"e4 e5 Bc4 Nf6 d3 c6 Nf3 Qc7 O-O Be7 d4 Nxe4 Bxf7+ Kxf7 Nxe5+ Kg8 Bf4 d6 Nf3 Nd7 Re1 Ndf6 Qd3 Bf5 Nh4 Qd7 f3 Nd5 Nxf5 Qxf5 fxe4 Qxf4 exd5 Bf6 dxc6\",\"clock\":\"3+2\"},\"puzzle\":{\"id\":\"MakVJ\",\"rating\":2205,\"plays\":6171,\"solution\":[\"f4d4\",\"d3d4\",\"f6d4\"],\"themes\":[\"short\",\"advantage\",\"kingsideAttack\",\"master\",\"middlegame\"],\"initialPly\":34}}",
+    "raw_activity_json": "{\"date\":1746077869000,\"win\":true,\"puzzle\":{\"id\":\"MakVJ\",\"rating\":2205,\"plays\":6171,\"solution\":[\"f4d4\",\"d3d4\",\"f6d4\"],\"themes\":[\"short\",\"advantage\",\"kingsideAttack\",\"master\",\"middlegame\"],\"fen\":\"r5kr/pp4pp/2Pp1b2/8/3P1q2/3Q4/PPP3PP/RN2R1K1 b - - 0 1\",\"lastMove\":\"d5c6\"}}",
+    "solution_moves_json": "[\"f4d4\",\"d3d4\",\"f6d4\"]",
+    "themes_json": "[\"short\",\"advantage\",\"kingsideAttack\",\"master\",\"middlegame\"]"
+  },
+  "source_game": {
+    "source_game_id": "Fmk3OTwn",
+    "pgn_text": "[Event \"rated blitz game\"]\n[Site \"https://lichess.org/Fmk3OTwn\"]\n[Date \"2019.05.19\"]\n[Round \"-\"]\n[White \"Alex_Molchanov\"]\n[Black \"PurpleInferno\"]\n[Result \"0-1\"]\n[GameId \"Fmk3OTwn\"]\n[UTCDate \"2019.05.19\"]\n[UTCTime \"12:18:03\"]\n[WhiteElo \"2532\"]\n[BlackElo \"2278\"]\n[WhiteRatingDiff \"-18\"]\n[BlackRatingDiff \"+20\"]\n[Variant \"Standard\"]\n[TimeControl \"180+2\"]\n[ECO \"C24\"]\n[Opening \"Bishop's Opening: Berlin Defense\"]\n[Termination \"Normal\"]\n\n1. e4 e5 2. Bc4 Nf6 3. d3 c6 4. Nf3 Qc7 5. O-O Be7 6. d4 Nxe4 7. Bxf7+ Kxf7 8. Nxe5+ Kg8 9. Bf4 d6 10. Nf3 Nd7 11. Re1 Ndf6 12. Qd3 Bf5 13. Nh4 Qd7 14. f3 Nd5 15. Nxf5 Qxf5 16. fxe4 Qxf4 17. exd5 Bf6 18. dxc6 Qxd4+ 19. Kh1 Qxd3 20. cxd3 Bxb2 21. cxb7 Rb8 22. Nc3 Bxc3 0-1\n\n\n",
+    "opening_name": "",
+    "fetched_at": "2026-03-28T22:00:00.000Z"
+  }
+}

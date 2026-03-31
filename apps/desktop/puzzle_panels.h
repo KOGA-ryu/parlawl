@@ -1,0 +1,148 @@
+#pragma once
+
+#include <QGroupBox>
+#include <QWidget>
+
+#include "puzzle_info_summary_builder.h"
+#include "puzzle_types.h"
+
+class QLabel;
+class QTableWidget;
+class QPushButton;
+class QCheckBox;
+class QComboBox;
+
+namespace parlawl::puzzle_runner {
+class ReviewEngineAdapter;
+}
+
+class MoveListPanel : public QGroupBox
+{
+    Q_OBJECT
+
+public:
+    explicit MoveListPanel(QWidget *parent = nullptr);
+    void setMoves(
+        const parlawl::puzzle_runner::PuzzleDefinition &puzzle,
+        const QVector<parlawl::puzzle_runner::AppliedMove> &moves,
+        int currentViewIndex);
+    [[nodiscard]] QString truthStatusText() const;
+
+private:
+    QLabel *m_truthStatusLabel;
+    QTableWidget *m_table;
+};
+
+class MetadataCard : public QGroupBox
+{
+    Q_OBJECT
+
+public:
+    explicit MetadataCard(QWidget *parent = nullptr);
+    void setPuzzle(const parlawl::puzzle_runner::PuzzleDefinition &puzzle, int currentIndex, int puzzleCount, const QString &status);
+    void setAnalysisSummary(const PuzzleInfoSummary &summary);
+    void setAwaitingAnalysis(const parlawl::puzzle_runner::PuzzleDefinition &puzzle, int currentIndex, int puzzleCount);
+
+private:
+    QLabel *m_titleLabel;
+    QLabel *m_availabilityLabel;
+    QLabel *m_warningLabel;
+    QLabel *m_openingLabel;
+    QLabel *m_strategicErrorLabel;
+    QLabel *m_planLabel;
+    QLabel *m_criticalMistakeLabel;
+    QLabel *m_lastPracticalMistakeLabel;
+    QLabel *m_tacticalThemeLabel;
+    QPushButton *m_rawEvidenceToggle;
+    QLabel *m_rawEvidenceLabel;
+};
+
+class SettingsCard : public QGroupBox
+{
+    Q_OBJECT
+
+public:
+    explicit SettingsCard(QWidget *parent = nullptr);
+    void setSettings(bool autoAdvance, const QString &difficulty);
+    void setSupplySettings(const QString &queueSize, bool refillWhenLow, const QString &refillThreshold);
+    void setRetentionSettings(const QString &keepRecentRuns, bool preserveAnalyzed);
+    void setAvailablePuzzleCount(int availableCount);
+    void setSupplyStatusText(const QString &statusText);
+    [[nodiscard]] QString supplyStatusText() const;
+
+signals:
+    void autoAdvanceChanged(bool autoAdvance);
+    void difficultyChanged(const QString &difficulty);
+    void queueSizeChanged(const QString &queueSize);
+    void refillWhenLowChanged(bool enabled);
+    void refillThresholdChanged(const QString &threshold);
+    void keepRecentRunsChanged(const QString &keepRecentRuns);
+    void preserveAnalyzedChanged(bool enabled);
+    void cleanupRequested();
+    void reloadPuzzlesRequested();
+
+private:
+    QCheckBox *m_autoAdvanceCheck;
+    QComboBox *m_difficultyCombo;
+    QComboBox *m_queueSizeCombo;
+    QCheckBox *m_refillWhenLowCheck;
+    QComboBox *m_refillThresholdCombo;
+    QLabel *m_availableToSolveLabel;
+    QLabel *m_supplyStatusLabel;
+    QPushButton *m_reloadPuzzlesButton;
+    QComboBox *m_keepRecentRunsCombo;
+    QCheckBox *m_preserveAnalyzedCheck;
+    QPushButton *m_cleanupButton;
+};
+
+class TransportControls : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit TransportControls(QWidget *parent = nullptr);
+    void setEnabledState(
+        bool reviewMode,
+        bool canStepBackward,
+        bool canStepForward,
+        bool canGoToPreviousPuzzle,
+        bool canGoToNextPuzzle);
+
+signals:
+    void previousRequested();
+    void nextRequested();
+    void retryRequested();
+
+private:
+    QPushButton *m_previousButton;
+    QPushButton *m_nextButton;
+    QPushButton *m_retryButton;
+};
+
+class EnginePanel : public QGroupBox
+{
+    Q_OBJECT
+
+public:
+    explicit EnginePanel(QWidget *parent = nullptr);
+    void setReviewState(
+        const QString &statusText,
+        const QString &evaluationText,
+        const QString &bestMoveText,
+        const QString &pvText,
+        bool canRefresh,
+        bool autoRefresh,
+        bool reviewInProgress);
+
+signals:
+    void refreshRequested();
+    void autoRefreshChanged(bool enabled);
+
+private:
+    QLabel *m_statusLabel;
+    QLabel *m_evaluationLabel;
+    QLabel *m_bestMoveLabel;
+    QLabel *m_pvLabel;
+    QPushButton *m_refreshButton;
+    QCheckBox *m_autoRefreshCheck;
+};

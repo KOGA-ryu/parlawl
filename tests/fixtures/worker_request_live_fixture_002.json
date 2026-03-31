@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "live-fixture-run-002",
+    "puzzle_id": "tsFGf",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T22:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "tsFGf",
+    "puzzle_rating": 2128,
+    "time_control": "10+0",
+    "white_player": "Fat-Hatter",
+    "white_rating": 1983,
+    "black_player": "bosmal",
+    "black_rating": 2017,
+    "side_to_move": "white",
+    "source_game_id": "ehMIX51A",
+    "fetched_at": "2026-03-28T22:00:00.000Z",
+    "initial_fen": "8/1P4pk/2Q1p3/3p4/5p2/6pK/4P3/6q1 w - - 1 1",
+    "last_move": "a7g1",
+    "solved": true,
+    "raw_puzzle_json": "{\"game\":{\"id\":\"ehMIX51A\",\"perf\":{\"key\":\"rapid\",\"name\":\"Rapid\"},\"rated\":true,\"players\":[{\"name\":\"Fat-Hatter\",\"id\":\"fat-hatter\",\"color\":\"white\",\"rating\":1983},{\"name\":\"bosmal\",\"id\":\"bosmal\",\"color\":\"black\",\"rating\":2017}],\"pgn\":\"Nf3 d5 g3 e6 Bg2 c5 O-O b5 d4 Bb7 c3 a6 a4 Nd7 axb5 axb5 Rxa8 Qxa8 dxc5 Bxc5 b4 Bb6 Nbd2 Ngf6 Nb3 O-O Nfd4 h6 Nxb5 Rc8 Nd6 Rxc3 Nxb7 Qxb7 Bd2 Rc8 Qa1 Ra8 Qb2 Qa7 Ra1 Qb7 Rxa8+ Qxa8 Nd4 Qa7 Be3 Qb7 b5 Ne5 Nc2 Nc4 Qb3 Nxe3 Nxe3 Bxe3 fxe3 Qb6 Kf2 Ng4+ Kf3 Nxh2+ Kf2 Ng4+ Kf3 h5 Bh3 f5 Qb2 Qxe3+ Kg2 Qf2+ Kh1 Qxg3 Bxg4 hxg4 b6 Qb8 b7 Kh7 Qb6 g3 Kg2 f4 Qc6 Qa7 Kh3 Qg1\",\"clock\":\"10+0\"},\"puzzle\":{\"id\":\"tsFGf\",\"rating\":2128,\"plays\":452,\"solution\":[\"c6c2\",\"h7h6\",\"b7b8q\"],\"themes\":[\"advancedPawn\",\"short\",\"crushing\",\"promotion\",\"endgame\",\"queenEndgame\"],\"initialPly\":87}}",
+    "raw_activity_json": "{\"date\":1746079971505,\"win\":true,\"puzzle\":{\"id\":\"tsFGf\",\"rating\":2128,\"plays\":452,\"solution\":[\"c6c2\",\"h7h6\",\"b7b8q\"],\"themes\":[\"advancedPawn\",\"short\",\"crushing\",\"promotion\",\"endgame\",\"queenEndgame\"],\"fen\":\"8/1P4pk/2Q1p3/3p4/5p2/6pK/4P3/6q1 w - - 1 1\",\"lastMove\":\"a7g1\"}}",
+    "solution_moves_json": "[\"c6c2\",\"h7h6\",\"b7b8q\"]",
+    "themes_json": "[\"advancedPawn\",\"short\",\"crushing\",\"promotion\",\"endgame\",\"queenEndgame\"]"
+  },
+  "source_game": {
+    "source_game_id": "ehMIX51A",
+    "pgn_text": "[Event \"rated rapid game\"]\n[Site \"https://lichess.org/ehMIX51A\"]\n[Date \"2023.01.30\"]\n[Round \"-\"]\n[White \"Fat-Hatter\"]\n[Black \"bosmal\"]\n[Result \"1-0\"]\n[GameId \"ehMIX51A\"]\n[UTCDate \"2023.01.30\"]\n[UTCTime \"19:02:06\"]\n[WhiteElo \"1983\"]\n[BlackElo \"2017\"]\n[WhiteRatingDiff \"+6\"]\n[BlackRatingDiff \"-7\"]\n[Variant \"Standard\"]\n[TimeControl \"600+0\"]\n[ECO \"A07\"]\n[Opening \"King's Indian Attack\"]\n[Termination \"Normal\"]\n\n1. Nf3 d5 2. g3 e6 3. Bg2 c5 4. O-O b5 5. d4 Bb7 6. c3 a6 7. a4 Nd7 8. axb5 axb5 9. Rxa8 Qxa8 10. dxc5 Bxc5 11. b4 Bb6 12. Nbd2 Ngf6 13. Nb3 O-O 14. Nfd4 h6 15. Nxb5 Rc8 16. Nd6 Rxc3 17. Nxb7 Qxb7 18. Bd2 Rc8 19. Qa1 Ra8 20. Qb2 Qa7 21. Ra1 Qb7 22. Rxa8+ Qxa8 23. Nd4 Qa7 24. Be3 Qb7 25. b5 Ne5 26. Nc2 Nc4 27. Qb3 Nxe3 28. Nxe3 Bxe3 29. fxe3 Qb6 30. Kf2 Ng4+ 31. Kf3 Nxh2+ 32. Kf2 Ng4+ 33. Kf3 h5 34. Bh3 f5 35. Qb2 Qxe3+ 36. Kg2 Qf2+ 37. Kh1 Qxg3 38. Bxg4 hxg4 39. b6 Qb8 40. b7 Kh7 41. Qb6 g3 42. Kg2 f4 43. Qc6 Qa7 44. Kh3 Qg1 45. Qc2+ Kh6 46. b8=Q Qh2+ 47. Kg4 Qh5+ 48. Kxf4 e5+ 49. Qxe5 g5+ 50. Ke3 d4+ 51. Qxd4 Qe8+ 52. Qce4 1-0\n\n\n",
+    "opening_name": "",
+    "fetched_at": "2026-03-28T22:00:00.000Z"
+  }
+}

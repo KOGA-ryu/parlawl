@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "fixture-run-ambiguous",
+    "puzzle_id": "fixture-puzzle-ambiguous",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T12:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "fixture-puzzle-ambiguous",
+    "puzzle_rating": 1200,
+    "time_control": "60+0",
+    "white_player": "w",
+    "white_rating": 1200,
+    "black_player": "b",
+    "black_rating": 1200,
+    "side_to_move": "white",
+    "source_game_id": "fixture-game-ambiguous",
+    "fetched_at": "2026-03-28T12:00:00.000Z",
+    "initial_fen": "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2",
+    "last_move": "g8f6",
+    "solved": true,
+    "raw_puzzle_json": "{\"puzzle\":{\"id\":\"fixture-puzzle-ambiguous\",\"fen\":\"rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2\",\"rating\":1200,\"themes\":[\"opening\"],\"solution\":[\"d2d4\"],\"initialPly\":4}}",
+    "raw_activity_json": "{}",
+    "solution_moves_json": "[\"d2d4\"]",
+    "themes_json": "[\"opening\"]"
+  },
+  "source_game": {
+    "source_game_id": "fixture-game-ambiguous",
+    "pgn_text": "[Event \"ambiguous\"]\n[Site \"https://lichess.org/ambiguous\"]\n[White \"w\"]\n[Black \"b\"]\n[Result \"*\"]\n\n1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 *",
+    "opening_name": "",
+    "fetched_at": "2026-03-28T12:00:01.000Z"
+  }
+}

@@ -1,0 +1,17 @@
+build/
+*.user
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+__pycache__/
+*.pyc
+.DS_Store
+.env
+assistant_packets/
+dist/
+*.app
+*.log
+.pytest_cache/
+workers/analysis_py/__pycache__/
+*.egg-info/

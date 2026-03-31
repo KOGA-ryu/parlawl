@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "fixture-run-001",
+    "puzzle_id": "fixture-puzzle-001",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T12:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "fixture-puzzle-001",
+    "puzzle_rating": 1760,
+    "time_control": "300+0",
+    "white_player": "whitefixture",
+    "white_rating": 1732,
+    "black_player": "blackfixture",
+    "black_rating": 1811,
+    "side_to_move": "white",
+    "source_game_id": "fixture-game-001",
+    "fetched_at": "2026-03-28T12:00:00.000Z",
+    "initial_fen": "r1bq1rk1/bpp2ppp/p1n2n2/3pp3/4P3/1BPP1N1P/PP3PP1/RNBQR1K1 w - - 0 10",
+    "last_move": "d7d5",
+    "solved": true,
+    "raw_puzzle_json": "{\"puzzle\":{\"id\":\"fixture-puzzle-001\",\"fen\":\"r1bq1rk1/bpp2ppp/p1n2n2/3pp3/4P3/1BPP1N1P/PP3PP1/RNBQR1K1 w - - 0 10\",\"rating\":1760,\"themes\":[\"fork\",\"middlegame\"],\"solution\":[\"e4d5\",\"f6d5\"],\"initialPly\":18}}",
+    "raw_activity_json": "{\"date\":1711627200000,\"win\":true,\"puzzle\":{\"id\":\"fixture-puzzle-001\",\"rating\":1760}}",
+    "solution_moves_json": "[\"e4d5\",\"f6d5\"]",
+    "themes_json": "[\"fork\",\"middlegame\"]"
+  },
+  "source_game": {
+    "source_game_id": "fixture-game-001",
+    "pgn_text": "[Event \"Rated Blitz game\"]\n[Site \"https://lichess.org/fixture-game-001\"]\n[White \"whitefixture\"]\n[Black \"blackfixture\"]\n[Result \"1-0\"]\n[Opening \"Italian Game: Classical Variation\"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. O-O Nf6 5. d3 d6 6. c3 O-O 7. Re1 a6 8. Bb3 Ba7 9. h3 d5 *",
+    "opening_name": "Italian Game: Classical Variation",
+    "fetched_at": "2026-03-28T12:00:01.000Z"
+  }
+}

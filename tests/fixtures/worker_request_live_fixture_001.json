@@ -1,0 +1,45 @@
+{
+  "protocol_version": "0.1",
+  "request_type": "analyze_latest_solved_puzzle",
+  "analysis_run": {
+    "run_id": "live-fixture-run-001",
+    "puzzle_id": "dSgis",
+    "status": "running",
+    "engine_mode": "stockfish_window_v0_1",
+    "engine_name": "stockfish",
+    "engine_depth": 10,
+    "created_at": "2026-03-28T22:00:00.000Z"
+  },
+  "engine": {
+    "stockfish_path": "/opt/homebrew/bin/stockfish",
+    "depth": 10,
+    "window_before": 4,
+    "window_after": 4,
+    "multipv": 3
+  },
+  "puzzle_round": {
+    "puzzle_id": "dSgis",
+    "puzzle_rating": 2275,
+    "time_control": "10+0",
+    "white_player": "gdwojacki",
+    "white_rating": 1932,
+    "black_player": "aircraft135",
+    "black_rating": 1944,
+    "side_to_move": "black",
+    "source_game_id": "zUbyC5ps",
+    "fetched_at": "2026-03-28T22:00:00.000Z",
+    "initial_fen": "7Q/p1k1b1pp/2p5/4p1B1/4Pq2/2PP3K/PP5P/RN6 b - - 1 1",
+    "last_move": "h4h3",
+    "solved": true,
+    "raw_puzzle_json": "{\"game\":{\"id\":\"zUbyC5ps\",\"perf\":{\"key\":\"rapid\",\"name\":\"Rapid\"},\"rated\":true,\"players\":[{\"name\":\"gdwojacki\",\"id\":\"gdwojacki\",\"color\":\"white\",\"rating\":1932},{\"name\":\"aircraft135\",\"id\":\"aircraft135\",\"color\":\"black\",\"rating\":1944}],\"pgn\":\"e4 e5 f4 d6 Nf3 Nc6 c3 Bg4 Bc4 Nf6 d3 Nh5 fxe5 Nxe5 Qa4+ c6 Nxe5 dxe5 O-O Bc5+ Kh1 Qh4 Bxf7+ Kd8 Bxh5 Bxh5 Qb3 Be2 Qxb7 Bxf1 Qxa8+ Kc7 Qxh8 Bxg2+ Kxg2 Qf2+ Kh3 Qf3+ Kh4 Be7+ Bg5 Qf4+ Kh3\",\"clock\":\"10+0\"},\"puzzle\":{\"id\":\"dSgis\",\"rating\":2275,\"plays\":1420,\"solution\":[\"f4f3\",\"h3h4\",\"e7g5\",\"h4g5\",\"f3f4\",\"g5h5\",\"g7g6\"],\"themes\":[\"exposedKing\",\"veryLong\",\"endgame\",\"attraction\",\"mateIn4\"],\"initialPly\":42}}",
+    "raw_activity_json": "{\"date\":1749407615336,\"win\":true,\"puzzle\":{\"id\":\"dSgis\",\"rating\":2275,\"plays\":1420,\"solution\":[\"f4f3\",\"h3h4\",\"e7g5\",\"h4g5\",\"f3f4\",\"g5h5\",\"g7g6\"],\"themes\":[\"exposedKing\",\"veryLong\",\"endgame\",\"attraction\",\"mateIn4\"],\"fen\":\"7Q/p1k1b1pp/2p5/4p1B1/4Pq2/2PP3K/PP5P/RN6 b - - 1 1\",\"lastMove\":\"h4h3\"}}",
+    "solution_moves_json": "[\"f4f3\",\"h3h4\",\"e7g5\",\"h4g5\",\"f3f4\",\"g5h5\",\"g7g6\"]",
+    "themes_json": "[\"exposedKing\",\"veryLong\",\"endgame\",\"attraction\",\"mateIn4\"]"
+  },
+  "source_game": {
+    "source_game_id": "zUbyC5ps",
+    "pgn_text": "[Event \"rated rapid game\"]\n[Site \"https://lichess.org/zUbyC5ps\"]\n[Date \"2024.09.24\"]\n[Round \"-\"]\n[White \"gdwojacki\"]\n[Black \"aircraft135\"]\n[Result \"0-1\"]\n[GameId \"zUbyC5ps\"]\n[UTCDate \"2024.09.24\"]\n[UTCTime \"06:00:21\"]\n[WhiteElo \"1932\"]\n[BlackElo \"1944\"]\n[WhiteRatingDiff \"-6\"]\n[BlackRatingDiff \"+5\"]\n[Variant \"Standard\"]\n[TimeControl \"600+0\"]\n[ECO \"C30\"]\n[Opening \"King's Gambit\"]\n[Termination \"Normal\"]\n\n1. e4 e5 2. f4 d6 3. Nf3 Nc6 4. c3 Bg4 5. Bc4 Nf6 6. d3 Nh5 7. fxe5 Nxe5 8. Qa4+ c6 9. Nxe5 dxe5 10. O-O Bc5+ 11. Kh1 Qh4 12. Bxf7+ Kd8 13. Bxh5 Bxh5 14. Qb3 Be2 15. Qxb7 Bxf1 16. Qxa8+ Kc7 17. Qxh8 Bxg2+ 18. Kxg2 Qf2+ 19. Kh3 Qf3+ 20. Kh4 Be7+ 21. Bg5 Qf4+ 22. Kh3 Qxg5 23. Qa8 Qe3+ 24. Kg2 Bh4 25. Na3 Qf2+ 26. Kh3 g5 27. Nc4 Qf3# 0-1\n\n\n",
+    "opening_name": "",
+    "fetched_at": "2026-03-28T22:00:00.000Z"
+  }
+}
