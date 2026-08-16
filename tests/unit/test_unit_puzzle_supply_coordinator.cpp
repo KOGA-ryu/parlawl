@@ -33,6 +33,8 @@ private slots:
 
 void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     bool nestedRequestWasRejected = false;
     PuzzleSupplyCoordinator *coordinatorPtr = nullptr;
@@ -55,7 +57,8 @@ void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
             result.statusCode = 200;
             result.puzzles = {makePuzzle(QStringLiteral("p1"), QStringLiteral("hard"))};
             return result;
-        }));
+        }),
+        cacheDir.path());
     coordinatorPtr = &coordinator;
 
     const PuzzleSupplyBatchResponse response = coordinator.requestBatch(
@@ -72,6 +75,8 @@ void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
 
 void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     bool shouldRateLimit = false;
     PuzzleSupplyCoordinator coordinator(
@@ -91,7 +96,8 @@ void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
                 makePuzzle(QStringLiteral("p2"), difficulty),
             };
             return result;
-        });
+        },
+        cacheDir.path());
 
     const QDateTime firstRequestTime = QDateTime::fromString(QStringLiteral("2026-03-30T16:30:00Z"), Qt::ISODate);
     const PuzzleSupplyBatchResponse firstResponse = coordinator.requestBatch(
@@ -112,6 +118,8 @@ void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
 
 void PuzzleSupplyCoordinatorTest::cooldownBlocksRemoteFetches()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     PuzzleSupplyCoordinator coordinator(
         [&](const QString &, int, const QString &) {
@@ -121,7 +129,8 @@ void PuzzleSupplyCoordinatorTest::cooldownBlocksRemoteFetches()
             result.statusCode = 429;
             result.errorMessage = QStringLiteral("GET /api/puzzle/batch failed (429)");
             return result;
-        });
+        },
+        cacheDir.path());
 
     const QDateTime firstAttempt = QDateTime::fromString(QStringLiteral("2026-03-30T16:30:00Z"), Qt::ISODate);
     const PuzzleSupplyBatchResponse firstResponse = coordinator.requestBatch(
