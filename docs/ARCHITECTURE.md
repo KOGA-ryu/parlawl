@@ -18,6 +18,21 @@
 8. `libs/reporting/` owns human-readable report and puzzle-info summary formatting
 9. `workers/analysis_py/` owns bounded Stockfish-backed evidence extraction and tactical event generation
 
+## annotated replay boundary
+
+- `libs/puzzle_runner/annotated_replay_pack.*` validates the exact, bounded
+  `annotated-game-replay-v1` presentation shape and independently replays its
+  UCI/FEN chains; supplied facts, narration, engine metadata, and semantic IDs
+  are preserved but are not recomputed or authenticated by ParlAWL
+- `libs/puzzle_runner/replay_session.*` owns an immutable mainline cursor and
+  one disposable supplied engine branch with independently checked legality
+  and exact restoration
+- the desktop has an explicit annotated-replay mode that stops fresh engine
+  review, hides non-replay tabs and controls, and guards puzzle input, live
+  supply, settings, analysis execution, and database/report handlers
+- recorded alternatives remain review lines; they are never promoted into
+  `PuzzleDefinition` without a separate engine-validated puzzle record
+
 ## puzzle supply
 
 Current puzzle supply modes:

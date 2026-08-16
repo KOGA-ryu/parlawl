@@ -1,6 +1,12 @@
 #include <QtTest>
+#include <QLabel>
+#include <QTableWidget>
 
 #include "puzzle_panels.h"
+
+namespace parlawl::test_support {
+QByteArray syntheticAnnotatedReplayJson();
+}
 
 class TestUnitPuzzlePanels : public QObject
 {
@@ -10,6 +16,9 @@ private slots:
     void moveListPanelShowsFullSourceGameStatus();
     void moveListPanelShowsPartialSourceHistoryStatus();
     void moveListPanelShowsUnavailableSourceHistoryStatus();
+    void moveListPanelShowsAnnotatedReplaySeverity();
+    void replayEvidencePanelShowsRecordedVariationBoundary();
+    void replayEvidencePanelMarksForgedSuppliedTextUnverified();
     void settingsCardShowsSupplyStatusText();
 };
 
@@ -44,6 +53,74 @@ void TestUnitPuzzlePanels::moveListPanelShowsUnavailableSourceHistoryStatus()
 
     panel.setMoves(puzzle, {}, 0);
     QCOMPARE(panel.truthStatusText(), QStringLiteral("Source history unavailable; showing puzzle-local history only."));
+}
+
+void TestUnitPuzzlePanels::moveListPanelShowsAnnotatedReplaySeverity()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromJson(
+        parlawl::test_support::syntheticAnnotatedReplayJson(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+
+    MoveListPanel panel;
+    panel.setAnnotatedReplay(*pack, 1, false, 0);
+    QCOMPARE(
+        panel.truthStatusText(),
+        QStringLiteral("Legal move/FEN replay verified. Severity labels and derived annotations are supplied and not verified by ParlAWL."));
+    const auto *table = panel.findChild<QTableWidget *>();
+    QVERIFY(table != nullptr);
+    QVERIFY(table->item(0, 1) != nullptr);
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("e4  [severe]"));
+}
+
+void TestUnitPuzzlePanels::replayEvidencePanelShowsRecordedVariationBoundary()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromJson(
+        parlawl::test_support::syntheticAnnotatedReplayJson(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(1));
+
+    ReplayEvidencePanel panel;
+    panel.setReplayState(*pack, session, 0);
+    QVERIFY(panel.summaryText().contains(QStringLiteral("Supplied derived mover expectation loss (not verified): 10%")));
+    QVERIFY(panel.summaryText().contains(QStringLiteral("Supplied explanation (not verified)")));
+    QVERIFY(panel.summaryText().contains(QStringLiteral("Supplied derived annotations (not verified)")));
+    QVERIFY(panel.canShowEngineLine());
+    QVERIFY(!panel.canReturnToGame());
+
+    QVERIFY2(session.enterPreferredVariation(1, &error), qPrintable(error));
+    QVERIFY(session.stepForward());
+    panel.setReplayState(*pack, session, 1);
+    QVERIFY(panel.summaryText().contains(QStringLiteral("ENGINE LINE, NOT PLAYED")));
+    QVERIFY(!panel.canShowEngineLine());
+    QVERIFY(panel.canReturnToGame());
+}
+
+void TestUnitPuzzlePanels::replayEvidencePanelMarksForgedSuppliedTextUnverified()
+{
+    QByteArray supplied = parlawl::test_support::syntheticAnnotatedReplayJson();
+    supplied.replace(
+        QByteArrayLiteral("1.e4 moves the pawn from e2 to e4."),
+        QByteArrayLiteral("<b>A supplied claim with an unrecomputed identity.</b>"));
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromJson(supplied, &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    QVERIFY(!pack->suppliedAnnotationsAreVerified());
+
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(1));
+    ReplayEvidencePanel panel;
+    panel.setReplayState(*pack, session, 0);
+    QVERIFY(panel.summaryText().contains(QStringLiteral("<b>A supplied claim with an unrecomputed identity.</b>")));
+    QVERIFY(panel.summaryText().contains(QStringLiteral("Supplied explanation (not verified)")));
+    QVERIFY(panel.summaryText().contains(QStringLiteral("Supplied derived annotations (not verified)")));
+    for (const QLabel *label : panel.findChildren<QLabel *>()) {
+        QCOMPARE(label->textFormat(), Qt::PlainText);
+    }
 }
 
 void TestUnitPuzzlePanels::settingsCardShowsSupplyStatusText()

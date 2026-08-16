@@ -46,6 +46,10 @@
 #include "stockfish_review_controller.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace parlawl::puzzle_runner;
 
@@ -55,6 +59,71 @@ QString timestamped(const QString &message)
 {
     const auto nowUtc = QDateTime::currentDateTimeUtc();
     return QStringLiteral("%1  %2").arg(nowUtc.toString(Qt::ISODateWithMs), message);
+}
+
+bool readDirectRegularReplayFile(
+    const QString &path,
+    QByteArray *bytes,
+    QString *errorMessage)
+{
+    if (bytes == nullptr || !QDir::isAbsolutePath(path)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("analysis replay must use an absolute direct file path");
+        }
+        return false;
+    }
+
+    const QByteArray encodedPath = QFile::encodeName(path);
+    int descriptor = -1;
+    do {
+        descriptor = ::open(
+            encodedPath.constData(),
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("analysis replay could not be opened as a direct regular file");
+        }
+        return false;
+    }
+
+    struct stat beforeStatus {};
+    if (::fstat(descriptor, &beforeStatus) != 0 || !S_ISREG(beforeStatus.st_mode)
+        || beforeStatus.st_size <= 0
+        || beforeStatus.st_size > static_cast<off_t>(kMaximumAnnotatedReplayBytes)) {
+        ::close(descriptor);
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("analysis replay must be a direct regular file between 1 byte and 4 MiB");
+        }
+        return false;
+    }
+
+    QFile file;
+    if (!file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(descriptor);
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("analysis replay could not be read");
+        }
+        return false;
+    }
+    const QByteArray payload = file.read(kMaximumAnnotatedReplayBytes + 1);
+    struct stat afterStatus {};
+    const bool stable = ::fstat(file.handle(), &afterStatus) == 0
+        && S_ISREG(afterStatus.st_mode)
+        && afterStatus.st_dev == beforeStatus.st_dev
+        && afterStatus.st_ino == beforeStatus.st_ino
+        && afterStatus.st_size == beforeStatus.st_size
+        && payload.size() == beforeStatus.st_size
+        && file.atEnd();
+    file.close();
+    if (!stable) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("analysis replay changed while it was being read");
+        }
+        return false;
+    }
+    *bytes = payload;
+    return true;
 }
 
 QString assistantStatusOrDefault(const TacticalEvent &event)
@@ -414,6 +483,10 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_evaluationBarWidget(nullptr)
     , m_boardWidget(nullptr)
     , m_moveListPanel(nullptr)
+    , m_replayEvidencePanel(nullptr)
+    , m_rightTabs(nullptr)
+    , m_infoTabs(nullptr)
+    , m_settingsPage(nullptr)
     , m_metadataCard(nullptr)
     , m_settingsCard(nullptr)
     , m_transportControls(nullptr)
@@ -505,11 +578,147 @@ void PuzzleRunnerWindow::closeEvent(QCloseEvent *event)
 
 bool PuzzleRunnerWindow::buildAnalysisInput(PuzzleRound *puzzleRound, SourceGame *sourceGame, QString *errorMessage) const
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("annotated replay mode is read-only and cannot start a new analysis");
+        }
+        return false;
+    }
     return m_sessionController.buildAnalysisInput(puzzleRound, sourceGame, errorMessage);
+}
+
+bool PuzzleRunnerWindow::loadAnnotatedReplayFile(const QString &path, QString *errorMessage)
+{
+    if (m_analysisInProgress) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("finish or cancel the active analysis before opening a replay");
+        }
+        return false;
+    }
+    QByteArray bytes;
+    if (!readDirectRegularReplayFile(path, &bytes, errorMessage)) {
+        return false;
+    }
+
+    QString parseError;
+    const auto parsed = AnnotatedReplayPack::fromJson(bytes, &parseError);
+    if (!parsed.has_value()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = parseError.isEmpty() ? QStringLiteral("analysis replay is invalid") : parseError;
+        }
+        return false;
+    }
+
+    m_annotatedReplayPack = *parsed;
+    m_replaySession.load(*m_annotatedReplayPack);
+    m_replayVariationAnchorPly = 0;
+    m_workspaceMode = WorkspaceMode::AnnotatedReplay;
+    m_lastReviewedFen.clear();
+    if (m_stockfishReviewController != nullptr) {
+        m_stockfishReviewController->resetCurrentReview(
+            QStringLiteral("fresh engine review is disabled in annotated replay"));
+    }
+    setAnnotatedReplayWorkspaceUi(true);
+    appendLogMessage(timestamped(
+        QStringLiteral("opened read-only annotated replay %1").arg(m_annotatedReplayPack->replayId())));
+    refreshReplayUi();
+    return true;
+}
+
+void PuzzleRunnerWindow::onOpenAnnotatedReplayRequested()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Open Analysis Replay"),
+        QDir::homePath(),
+        QStringLiteral("Annotated replay (*.json);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QString errorMessage;
+    if (!loadAnnotatedReplayFile(path, &errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("analysis replay"), errorMessage);
+    }
+}
+
+void PuzzleRunnerWindow::onBackToPuzzlesRequested()
+{
+    if (m_workspaceMode != WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
+    if (m_stockfishReviewController != nullptr) {
+        m_stockfishReviewController->resetCurrentReview(
+            QStringLiteral("review the current puzzle position"));
+    }
+    m_lastReviewedFen.clear();
+    m_workspaceMode = WorkspaceMode::Puzzle;
+    m_annotatedReplayPack.reset();
+    m_replaySession = ReplaySession {};
+    m_replayVariationAnchorPly = 0;
+    setAnnotatedReplayWorkspaceUi(false);
+    m_replayEvidencePanel->setEmptyState();
+    refreshUi();
+}
+
+void PuzzleRunnerWindow::onShowReplayVariationRequested()
+{
+    if (!m_annotatedReplayPack.has_value() || m_replaySession.inVariation()) {
+        return;
+    }
+    const int anchorPly = m_replaySession.currentMainlinePly();
+    QString errorMessage;
+    if (!m_replaySession.enterPreferredVariation(anchorPly, &errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("engine line"), errorMessage);
+        return;
+    }
+    m_replayVariationAnchorPly = anchorPly;
+    if (!m_replaySession.stepForward()) {
+        m_replaySession.exitVariation();
+        m_replayVariationAnchorPly = 0;
+        QMessageBox::warning(this, QStringLiteral("engine line"), QStringLiteral("supplied engine line is empty"));
+        return;
+    }
+    refreshReplayUi();
+}
+
+void PuzzleRunnerWindow::onReturnFromReplayVariationRequested()
+{
+    if (!m_replaySession.inVariation()) {
+        return;
+    }
+    QString errorMessage;
+    if (!m_replaySession.exitVariation(&errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("engine line"), errorMessage);
+        return;
+    }
+    m_replayVariationAnchorPly = 0;
+    refreshReplayUi();
+}
+
+void PuzzleRunnerWindow::onReplayPlyRequested(int ply)
+{
+    if (!m_annotatedReplayPack.has_value()) {
+        return;
+    }
+    if (m_replaySession.inVariation()) {
+        QString errorMessage;
+        if (!m_replaySession.exitVariation(&errorMessage)) {
+            QMessageBox::warning(this, QStringLiteral("analysis replay"), errorMessage);
+            return;
+        }
+        m_replayVariationAnchorPly = 0;
+    }
+    if (m_replaySession.seekMainlinePly(ply)) {
+        refreshReplayUi();
+    }
 }
 
 void PuzzleRunnerWindow::refreshUi()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        refreshReplayUi();
+        return;
+    }
     const GameStateStore *store = m_sessionController.gameStateStore();
     if (store == nullptr || !store->hasPosition()) {
         return;
@@ -598,6 +807,9 @@ bool PuzzleRunnerWindow::ensureCurrentPuzzleSourceHistory(QString *errorMessage)
 
 void PuzzleRunnerWindow::onBoardSquareClicked(int square)
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     GameStateStore *store = m_sessionController.gameStateStore();
     if (!m_sessionController.canSubmitMoves()) {
         return;
@@ -644,11 +856,17 @@ void PuzzleRunnerWindow::onBoardSquareClicked(int square)
 
 void PuzzleRunnerWindow::onHintRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     m_sessionController.requestHint();
 }
 
 void PuzzleRunnerWindow::onSolutionRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     m_lastMoveSquares = {-1, -1};
     m_sessionController.revealSolution();
 }
@@ -665,6 +883,9 @@ void PuzzleRunnerWindow::onControllerError(const QString &message)
 
 void PuzzleRunnerWindow::onEngineReviewUpdated()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     const StockfishReviewSnapshot &snapshot = m_stockfishReviewController->snapshot();
     m_enginePanel->setReviewState(
         snapshot.statusText,
@@ -679,11 +900,17 @@ void PuzzleRunnerWindow::onEngineReviewUpdated()
 
 void PuzzleRunnerWindow::onEngineRefreshRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     maybeRefreshEngineReview(true);
 }
 
 void PuzzleRunnerWindow::onEngineAutoRefreshChanged(bool enabled)
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     m_stockfishReviewController->setAutoRefreshEnabled(enabled);
     if (enabled) {
         maybeRefreshEngineReview(false);
@@ -692,6 +919,10 @@ void PuzzleRunnerWindow::onEngineAutoRefreshChanged(bool enabled)
 
 void PuzzleRunnerWindow::onCleanupRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        appendLogMessage(timestamped(QStringLiteral("cleanup is unavailable in read-only annotated replay mode")));
+        return;
+    }
     persistSettings();
     m_stockfishReviewController->clearCache();
 
@@ -724,6 +955,10 @@ void PuzzleRunnerWindow::onCleanupRequested()
 
 void PuzzleRunnerWindow::onReloadPuzzlesRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        appendLogMessage(timestamped(QStringLiteral("puzzle reload is unavailable in read-only annotated replay mode")));
+        return;
+    }
     QString errorMessage;
     if (!reloadPuzzleSupply(false, &errorMessage)) {
         onAnalysisFailed(QStringLiteral("puzzle_supply"), errorMessage.isEmpty() ? QStringLiteral("failed to reload puzzles") : errorMessage);
@@ -734,6 +969,10 @@ void PuzzleRunnerWindow::onReloadPuzzlesRequested()
 
 void PuzzleRunnerWindow::onAnalyzeCurrentPuzzleRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        appendLogMessage(timestamped(QStringLiteral("analysis is unavailable in read-only annotated replay mode")));
+        return;
+    }
     persistSettings();
     if (m_analysisInProgress) {
         appendLogMessage(timestamped(QStringLiteral("puzzle analysis handoff ignored because a run is already in progress")));
@@ -772,6 +1011,9 @@ void PuzzleRunnerWindow::onAnalyzeCurrentPuzzleRequested()
 
 void PuzzleRunnerWindow::onCancelAnalysisRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     if (!m_analysisInProgress) {
         appendLogMessage(timestamped(QStringLiteral("cancel request ignored because no analysis is in progress")));
         return;
@@ -790,6 +1032,9 @@ void PuzzleRunnerWindow::onCancelAnalysisRequested()
 
 void PuzzleRunnerWindow::onExportJsonRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     persistSettings();
     if (m_selectedRunId.isEmpty()) {
         appendLogMessage(timestamped(QStringLiteral("export ignored because no completed run is selected")));
@@ -841,6 +1086,9 @@ void PuzzleRunnerWindow::onExportJsonRequested()
 
 void PuzzleRunnerWindow::onExportAssistantPacketRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     persistSettings();
     if (m_selectedRunId.isEmpty()) {
         appendLogMessage(timestamped(QStringLiteral("assistant packet export ignored because no completed run is selected")));
@@ -893,6 +1141,9 @@ void PuzzleRunnerWindow::onExportAssistantPacketRequested()
 
 void PuzzleRunnerWindow::onImportAssistantInferenceRequested()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     persistSettings();
     if (m_selectedRunId.isEmpty()) {
         appendLogMessage(timestamped(QStringLiteral("assistant inference import ignored because no completed run is selected")));
@@ -1039,6 +1290,9 @@ void PuzzleRunnerWindow::onAnalysisFailed(const QString &stage, const QString &m
 void PuzzleRunnerWindow::onRecentRunSelected(QListWidgetItem *current, QListWidgetItem *previous)
 {
     Q_UNUSED(previous)
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     if (current == nullptr) {
         m_selectedRunId.clear();
         m_hasLoadedReport = false;
@@ -1101,6 +1355,9 @@ void PuzzleRunnerWindow::onRecentRunSelected(QListWidgetItem *current, QListWidg
 
 void PuzzleRunnerWindow::persistSettings()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     QSettings settings;
     settings.setValue(QStringLiteral("settings/lichess_api_token"), m_lichessTokenEdit->text().trimmed());
     settings.setValue(QStringLiteral("settings/stockfish_path"), m_stockfishPathEdit->text().trimmed());
@@ -1161,6 +1418,9 @@ QString PuzzleRunnerWindow::defaultDatabasePath() const
 
 bool PuzzleRunnerWindow::ensureDatabaseReady()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return false;
+    }
     const QString requestedPath = m_databasePathEdit->text().trimmed();
     if (requestedPath.isEmpty()) {
         appendLogMessage(timestamped(QStringLiteral("database path is empty")));
@@ -1268,6 +1528,12 @@ void PuzzleRunnerWindow::refreshSupplyStatus()
 
 bool PuzzleRunnerWindow::reloadPuzzleSupply(bool append, QString *errorMessage)
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("live puzzle supply is disabled in annotated replay");
+        }
+        return false;
+    }
     if (!usingLivePuzzleSupply()) {
         m_liveSupplyActive = false;
         refreshSupplyStatus();
@@ -1359,6 +1625,9 @@ bool PuzzleRunnerWindow::restoreCachedPuzzleSupply(QString *errorMessage)
 
 void PuzzleRunnerWindow::maybeTopUpPuzzleSupply()
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     if (m_liveSupplyReloadInProgress || !m_sessionController.shouldFetchMorePuzzles()) {
         return;
     }
@@ -1381,13 +1650,14 @@ void PuzzleRunnerWindow::maybeTopUpPuzzleSupply()
 void PuzzleRunnerWindow::setAnalysisInProgress(bool inProgress)
 {
     m_analysisInProgress = inProgress;
-    m_analyzeButton->setEnabled(!inProgress && m_sessionController.canAnalyzeCurrentPuzzle());
-    m_cancelButton->setEnabled(inProgress);
-    m_lichessTokenEdit->setEnabled(!inProgress);
-    m_stockfishPathEdit->setEnabled(!inProgress);
-    m_pythonWorkerPathEdit->setEnabled(!inProgress);
-    m_databasePathEdit->setEnabled(!inProgress);
-    if (inProgress) {
+    const bool puzzleWorkspace = m_workspaceMode == WorkspaceMode::Puzzle;
+    m_analyzeButton->setEnabled(puzzleWorkspace && !inProgress && m_sessionController.canAnalyzeCurrentPuzzle());
+    m_cancelButton->setEnabled(puzzleWorkspace && inProgress);
+    m_lichessTokenEdit->setEnabled(puzzleWorkspace && !inProgress);
+    m_stockfishPathEdit->setEnabled(puzzleWorkspace && !inProgress);
+    m_pythonWorkerPathEdit->setEnabled(puzzleWorkspace && !inProgress);
+    m_databasePathEdit->setEnabled(puzzleWorkspace && !inProgress);
+    if (inProgress || !puzzleWorkspace) {
         m_exportButton->setEnabled(false);
         m_exportAssistantPacketButton->setEnabled(false);
         m_importAssistantInferenceButton->setEnabled(false);
@@ -1401,6 +1671,9 @@ void PuzzleRunnerWindow::setAnalysisInProgress(bool inProgress)
 
 void PuzzleRunnerWindow::refreshRecentRuns(const QString &preferredRunId)
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     if (!m_databaseManager->database().isOpen()) {
         return;
     }
@@ -1505,8 +1778,11 @@ void PuzzleRunnerWindow::resetPuzzleScopedUiState(const QString &puzzleId)
 
 void PuzzleRunnerWindow::maybeRefreshEngineReview(bool forceRefresh)
 {
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        return;
+    }
     const GameStateStore *store = m_sessionController.gameStateStore();
-    if (!store->hasPosition()) {
+    if (store == nullptr || !store->hasPosition()) {
         return;
     }
 
@@ -1524,6 +1800,65 @@ void PuzzleRunnerWindow::maybeRefreshEngineReview(bool forceRefresh)
 
     m_lastReviewedFen = fen;
     m_stockfishReviewController->requestReview(fen, forceRefresh);
+}
+
+void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
+{
+    if (m_rightTabs == nullptr || m_infoTabs == nullptr || m_settingsPage == nullptr) {
+        return;
+    }
+
+    if (enabled && !m_replayWorkspaceUiActive) {
+        m_preReplayInfoTabIndex = m_infoTabs->currentIndex();
+    }
+    m_replayWorkspaceUiActive = enabled;
+
+    for (int index = 0; index < m_rightTabs->count(); ++index) {
+        QWidget *page = m_rightTabs->widget(index);
+        const bool replayRelevant = page == m_moveListPanel || page == m_replayEvidencePanel;
+        const bool available = !enabled || replayRelevant;
+        m_rightTabs->setTabVisible(index, available);
+        m_rightTabs->setTabEnabled(index, available);
+    }
+    if (enabled) {
+        m_rightTabs->setCurrentWidget(m_replayEvidencePanel);
+    } else {
+        m_rightTabs->setCurrentWidget(m_moveListPanel);
+    }
+
+    for (int index = 0; index < m_infoTabs->count(); ++index) {
+        const bool replayControls = m_infoTabs->widget(index) == m_settingsPage;
+        const bool available = !enabled || replayControls;
+        m_infoTabs->setTabVisible(index, available);
+        m_infoTabs->setTabEnabled(index, available);
+        if (replayControls) {
+            m_infoTabs->setTabText(
+                index,
+                enabled ? QStringLiteral("Replay Controls") : QStringLiteral("Settings"));
+        }
+    }
+    if (enabled) {
+        m_infoTabs->setCurrentWidget(m_settingsPage);
+    } else if (m_preReplayInfoTabIndex >= 0 && m_preReplayInfoTabIndex < m_infoTabs->count()) {
+        m_infoTabs->setCurrentIndex(m_preReplayInfoTabIndex);
+    }
+
+    m_settingsCard->setVisible(!enabled);
+    m_settingsCard->setEnabled(!enabled);
+    for (QPushButton *button : {m_hintButton, m_solutionButton, m_analyzeButton, m_cancelButton}) {
+        button->setVisible(!enabled);
+        if (enabled) {
+            button->setEnabled(false);
+        }
+    }
+    m_transportControls->setReplayMode(enabled);
+    m_enginePanel->setEnabled(!enabled);
+    m_recentRunsList->setEnabled(!enabled);
+
+    const bool configEnabled = !enabled && !m_analysisInProgress;
+    for (QLineEdit *edit : {m_lichessTokenEdit, m_stockfishPathEdit, m_pythonWorkerPathEdit, m_databasePathEdit}) {
+        edit->setEnabled(configEnabled);
+    }
 }
 
 void PuzzleRunnerWindow::buildUi()
@@ -1556,10 +1891,10 @@ void PuzzleRunnerWindow::buildUi()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(8);
     m_moveListPanel = new MoveListPanel(rightColumn);
-    auto *rightTabs = new QTabWidget(rightColumn);
-    rightTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_rightTabs = new QTabWidget(rightColumn);
+    m_rightTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    auto *reportPage = new QWidget(rightTabs);
+    auto *reportPage = new QWidget(m_rightTabs);
     auto *reportLayout = new QVBoxLayout(reportPage);
     reportLayout->setContentsMargins(0, 0, 0, 0);
     auto *reportActionsRow = new QHBoxLayout();
@@ -1585,7 +1920,7 @@ void PuzzleRunnerWindow::buildUi()
     reportLayout->addLayout(reportActionsRow);
     reportLayout->addWidget(m_reportView);
 
-    auto *logPage = new QWidget(rightTabs);
+    auto *logPage = new QWidget(m_rightTabs);
     auto *logLayout = new QVBoxLayout(logPage);
     logLayout->setContentsMargins(0, 0, 0, 0);
     auto *statusBox = new QGroupBox(QStringLiteral("analysis status"), logPage);
@@ -1601,7 +1936,7 @@ void PuzzleRunnerWindow::buildUi()
     logLayout->addWidget(statusBox);
     logLayout->addWidget(m_logView);
 
-    auto *recentRunsPage = new QWidget(rightTabs);
+    auto *recentRunsPage = new QWidget(m_rightTabs);
     auto *recentRunsLayout = new QVBoxLayout(recentRunsPage);
     recentRunsLayout->setContentsMargins(0, 0, 0, 0);
     auto *recentRunActionsRow = new QHBoxLayout();
@@ -1616,10 +1951,12 @@ void PuzzleRunnerWindow::buildUi()
     recentRunsLayout->addLayout(recentRunActionsRow);
     recentRunsLayout->addWidget(m_recentRunsList);
 
-    rightTabs->addTab(m_moveListPanel, QStringLiteral("Move List"));
-    rightTabs->addTab(reportPage, QStringLiteral("Report View"));
-    rightTabs->addTab(logPage, QStringLiteral("Status / Log"));
-    rightTabs->addTab(recentRunsPage, QStringLiteral("Recent Runs"));
+    m_replayEvidencePanel = new ReplayEvidencePanel(m_rightTabs);
+    m_rightTabs->addTab(m_moveListPanel, QStringLiteral("Move List"));
+    m_rightTabs->addTab(m_replayEvidencePanel, QStringLiteral("Analysis Replay"));
+    m_rightTabs->addTab(reportPage, QStringLiteral("Report View"));
+    m_rightTabs->addTab(logPage, QStringLiteral("Status / Log"));
+    m_rightTabs->addTab(recentRunsPage, QStringLiteral("Recent Runs"));
 
     auto *runnerActionsBox = new QGroupBox(leftColumn);
     runnerActionsBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
@@ -1654,15 +1991,16 @@ void PuzzleRunnerWindow::buildUi()
     analyzeRow->addStretch(1);
     runnerActionsLayout->addLayout(analyzeRow);
 
-    auto *infoTabs = new QTabWidget(leftColumn);
-    infoTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-    auto *puzzleInfoPage = new QScrollArea(infoTabs);
+    m_infoTabs = new QTabWidget(leftColumn);
+    m_infoTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    auto *puzzleInfoPage = new QScrollArea(m_infoTabs);
     puzzleInfoPage->setWidgetResizable(true);
     puzzleInfoPage->setFrameShape(QFrame::NoFrame);
     m_metadataCard = new MetadataCard(puzzleInfoPage);
     puzzleInfoPage->setWidget(m_metadataCard);
 
-    auto *settingsPage = new QScrollArea(infoTabs);
+    auto *settingsPage = new QScrollArea(m_infoTabs);
+    m_settingsPage = settingsPage;
     settingsPage->setWidgetResizable(true);
     settingsPage->setFrameShape(QFrame::NoFrame);
     auto *settingsPageContent = new QWidget(settingsPage);
@@ -1676,10 +2014,10 @@ void PuzzleRunnerWindow::buildUi()
     settingsPageLayout->addStretch(1);
     settingsPage->setWidget(settingsPageContent);
 
-    m_enginePanel = new EnginePanel(infoTabs);
-    infoTabs->addTab(puzzleInfoPage, QStringLiteral("Puzzle Info"));
-    infoTabs->addTab(settingsPage, QStringLiteral("Settings"));
-    infoTabs->addTab(m_enginePanel, QStringLiteral("Engine Review"));
+    m_enginePanel = new EnginePanel(m_infoTabs);
+    m_infoTabs->addTab(puzzleInfoPage, QStringLiteral("Puzzle Info"));
+    m_infoTabs->addTab(settingsPage, QStringLiteral("Settings"));
+    m_infoTabs->addTab(m_enginePanel, QStringLiteral("Engine Review"));
 
     auto *appConfigBox = new QGroupBox(leftColumn);
     appConfigBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
@@ -1694,16 +2032,16 @@ void PuzzleRunnerWindow::buildUi()
     appConfigLayout->addRow(QStringLiteral("python worker path"), m_pythonWorkerPathEdit);
     appConfigLayout->addRow(QStringLiteral("database path"), m_databasePathEdit);
 
-    infoTabs->addTab(appConfigBox, QStringLiteral("Analysis Config"));
+    m_infoTabs->addTab(appConfigBox, QStringLiteral("Analysis Config"));
 
     leftLayout->addWidget(boardRow, 4);
-    leftLayout->addWidget(infoTabs, 2);
+    leftLayout->addWidget(m_infoTabs, 2);
 
     leftColumn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     leftColumn->setMinimumWidth(360);
     rightColumn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     rightColumn->setMinimumWidth(320);
-    rightLayout->addWidget(rightTabs, 1);
+    rightLayout->addWidget(m_rightTabs, 1);
     rootLayout->addWidget(leftColumn, 1);
     rootLayout->addWidget(rightColumn, 0);
 
@@ -1712,6 +2050,22 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_boardWidget, &BoardWidget::squareClicked, this, &PuzzleRunnerWindow::onBoardSquareClicked);
     connect(m_boardWidget, &BoardWidget::scrubRequested, this, [this](int stepDelta) {
         if (stepDelta == 0) {
+            return;
+        }
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            bool changed = false;
+            if (stepDelta < 0) {
+                for (int i = 0; i < -stepDelta; ++i) {
+                    changed = m_replaySession.stepBackward() || changed;
+                }
+            } else {
+                for (int i = 0; i < stepDelta; ++i) {
+                    changed = m_replaySession.stepForward() || changed;
+                }
+            }
+            if (changed) {
+                refreshReplayUi();
+            }
             return;
         }
         if (stepDelta < 0) {
@@ -1731,7 +2085,18 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_exportButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onExportJsonRequested);
     connect(m_exportAssistantPacketButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onExportAssistantPacketRequested);
     connect(m_importAssistantInferenceButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onImportAssistantInferenceRequested);
+    connect(m_replayEvidencePanel, &ReplayEvidencePanel::openReplayRequested, this, &PuzzleRunnerWindow::onOpenAnnotatedReplayRequested);
+    connect(m_replayEvidencePanel, &ReplayEvidencePanel::backToPuzzlesRequested, this, &PuzzleRunnerWindow::onBackToPuzzlesRequested);
+    connect(m_replayEvidencePanel, &ReplayEvidencePanel::showEngineLineRequested, this, &PuzzleRunnerWindow::onShowReplayVariationRequested);
+    connect(m_replayEvidencePanel, &ReplayEvidencePanel::returnToGameRequested, this, &PuzzleRunnerWindow::onReturnFromReplayVariationRequested);
+    connect(m_moveListPanel, &MoveListPanel::replayPlyRequested, this, &PuzzleRunnerWindow::onReplayPlyRequested);
     connect(m_transportControls, &TransportControls::previousRequested, this, [this]() {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            if (m_replaySession.stepBackward()) {
+                refreshReplayUi();
+            }
+            return;
+        }
         const GameStateStore *store = m_sessionController.gameStateStore();
         if (store != nullptr && !store->isViewingLatest()) {
             m_sessionController.stepBackward();
@@ -1740,6 +2105,12 @@ void PuzzleRunnerWindow::buildUi()
         m_sessionController.previousPuzzle();
     });
     connect(m_transportControls, &TransportControls::nextRequested, this, [this]() {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            if (m_replaySession.stepForward()) {
+                refreshReplayUi();
+            }
+            return;
+        }
         const GameStateStore *store = m_sessionController.gameStateStore();
         if (store != nullptr && !store->isViewingLatest()) {
             m_sessionController.stepForward();
@@ -1747,9 +2118,28 @@ void PuzzleRunnerWindow::buildUi()
         }
         m_sessionController.nextPuzzle();
     });
-    connect(m_transportControls, &TransportControls::retryRequested, &m_sessionController, &SessionController::retryPuzzle);
-    connect(m_settingsCard, &SettingsCard::autoAdvanceChanged, &m_sessionController, &SessionController::setAutoAdvance);
+    connect(m_transportControls, &TransportControls::retryRequested, this, [this]() {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            if (m_replaySession.inVariation()) {
+                m_replaySession.exitVariation();
+                m_replayVariationAnchorPly = 0;
+            }
+            m_replaySession.seekMainlinePly(0);
+            refreshReplayUi();
+            return;
+        }
+        m_sessionController.retryPuzzle();
+    });
+    connect(m_settingsCard, &SettingsCard::autoAdvanceChanged, this, [this](bool enabled) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
+        m_sessionController.setAutoAdvance(enabled);
+    });
     connect(m_settingsCard, &SettingsCard::difficultyChanged, this, [this](const QString &value) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_sessionController.setDifficulty(value);
         m_liveSupplyActive = false;
         appendLogMessage(timestamped(QStringLiteral("difficulty updated to %1; click Reload puzzles to apply it to the next batch").arg(value)));
@@ -1757,6 +2147,9 @@ void PuzzleRunnerWindow::buildUi()
         persistSettings();
     });
     connect(m_settingsCard, &SettingsCard::queueSizeChanged, this, [this](const QString &value) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_queueSizeSetting = value;
         m_sessionController.setQueueSize(value.toInt());
         m_liveSupplyActive = false;
@@ -1765,20 +2158,32 @@ void PuzzleRunnerWindow::buildUi()
         persistSettings();
     });
     connect(m_settingsCard, &SettingsCard::refillWhenLowChanged, this, [this](bool enabled) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_refillWhenLowSetting = enabled;
         m_sessionController.setRefillWhenLow(enabled);
         persistSettings();
     });
     connect(m_settingsCard, &SettingsCard::refillThresholdChanged, this, [this](const QString &value) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_refillThresholdSetting = value;
         m_sessionController.setRefillThreshold(value.toInt());
         persistSettings();
     });
     connect(m_settingsCard, &SettingsCard::keepRecentRunsChanged, this, [this](const QString &value) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_keepRecentRunsSetting = value;
         persistSettings();
     });
     connect(m_settingsCard, &SettingsCard::preserveAnalyzedChanged, this, [this](bool enabled) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_preserveAnalyzedSetting = enabled;
         persistSettings();
     });
@@ -1801,9 +2206,15 @@ void PuzzleRunnerWindow::buildUi()
         connect(edit, &QLineEdit::editingFinished, this, &PuzzleRunnerWindow::persistSettings);
     }
     connect(m_lichessTokenEdit, &QLineEdit::textChanged, this, [this](const QString &) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         refreshSupplyStatus();
     });
     connect(m_stockfishPathEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
+        if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            return;
+        }
         m_stockfishReviewController->setEnginePath(text);
         maybeRefreshEngineReview(false);
     });
@@ -1832,6 +2243,98 @@ void PuzzleRunnerWindow::updateBoard()
         m_sessionController.puzzleEngine().status(),
         reviewMode,
         inputEnabled);
+}
+
+void PuzzleRunnerWindow::refreshReplayUi()
+{
+    if (!m_annotatedReplayPack.has_value() || !m_replaySession.hasReplay()) {
+        return;
+    }
+    updateReplayBoard();
+    updateReplayPanels();
+}
+
+void PuzzleRunnerWindow::updateReplayBoard()
+{
+    if (!m_annotatedReplayPack.has_value() || !m_replaySession.hasReplay()) {
+        return;
+    }
+
+    QString lastMoveUci;
+    if (m_replaySession.inVariation()) {
+        const auto *variation = m_annotatedReplayPack->preferredVariation(m_replayVariationAnchorPly);
+        const int localPly = m_replaySession.currentVariationPly();
+        if (variation != nullptr && localPly > 0 && localPly <= variation->displayedSteps.size()) {
+            lastMoveUci = variation->displayedSteps.at(localPly - 1).uci;
+        } else if (m_replayVariationAnchorPly > 1) {
+            lastMoveUci = m_annotatedReplayPack->moves().at(m_replayVariationAnchorPly - 2).notation.uci;
+        }
+    } else if (m_replaySession.currentMainlinePly() > 0) {
+        lastMoveUci = m_annotatedReplayPack->moves().at(m_replaySession.currentMainlinePly() - 1).notation.uci;
+    }
+
+    QPair<int, int> lastMoveSquares {-1, -1};
+    const auto parsedMove = Move::fromUci(lastMoveUci);
+    if (parsedMove.has_value()) {
+        lastMoveSquares = {parsedMove->from, parsedMove->to};
+    }
+    m_boardWidget->setPosition(
+        m_replaySession.currentPosition(),
+        PieceColor::White,
+        -1,
+        {},
+        lastMoveSquares,
+        SessionStatus::Ready,
+        true,
+        false);
+    m_evaluationBarWidget->setExpectation(0.5, false);
+}
+
+void PuzzleRunnerWindow::updateReplayPanels()
+{
+    if (!m_annotatedReplayPack.has_value() || !m_replaySession.hasReplay()) {
+        return;
+    }
+    m_moveListPanel->setAnnotatedReplay(
+        *m_annotatedReplayPack,
+        m_replaySession.currentMainlinePly(),
+        m_replaySession.inVariation(),
+        m_replayVariationAnchorPly);
+    m_replayEvidencePanel->setReplayState(
+        *m_annotatedReplayPack,
+        m_replaySession,
+        m_replayVariationAnchorPly);
+
+    bool canStepBackward = false;
+    bool canStepForward = false;
+    if (m_replaySession.inVariation()) {
+        const auto *variation = m_annotatedReplayPack->preferredVariation(m_replayVariationAnchorPly);
+        canStepBackward = m_replaySession.currentVariationPly() > 0;
+        canStepForward = variation != nullptr
+            && m_replaySession.currentVariationPly() < variation->displayedSteps.size();
+    } else {
+        canStepBackward = m_replaySession.currentMainlinePly() > 0;
+        canStepForward = m_replaySession.currentMainlinePly() < m_annotatedReplayPack->moves().size();
+    }
+    m_transportControls->setReplayMode(true);
+    m_transportControls->setEnabledState(true, canStepBackward, canStepForward, false, false);
+    m_hintButton->setEnabled(false);
+    m_solutionButton->setEnabled(false);
+    m_analyzeButton->setEnabled(false);
+    m_cancelButton->setEnabled(false);
+    m_exportButton->setEnabled(false);
+    m_exportAssistantPacketButton->setEnabled(false);
+    m_importAssistantInferenceButton->setEnabled(false);
+    m_enginePanel->setReviewState(
+        QStringLiteral("disabled in annotated replay"),
+        QStringLiteral("Use the supplied-annotations panel; no fresh engine process is started."),
+        QString(),
+        QString(),
+        false,
+        false,
+        false);
+    m_statusStateLabel->setText(QStringLiteral("read-only replay"));
+    m_statusDetailLabel->setText(m_annotatedReplayPack->replayId());
 }
 
 void PuzzleRunnerWindow::updatePanels()

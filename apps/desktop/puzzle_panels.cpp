@@ -13,6 +13,7 @@
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextEdit>
 #include <QVBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -94,6 +95,30 @@ int fenFullmoveNumber(const QString &fen)
     return 1;
 }
 
+QString percentageText(int millionths)
+{
+    QString text = QString::number(static_cast<double>(millionths) / 10000.0, 'f', 4);
+    while (text.contains(QLatin1Char('.')) && text.endsWith(QLatin1Char('0'))) {
+        text.chop(1);
+    }
+    if (text.endsWith(QLatin1Char('.'))) {
+        text.chop(1);
+    }
+    return text + QLatin1Char('%');
+}
+
+QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    if (pack.openingStatus() != QStringLiteral("classified")) {
+        return QStringLiteral("Supplied opening annotation (not verified): %1").arg(pack.openingStatus());
+    }
+    const QString eco = pack.openingEco().value_or(QString());
+    const QString name = pack.openingName().value_or(QStringLiteral("unnamed exact-position match"));
+    return eco.isEmpty()
+        ? QStringLiteral("Supplied opening annotation (not verified): %1").arg(name)
+        : QStringLiteral("Supplied opening annotation (not verified): %1 %2").arg(eco, name);
+}
+
 } // namespace
 
 MoveListPanel::MoveListPanel(QWidget *parent)
@@ -102,6 +127,7 @@ MoveListPanel::MoveListPanel(QWidget *parent)
     , m_table(new QTableWidget(this))
 {
     auto *layout = new QVBoxLayout(this);
+    m_truthStatusLabel->setTextFormat(Qt::PlainText);
     m_truthStatusLabel->setWordWrap(true);
     QPalette hintPalette = m_truthStatusLabel->palette();
     hintPalette.setColor(QPalette::WindowText, QColor(92, 92, 92));
@@ -121,6 +147,15 @@ MoveListPanel::MoveListPanel(QWidget *parent)
     m_table->setSelectionMode(QAbstractItemView::NoSelection);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->setAlternatingRowColors(true);
+    connect(m_table, &QTableWidget::cellClicked, this, [this](int row, int column) {
+        if (!m_showingAnnotatedReplay || column < 1 || column > 2) {
+            return;
+        }
+        const int ply = row * 2 + (column == 1 ? 1 : 2);
+        if (ply >= 1 && ply <= m_replayMoveCount) {
+            emit replayPlyRequested(ply);
+        }
+    });
 }
 
 QString MoveListPanel::truthStatusText() const
@@ -133,6 +168,8 @@ void MoveListPanel::setMoves(
     const QVector<parlawl::puzzle_runner::AppliedMove> &moves,
     int currentViewIndex)
 {
+    m_showingAnnotatedReplay = false;
+    m_replayMoveCount = 0;
     m_table->clearContents();
     const QStringList sourceMoves = sourceMoveList(puzzle);
     const int sourcePlyCount = std::min(puzzleInitialPly(puzzle), static_cast<int>(sourceMoves.size()));
@@ -204,6 +241,186 @@ void MoveListPanel::setMoves(
             m_table->setItem(row, column, makeItem(QStringLiteral("start"), currentViewIndex == 0));
         }
     }
+}
+
+void MoveListPanel::setAnnotatedReplay(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+    int currentMainlinePly,
+    bool variationActive,
+    int variationAnchorPly)
+{
+    m_showingAnnotatedReplay = true;
+    m_replayMoveCount = pack.moves().size();
+    m_table->clearContents();
+    const int rowCount = std::max(1, (m_replayMoveCount + 1) / 2);
+    m_table->setRowCount(rowCount);
+    m_truthStatusLabel->setText(
+        variationActive
+            ? QStringLiteral("Supplied engine line active: moves are legally checked, but engine claims are not verified. It was not played; Return restores the real game.")
+            : QStringLiteral("Legal move/FEN replay verified. Severity labels and derived annotations are supplied and not verified by ParlAWL."));
+
+    auto makeItem = [&](const QString &text, bool isCurrent, bool isVariationAnchor) {
+        auto *item = new QTableWidgetItem(text);
+        item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
+        if (isCurrent) {
+            item->setBackground(QColor(222, 235, 255));
+            item->setForeground(QColor(24, 54, 90));
+        } else if (isVariationAnchor) {
+            item->setBackground(QColor(255, 241, 194));
+            item->setForeground(QColor(90, 62, 12));
+        }
+        return item;
+    };
+
+    for (int row = 0; row < rowCount; ++row) {
+        m_table->setItem(row, 0, makeItem(QString::number(row + 1), false, false));
+    }
+    for (const auto &move : pack.moves()) {
+        const int row = (move.ply - 1) / 2;
+        const int column = move.ply % 2 == 1 ? 1 : 2;
+        QString text = move.notation.san;
+        if (move.severity != QStringLiteral("none")) {
+            text += QStringLiteral("  [%1]").arg(move.severity);
+        }
+        const bool current = !variationActive && currentMainlinePly == move.ply;
+        const bool anchor = variationActive && variationAnchorPly == move.ply;
+        m_table->setItem(row, column, makeItem(text, current, anchor));
+    }
+}
+
+ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
+    : QGroupBox(QStringLiteral("analysis replay"), parent)
+    , m_gameLabel(new QLabel(this))
+    , m_openingLabel(new QLabel(this))
+    , m_engineLabel(new QLabel(this))
+    , m_summaryView(new QTextEdit(this))
+    , m_openButton(new QPushButton(QStringLiteral("Open Analysis Replay"), this))
+    , m_backButton(new QPushButton(QStringLiteral("Back to Puzzles"), this))
+    , m_showEngineLineButton(new QPushButton(QStringLiteral("Show Supplied Engine Line"), this))
+    , m_returnToGameButton(new QPushButton(QStringLiteral("Return to Game"), this))
+{
+    auto *layout = new QVBoxLayout(this);
+    auto *actions = new QHBoxLayout();
+    actions->addWidget(m_openButton);
+    actions->addWidget(m_backButton);
+    actions->addStretch(1);
+    layout->addLayout(actions);
+    for (QLabel *label : {m_gameLabel, m_openingLabel, m_engineLabel}) {
+        label->setTextFormat(Qt::PlainText);
+        label->setWordWrap(true);
+    }
+    layout->addWidget(m_gameLabel);
+    layout->addWidget(m_openingLabel);
+    layout->addWidget(m_engineLabel);
+    m_summaryView->setReadOnly(true);
+    layout->addWidget(m_summaryView, 1);
+    auto *variationActions = new QHBoxLayout();
+    variationActions->addWidget(m_showEngineLineButton);
+    variationActions->addWidget(m_returnToGameButton);
+    variationActions->addStretch(1);
+    layout->addLayout(variationActions);
+
+    connect(m_openButton, &QPushButton::clicked, this, &ReplayEvidencePanel::openReplayRequested);
+    connect(m_backButton, &QPushButton::clicked, this, &ReplayEvidencePanel::backToPuzzlesRequested);
+    connect(m_showEngineLineButton, &QPushButton::clicked, this, &ReplayEvidencePanel::showEngineLineRequested);
+    connect(m_returnToGameButton, &QPushButton::clicked, this, &ReplayEvidencePanel::returnToGameRequested);
+    setEmptyState();
+}
+
+void ReplayEvidencePanel::setEmptyState()
+{
+    m_gameLabel->setText(QStringLiteral("No annotated replay loaded."));
+    m_openingLabel->clear();
+    m_engineLabel->setText(QStringLiteral("Import is read-only and does not run Stockfish or use the network."));
+    m_summaryView->setPlainText(
+        QStringLiteral("Open an annotated-game-replay-v1 JSON file produced by the esports evidence pipeline."));
+    m_backButton->setEnabled(false);
+    m_showEngineLineButton->setEnabled(false);
+    m_returnToGameButton->setEnabled(false);
+}
+
+void ReplayEvidencePanel::setReplayState(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+    const parlawl::puzzle_runner::ReplaySession &session,
+    int variationAnchorPly)
+{
+    m_gameLabel->setText(
+        QStringLiteral("%1 vs %2 — %3").arg(pack.whiteUsername(), pack.blackUsername(), pack.result()));
+    m_openingLabel->setText(replayOpeningText(pack));
+    m_engineLabel->setText(
+        QStringLiteral("Supplied engine metadata (not verified): %1 — %2 nodes — config %3")
+            .arg(pack.sourceEngineName(), QString::number(pack.sourceEngineNodeLimit()), pack.sourceEngineConfigId()));
+
+    QStringList lines;
+    if (session.inVariation()) {
+        const auto *variation = pack.preferredVariation(variationAnchorPly);
+        lines << QStringLiteral("SUPPLIED ENGINE LINE, NOT PLAYED")
+              << QStringLiteral("Move legality and exact return are checked; engine provenance and optimality are not verified by ParlAWL.");
+        if (variation != nullptr) {
+            lines << QStringLiteral("Alternative to ply %1. Supplied preferred move: %2.")
+                         .arg(variation->anchorPly)
+                         .arg(variation->reportedBestMoveUci);
+            const int localPly = session.currentVariationPly();
+            if (localPly == 0) {
+                lines << QStringLiteral("At the exact pre-move checkpoint.");
+            } else if (localPly <= variation->displayedSteps.size()) {
+                const auto &step = variation->displayedSteps.at(localPly - 1);
+                lines << QStringLiteral("Variation step %1: %2 (%3)")
+                             .arg(step.localPly)
+                             .arg(step.san, step.uci);
+            }
+            lines << QStringLiteral("Return to Game discards this branch and restores the recorded move exactly.");
+        }
+    } else if (session.currentMainlinePly() == 0) {
+        lines << QStringLiteral("Start position")
+              << QStringLiteral("Use Next, the mouse wheel, or the move list to inspect the recorded game.");
+    } else {
+        const auto &move = pack.moves().at(session.currentMainlinePly() - 1);
+        lines << QStringLiteral("Ply %1: %2 (%3)").arg(move.ply).arg(move.notation.san, move.notation.uci)
+              << QStringLiteral("Supplied severity (not verified): %1").arg(move.severity)
+              << QStringLiteral("Supplied derived mover expectation loss (not verified): %1").arg(percentageText(move.wdlLossMillionths));
+        if (!move.narration.isEmpty()) {
+            lines << QString() << QStringLiteral("Supplied explanation (not verified)");
+            for (const auto &item : move.narration) {
+                lines << QStringLiteral("• %1").arg(item.text);
+            }
+        }
+        if (!move.facts.isEmpty()) {
+            lines << QString() << QStringLiteral("Supplied derived annotations (not verified)");
+            for (const auto &fact : move.facts) {
+                lines << QStringLiteral("• [%1] %2").arg(fact.authority, fact.summary);
+            }
+        }
+        if (move.preferredVariation.has_value()) {
+            lines << QString() << QStringLiteral("A supplied engine line is available. Its moves and return checkpoint are legally checked; its engine claim is not verified. It was not played.");
+        } else if (!move.alternativeUnavailableReason.value_or(QString()).isEmpty()) {
+            lines << QString() << QStringLiteral("Engine line unavailable: %1")
+                                      .arg(move.alternativeUnavailableReason.value());
+        }
+    }
+
+    m_summaryView->setPlainText(lines.join(QLatin1Char('\n')));
+    m_backButton->setEnabled(true);
+    const bool canShow = !session.inVariation()
+        && session.currentMainlinePly() > 0
+        && pack.preferredVariation(session.currentMainlinePly()) != nullptr;
+    m_showEngineLineButton->setEnabled(canShow);
+    m_returnToGameButton->setEnabled(session.inVariation());
+}
+
+QString ReplayEvidencePanel::summaryText() const
+{
+    return m_summaryView->toPlainText();
+}
+
+bool ReplayEvidencePanel::canShowEngineLine() const
+{
+    return m_showEngineLineButton->isEnabled();
+}
+
+bool ReplayEvidencePanel::canReturnToGame() const
+{
+    return m_returnToGameButton->isEnabled();
 }
 
 MetadataCard::MetadataCard(QWidget *parent)
@@ -474,6 +691,15 @@ void TransportControls::setEnabledState(
     m_nextButton->setEnabled(canGoToNextPuzzle);
     m_previousButton->setToolTip(QStringLiteral("load the previous puzzle"));
     m_nextButton->setToolTip(QStringLiteral("load the next puzzle"));
+}
+
+void TransportControls::setReplayMode(bool enabled)
+{
+    m_retryButton->setText(enabled ? QStringLiteral("Start") : QStringLiteral("Retry"));
+    m_retryButton->setToolTip(
+        enabled
+            ? QStringLiteral("return to the annotated game's start position")
+            : QStringLiteral("reset the current puzzle attempt to the starting position"));
 }
 
 EnginePanel::EnginePanel(QWidget *parent)

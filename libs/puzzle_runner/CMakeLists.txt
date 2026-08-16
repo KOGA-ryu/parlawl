@@ -1,4 +1,6 @@
 add_library(puzzle_runner STATIC
+    annotated_replay_pack.cpp
+    annotated_replay_pack.h
     chess_position.cpp
     chess_position.h
     fixture_puzzle_source.cpp
@@ -12,6 +14,8 @@ add_library(puzzle_runner STATIC
     puzzle_source.h
     puzzle_types.h
     review_engine_adapter.h
+    replay_session.cpp
+    replay_session.h
     session_controller.cpp
     session_controller.h
 )
