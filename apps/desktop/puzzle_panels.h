@@ -125,6 +125,7 @@ signals:
     void preserveAnalyzedChanged(bool enabled);
     void cleanupRequested();
     void reloadPuzzlesRequested();
+    void openValidatedPuzzlePackRequested();
 
 private:
     QCheckBox *m_autoAdvanceCheck;
@@ -135,6 +136,7 @@ private:
     QLabel *m_availableToSolveLabel;
     QLabel *m_supplyStatusLabel;
     QPushButton *m_reloadPuzzlesButton;
+    QPushButton *m_openValidatedPuzzlePackButton;
     QComboBox *m_keepRecentRunsCombo;
     QCheckBox *m_preserveAnalyzedCheck;
     QPushButton *m_cleanupButton;

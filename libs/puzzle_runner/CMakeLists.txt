@@ -3,6 +3,8 @@ add_library(puzzle_runner STATIC
     annotated_replay_pack.h
     chess_position.cpp
     chess_position.h
+    engine_validated_puzzle_pack.cpp
+    engine_validated_puzzle_pack.h
     fixture_puzzle_source.cpp
     fixture_puzzle_source.h
     game_state_store.cpp

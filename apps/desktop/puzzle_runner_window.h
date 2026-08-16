@@ -76,6 +76,7 @@ private slots:
     void onEngineAutoRefreshChanged(bool enabled);
     void onCleanupRequested();
     void onReloadPuzzlesRequested();
+    void onOpenValidatedPuzzlePackRequested();
     void onOpenAnnotatedReplayRequested();
     void onBackToPuzzlesRequested();
     void onShowReplayVariationRequested();
@@ -99,6 +100,7 @@ private:
     void refreshReplayUi();
     void setAnnotatedReplayWorkspaceUi(bool enabled);
     bool loadAnnotatedReplayFile(const QString &path, QString *errorMessage = nullptr);
+    bool loadValidatedPuzzlePackFile(const QString &path, QString *errorMessage = nullptr);
     void clearSelectionIfInvalid();
     void maybeRefreshEngineReview(bool forceRefresh = false);
     void resetPuzzleScopedUiState(const QString &puzzleId);
@@ -172,6 +174,8 @@ private:
     bool m_preserveAnalyzedSetting;
     bool m_liveSupplyReloadInProgress = false;
     bool m_liveSupplyActive = false;
+    bool m_validatedPuzzlePackActive = false;
+    int m_validatedPuzzlePackCount = 0;
     int m_lastSupplyCheckSlot = -1;
     bool m_sourceHistoryHydrationInProgress = false;
 };

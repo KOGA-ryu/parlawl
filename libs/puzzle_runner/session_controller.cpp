@@ -1,15 +1,173 @@
 #include "session_controller.h"
 
+#include "engine_validated_puzzle_pack.h"
 #include "pgn_utils.h"
 
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 
 namespace parlawl::puzzle_runner {
 
 namespace {
+
+void setValidationError(QString *errorMessage, const QString &message)
+{
+    if (errorMessage != nullptr) {
+        *errorMessage = message;
+    }
+}
+
+bool validateImportedProvenance(const PuzzleDefinition &puzzle, QString *errorMessage)
+{
+    const bool hasImportedProvenance = isImportedEngineRecord(puzzle)
+        || puzzle.analysisSeed.sourceRecordSchema == importedEngineRecordSchema()
+        || puzzle.analysisSeed.sourceRecordId.startsWith(QStringLiteral("puzzle-record-v1:"))
+        || !puzzle.analysisSeed.rawSourceRecordJson.isEmpty();
+    if (!hasImportedProvenance) {
+        return true;
+    }
+    if (puzzle.analysisSeed.rawSourceRecordJson.isEmpty()) {
+        setValidationError(
+            errorMessage,
+            QStringLiteral("imported puzzle provenance is missing its authoritative source record"));
+        return false;
+    }
+
+    QString importError;
+    const auto parsedPack = EngineValidatedPuzzlePack::fromJsonLines(
+        puzzle.analysisSeed.rawSourceRecordJson.toUtf8(),
+        &importError);
+    if (!parsedPack.has_value() || parsedPack->puzzles().size() != 1) {
+        setValidationError(
+            errorMessage,
+            QStringLiteral("imported puzzle provenance is invalid: %1").arg(importError));
+        return false;
+    }
+    const PuzzleDefinition &expected = parsedPack->puzzles().first();
+    const bool metadataMatches = puzzle.metadata.title == expected.metadata.title
+        && puzzle.metadata.difficulty == expected.metadata.difficulty
+        && puzzle.metadata.source == expected.metadata.source
+        && puzzle.metadata.sourceLabel == expected.metadata.sourceLabel
+        && puzzle.metadata.themes == expected.metadata.themes
+        && puzzle.metadata.rating == expected.metadata.rating
+        && puzzle.metadata.ratingHidden == expected.metadata.ratingHidden
+        && puzzle.metadata.playedCount == expected.metadata.playedCount
+        && puzzle.metadata.whiteName == expected.metadata.whiteName
+        && puzzle.metadata.whiteRating == expected.metadata.whiteRating
+        && puzzle.metadata.blackName == expected.metadata.blackName
+        && puzzle.metadata.blackRating == expected.metadata.blackRating;
+    const bool seedMatches = puzzle.analysisSeed.sourceGameId == expected.analysisSeed.sourceGameId
+        && puzzle.analysisSeed.sourceProvider == expected.analysisSeed.sourceProvider
+        && puzzle.analysisSeed.sourceRecordSchema == expected.analysisSeed.sourceRecordSchema
+        && puzzle.analysisSeed.sourceRecordId == expected.analysisSeed.sourceRecordId
+        && puzzle.analysisSeed.timeControl == expected.analysisSeed.timeControl
+        && puzzle.analysisSeed.sideToMove == expected.analysisSeed.sideToMove
+        && puzzle.analysisSeed.lastMove == expected.analysisSeed.lastMove
+        && puzzle.analysisSeed.rawPuzzleJson == expected.analysisSeed.rawPuzzleJson
+        && puzzle.analysisSeed.rawActivityJson == expected.analysisSeed.rawActivityJson
+        && puzzle.analysisSeed.rawSourceRecordJson == expected.analysisSeed.rawSourceRecordJson
+        && puzzle.analysisSeed.sourceGamePgn == expected.analysisSeed.sourceGamePgn
+        && puzzle.analysisSeed.openingName == expected.analysisSeed.openingName
+        && puzzle.analysisSeed.allowLichessPgnHydration
+            == expected.analysisSeed.allowLichessPgnHydration;
+    if (puzzle.id != expected.id || puzzle.fenStart != expected.fenStart
+        || puzzle.solutionMoves != expected.solutionMoves || !metadataMatches || !seedMatches) {
+        setValidationError(
+            errorMessage,
+            QStringLiteral("imported puzzle fields disagree with its authoritative source record"));
+        return false;
+    }
+    return true;
+}
+
+bool validatePuzzleDefinition(const PuzzleDefinition &puzzle, QString *errorMessage)
+{
+    if (puzzle.id.trimmed().isEmpty() || puzzle.id != puzzle.id.trimmed()) {
+        setValidationError(errorMessage, QStringLiteral("puzzle id must be non-empty normalized text"));
+        return false;
+    }
+    if (puzzle.fenStart.trimmed().isEmpty() || puzzle.fenStart != puzzle.fenStart.trimmed()) {
+        setValidationError(errorMessage, QStringLiteral("puzzle position must be normalized FEN text"));
+        return false;
+    }
+    if (puzzle.solutionMoves.isEmpty() || puzzle.solutionMoves.size() > 1024) {
+        setValidationError(errorMessage, QStringLiteral("puzzle solution must contain 1..1024 moves"));
+        return false;
+    }
+
+    QString positionError;
+    const auto parsedPosition = ChessPosition::fromFen(puzzle.fenStart, &positionError);
+    if (!parsedPosition.has_value() || parsedPosition->toFen() != puzzle.fenStart) {
+        setValidationError(
+            errorMessage,
+            QStringLiteral("puzzle position is invalid: %1").arg(positionError));
+        return false;
+    }
+
+    ChessPosition current = *parsedPosition;
+    int whiteKings = 0;
+    int blackKings = 0;
+    for (int square = 0; square < 64; ++square) {
+        const Piece piece = current.pieceAt(square);
+        if (piece.type == PieceType::King && piece.color == PieceColor::White) {
+            ++whiteKings;
+        } else if (piece.type == PieceType::King && piece.color == PieceColor::Black) {
+            ++blackKings;
+        }
+        if (piece.type == PieceType::Pawn
+            && (ChessPosition::rankOf(square) == 0 || ChessPosition::rankOf(square) == 7)) {
+            setValidationError(errorMessage, QStringLiteral("puzzle position has a pawn on a promotion rank"));
+            return false;
+        }
+    }
+    if (whiteKings != 1 || blackKings != 1) {
+        setValidationError(errorMessage, QStringLiteral("puzzle position must contain exactly one king per side"));
+        return false;
+    }
+
+    const QStringList fenFields = puzzle.fenStart.split(QLatin1Char(' '));
+    const QString castlingRights = fenFields.value(2);
+    const auto castlingRightHasPieces = [&](QChar right, const QString &kingSquare,
+                                            const QString &rookSquare, PieceColor color) {
+        if (!castlingRights.contains(right)) {
+            return true;
+        }
+        const Piece king = current.pieceAt(ChessPosition::squareFromName(kingSquare));
+        const Piece rook = current.pieceAt(ChessPosition::squareFromName(rookSquare));
+        return king.type == PieceType::King && king.color == color
+            && rook.type == PieceType::Rook && rook.color == color;
+    };
+    if (!castlingRightHasPieces(QLatin1Char('K'), QStringLiteral("e1"), QStringLiteral("h1"), PieceColor::White)
+        || !castlingRightHasPieces(QLatin1Char('Q'), QStringLiteral("e1"), QStringLiteral("a1"), PieceColor::White)
+        || !castlingRightHasPieces(QLatin1Char('k'), QStringLiteral("e8"), QStringLiteral("h8"), PieceColor::Black)
+        || !castlingRightHasPieces(QLatin1Char('q'), QStringLiteral("e8"), QStringLiteral("a8"), PieceColor::Black)) {
+        setValidationError(errorMessage, QStringLiteral("puzzle position castling rights lack their king or rook"));
+        return false;
+    }
+    if (current.isInCheck(ChessPosition::opposite(current.sideToMove()))) {
+        setValidationError(errorMessage, QStringLiteral("puzzle position leaves the side that just moved in check"));
+        return false;
+    }
+
+    for (int index = 0; index < puzzle.solutionMoves.size(); ++index) {
+        const QString &uci = puzzle.solutionMoves.at(index);
+        const auto move = Move::fromUci(uci);
+        if (!move.has_value() || move->uci() != uci
+            || current.pieceAt(move->to).type == PieceType::King
+            || !current.isLegalMove(*move) || !current.applyMove(*move)) {
+            setValidationError(
+                errorMessage,
+                QStringLiteral("puzzle solution move %1 is not canonical and legal from its recorded position")
+                    .arg(index + 1));
+            return false;
+        }
+    }
+
+    return validateImportedProvenance(puzzle, errorMessage);
+}
 
 QJsonArray toJsonStringArray(const QStringList &values)
 {
@@ -259,31 +417,63 @@ SessionController::SessionController(QObject *parent)
 
 bool SessionController::initialize(QString *errorMessage)
 {
-    m_puzzles = m_puzzleSource.loadPuzzles(errorMessage);
-    if (m_puzzles.isEmpty()) {
+    const QVector<PuzzleDefinition> puzzles = m_puzzleSource.loadPuzzles(errorMessage);
+    if (puzzles.isEmpty()) {
         return false;
     }
-    rebuildFilteredPuzzleList();
-    resetVisiblePuzzleWindow();
-    applyCurrentPuzzle(errorMessage);
-    return m_currentPuzzleIndex >= 0;
+    return replacePuzzles(puzzles, errorMessage);
 }
 
 bool SessionController::replacePuzzles(const QVector<PuzzleDefinition> &puzzles, QString *errorMessage)
 {
-    m_puzzles = puzzles;
-    if (m_puzzles.isEmpty()) {
-        m_filteredIndices.clear();
-        m_visiblePuzzleCount = 0;
-        m_currentPuzzleSlot = -1;
-        m_currentPuzzleIndex = -1;
+    if (puzzles.isEmpty()) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("no puzzles available from the selected source");
         }
-        emit sessionChanged();
         return false;
     }
-    rebuildFilteredPuzzleList();
+
+    QVector<int> replacementFilteredIndices;
+    replacementFilteredIndices.reserve(puzzles.size());
+    QSet<QString> replacementIds;
+    for (int index = 0; index < puzzles.size(); ++index) {
+        const PuzzleDefinition &puzzle = puzzles.at(index);
+        if (replacementIds.contains(puzzle.id)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("replacement puzzle %1 repeats puzzle id '%2'")
+                                    .arg(index + 1)
+                                    .arg(puzzle.id);
+            }
+            return false;
+        }
+        replacementIds.insert(puzzle.id);
+        QString validationError;
+        if (!validatePuzzleDefinition(puzzle, &validationError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("replacement puzzle %1 is invalid: %2")
+                                    .arg(index + 1)
+                                    .arg(validationError);
+            }
+            return false;
+        }
+        const QString difficulty = puzzle.metadata.difficulty.trimmed().toLower();
+        if (m_settings.difficulty == QStringLiteral("all") || difficulty.isEmpty()
+            || difficulty == QStringLiteral("all") || difficulty == m_settings.difficulty) {
+            replacementFilteredIndices.append(index);
+        }
+    }
+    if (replacementFilteredIndices.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("no puzzles available for the selected difficulty");
+        }
+        return false;
+    }
+
+    // Commit only after the complete replacement batch has passed validation.
+    m_puzzles = puzzles;
+    m_filteredIndices = replacementFilteredIndices;
+    m_currentPuzzleSlot = 0;
+    m_currentPuzzleIndex = -1;
     resetVisiblePuzzleWindow();
     applyCurrentPuzzle(errorMessage);
     return m_currentPuzzleIndex >= 0;
@@ -299,6 +489,13 @@ bool SessionController::setCurrentPuzzleSourceGamePgn(const QString &pgnText, co
     }
 
     PuzzleDefinition &puzzle = m_puzzles[m_currentPuzzleIndex];
+    if (isImportedEngineRecord(puzzle)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral(
+                "imported engine-line records keep their pack provenance session-only and disallow source-game hydration");
+        }
+        return false;
+    }
     if (pgnText.trimmed().isEmpty()) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("source game pgn is empty");
@@ -332,22 +529,41 @@ bool SessionController::appendPuzzles(const QVector<PuzzleDefinition> &puzzles, 
         existingIds.append(puzzle.id);
     }
 
-    int appendedCount = 0;
+    QVector<PuzzleDefinition> additions;
+    additions.reserve(puzzles.size());
+    QSet<QString> incomingIds;
     for (const PuzzleDefinition &puzzle : puzzles) {
-        if (puzzle.id.isEmpty() || existingIds.contains(puzzle.id)) {
+        if (incomingIds.contains(puzzle.id)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("append input repeats puzzle id '%1'").arg(puzzle.id);
+            }
+            return false;
+        }
+        incomingIds.insert(puzzle.id);
+        if (existingIds.contains(puzzle.id)) {
             continue;
         }
-        m_puzzles.append(puzzle);
+        QString validationError;
+        if (!validatePuzzleDefinition(puzzle, &validationError)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("appended puzzle '%1' is invalid: %2")
+                                    .arg(puzzle.id, validationError);
+            }
+            return false;
+        }
+        additions.append(puzzle);
         existingIds.append(puzzle.id);
-        ++appendedCount;
     }
 
-    if (appendedCount == 0) {
+    if (additions.isEmpty()) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("no new puzzles were available to append");
         }
         return false;
     }
+
+    m_puzzles += additions;
+    const int appendedCount = additions.size();
 
     rebuildFilteredPuzzleList();
     m_visiblePuzzleCount = std::min(
@@ -615,7 +831,8 @@ void SessionController::rebuildFilteredPuzzleList()
     m_filteredIndices.clear();
     for (int index = 0; index < m_puzzles.size(); ++index) {
         const QString difficulty = m_puzzles.at(index).metadata.difficulty.trimmed().toLower();
-        if (m_settings.difficulty == QStringLiteral("all") || difficulty == m_settings.difficulty) {
+        if (m_settings.difficulty == QStringLiteral("all") || difficulty.isEmpty()
+            || difficulty == QStringLiteral("all") || difficulty == m_settings.difficulty) {
             m_filteredIndices.append(index);
         }
     }

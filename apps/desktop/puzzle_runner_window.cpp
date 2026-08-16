@@ -35,6 +35,7 @@
 #include "board_widget.h"
 #include "database_manager.h"
 #include "evaluation_bar_widget.h"
+#include "engine_validated_puzzle_pack.h"
 #include "lichess_client.h"
 #include "parlawl_config.h"
 #include "puzzle_supply_coordinator.h"
@@ -61,14 +62,16 @@ QString timestamped(const QString &message)
     return QStringLiteral("%1  %2").arg(nowUtc.toString(Qt::ISODateWithMs), message);
 }
 
-bool readDirectRegularReplayFile(
+bool readDirectRegularFile(
     const QString &path,
+    qsizetype maximumBytes,
+    const QString &fileLabel,
     QByteArray *bytes,
     QString *errorMessage)
 {
     if (bytes == nullptr || !QDir::isAbsolutePath(path)) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("analysis replay must use an absolute direct file path");
+            *errorMessage = QStringLiteral("%1 must use an absolute direct file path").arg(fileLabel);
         }
         return false;
     }
@@ -82,7 +85,7 @@ bool readDirectRegularReplayFile(
     } while (descriptor < 0 && errno == EINTR);
     if (descriptor < 0) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("analysis replay could not be opened as a direct regular file");
+            *errorMessage = QStringLiteral("%1 could not be opened as a direct regular file").arg(fileLabel);
         }
         return false;
     }
@@ -90,10 +93,10 @@ bool readDirectRegularReplayFile(
     struct stat beforeStatus {};
     if (::fstat(descriptor, &beforeStatus) != 0 || !S_ISREG(beforeStatus.st_mode)
         || beforeStatus.st_size <= 0
-        || beforeStatus.st_size > static_cast<off_t>(kMaximumAnnotatedReplayBytes)) {
+        || beforeStatus.st_size > static_cast<off_t>(maximumBytes)) {
         ::close(descriptor);
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("analysis replay must be a direct regular file between 1 byte and 4 MiB");
+            *errorMessage = QStringLiteral("%1 must be a non-empty direct regular file within its size limit").arg(fileLabel);
         }
         return false;
     }
@@ -102,11 +105,11 @@ bool readDirectRegularReplayFile(
     if (!file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
         ::close(descriptor);
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("analysis replay could not be read");
+            *errorMessage = QStringLiteral("%1 could not be read").arg(fileLabel);
         }
         return false;
     }
-    const QByteArray payload = file.read(kMaximumAnnotatedReplayBytes + 1);
+    const QByteArray payload = file.read(maximumBytes + 1);
     struct stat afterStatus {};
     const bool stable = ::fstat(file.handle(), &afterStatus) == 0
         && S_ISREG(afterStatus.st_mode)
@@ -118,7 +121,7 @@ bool readDirectRegularReplayFile(
     file.close();
     if (!stable) {
         if (errorMessage != nullptr) {
-            *errorMessage = QStringLiteral("analysis replay changed while it was being read");
+            *errorMessage = QStringLiteral("%1 changed while it was being read").arg(fileLabel);
         }
         return false;
     }
@@ -596,7 +599,12 @@ bool PuzzleRunnerWindow::loadAnnotatedReplayFile(const QString &path, QString *e
         return false;
     }
     QByteArray bytes;
-    if (!readDirectRegularReplayFile(path, &bytes, errorMessage)) {
+    if (!readDirectRegularFile(
+            path,
+            kMaximumAnnotatedReplayBytes,
+            QStringLiteral("analysis replay"),
+            &bytes,
+            errorMessage)) {
         return false;
     }
 
@@ -625,6 +633,83 @@ bool PuzzleRunnerWindow::loadAnnotatedReplayFile(const QString &path, QString *e
     return true;
 }
 
+bool PuzzleRunnerWindow::loadValidatedPuzzlePackFile(const QString &path, QString *errorMessage)
+{
+    if (m_analysisInProgress) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("finish or cancel the active analysis before opening a puzzle pack");
+        }
+        return false;
+    }
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("return to puzzles before importing an engine-line pack");
+        }
+        return false;
+    }
+
+    QByteArray bytes;
+    if (!readDirectRegularFile(
+            path,
+            kMaximumValidatedPuzzlePackBytes,
+            QStringLiteral("engine-line puzzle pack"),
+            &bytes,
+            errorMessage)) {
+        return false;
+    }
+
+    QString parseError;
+    const auto pack = EngineValidatedPuzzlePack::fromJsonLines(bytes, &parseError);
+    if (!pack.has_value() || pack->puzzles().isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = parseError.isEmpty()
+                ? QStringLiteral("engine-line pack does not contain any accepted records declaring engine_validated")
+                : parseError;
+        }
+        return false;
+    }
+
+    const bool previousLiveSupplyActive = m_liveSupplyActive;
+    const bool previousPackActive = m_validatedPuzzlePackActive;
+    const int previousPackCount = m_validatedPuzzlePackCount;
+    const int previousSupplyCheckSlot = m_lastSupplyCheckSlot;
+    const QString previousActivePuzzleId = m_activePuzzleId;
+    const QString previousReviewedFen = m_lastReviewedFen;
+
+    // These flags change before replacement emits session signals, so a UI
+    // refresh cannot start a Lichess top-up against the imported queue.
+    m_liveSupplyActive = false;
+    m_validatedPuzzlePackActive = true;
+    m_validatedPuzzlePackCount = pack->puzzles().size();
+    m_lastSupplyCheckSlot = -1;
+    m_activePuzzleId.clear();
+    m_lastReviewedFen.clear();
+
+    QString replaceError;
+    if (!m_sessionController.replacePuzzles(pack->puzzles(), &replaceError)) {
+        m_liveSupplyActive = previousLiveSupplyActive;
+        m_validatedPuzzlePackActive = previousPackActive;
+        m_validatedPuzzlePackCount = previousPackCount;
+        m_lastSupplyCheckSlot = previousSupplyCheckSlot;
+        m_activePuzzleId = previousActivePuzzleId;
+        m_lastReviewedFen = previousReviewedFen;
+        refreshSupplyStatus();
+        if (errorMessage != nullptr) {
+            *errorMessage = replaceError.isEmpty()
+                ? QStringLiteral("engine-line pack could not replace the puzzle queue")
+                : replaceError;
+        }
+        return false;
+    }
+
+    refreshSupplyStatus();
+    appendLogMessage(timestamped(
+        QStringLiteral(
+            "imported %1 engine-line record(s) declaring engine_validated; producer not authenticated, engine not rerun, remote top-up disabled")
+            .arg(pack->puzzles().size())));
+    return true;
+}
+
 void PuzzleRunnerWindow::onOpenAnnotatedReplayRequested()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -638,6 +723,22 @@ void PuzzleRunnerWindow::onOpenAnnotatedReplayRequested()
     QString errorMessage;
     if (!loadAnnotatedReplayFile(path, &errorMessage)) {
         QMessageBox::warning(this, QStringLiteral("analysis replay"), errorMessage);
+    }
+}
+
+void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Import Engine-Line Pack"),
+        QDir::homePath(),
+        QStringLiteral("Engine-line puzzle pack (*.jsonl);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QString errorMessage;
+    if (!loadValidatedPuzzlePackFile(path, &errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("engine-line pack"), errorMessage);
     }
 }
 
@@ -756,6 +857,9 @@ bool PuzzleRunnerWindow::ensureCurrentPuzzleSourceHistory(QString *errorMessage)
     }
 
     const PuzzleDefinition &puzzle = store->currentPuzzle();
+    if (!allowsLichessPgnHydration(puzzle.analysisSeed)) {
+        return false;
+    }
     if (!puzzle.analysisSeed.sourceGamePgn.trimmed().isEmpty() || puzzle.analysisSeed.sourceGameId.trimmed().isEmpty()) {
         return false;
     }
@@ -1479,6 +1583,11 @@ bool PuzzleRunnerWindow::usingLivePuzzleSupply() const
 
 QString PuzzleRunnerWindow::currentSupplyStatusText() const
 {
+    if (m_validatedPuzzlePackActive) {
+        return QStringLiteral(
+                   "%1 imported engine line(s) active. Their records declare engine_validated; ParlAWL did not authenticate the producer or rerun the engine. Remote top-up is off; Reload puzzles replaces this queue with Lichess.")
+            .arg(m_validatedPuzzlePackCount);
+    }
     const QString difficulty = m_sessionController.settings().difficulty;
     const bool hasToken = usingLivePuzzleSupply();
     const bool hasCachedBatch = m_puzzleSupplyCoordinator->hasCachedBatch(difficulty);
@@ -1573,6 +1682,8 @@ bool PuzzleRunnerWindow::reloadPuzzleSupply(bool append, QString *errorMessage)
         const bool ok = m_sessionController.appendPuzzles(response.puzzles, errorMessage);
         if (ok) {
             m_liveSupplyActive = true;
+            m_validatedPuzzlePackActive = false;
+            m_validatedPuzzlePackCount = 0;
             refreshSupplyStatus();
             appendLogMessage(timestamped(QStringLiteral("remote live fetch success: added %1 live puzzles to the queue")
                                              .arg(response.puzzles.size())));
@@ -1583,6 +1694,8 @@ bool PuzzleRunnerWindow::reloadPuzzleSupply(bool append, QString *errorMessage)
     const bool ok = m_sessionController.replacePuzzles(response.puzzles, errorMessage);
     if (ok) {
         m_liveSupplyActive = true;
+        m_validatedPuzzlePackActive = false;
+        m_validatedPuzzlePackCount = 0;
         m_lastSupplyCheckSlot = -1;
         refreshSupplyStatus();
         if (response.source == PuzzleSupplySource::Cache) {
@@ -1615,6 +1728,8 @@ bool PuzzleRunnerWindow::restoreCachedPuzzleSupply(QString *errorMessage)
     }
 
     m_liveSupplyActive = true;
+    m_validatedPuzzlePackActive = false;
+    m_validatedPuzzlePackCount = 0;
     m_lastSupplyCheckSlot = -1;
     refreshSupplyStatus();
     appendLogMessage(timestamped(response.message));
@@ -2189,6 +2304,7 @@ void PuzzleRunnerWindow::buildUi()
     });
     connect(m_settingsCard, &SettingsCard::cleanupRequested, this, &PuzzleRunnerWindow::onCleanupRequested);
     connect(m_settingsCard, &SettingsCard::reloadPuzzlesRequested, this, &PuzzleRunnerWindow::onReloadPuzzlesRequested);
+    connect(m_settingsCard, &SettingsCard::openValidatedPuzzlePackRequested, this, &PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested);
     connect(m_enginePanel, &EnginePanel::refreshRequested, this, &PuzzleRunnerWindow::onEngineRefreshRequested);
     connect(m_enginePanel, &EnginePanel::autoRefreshChanged, this, &PuzzleRunnerWindow::onEngineAutoRefreshChanged);
     connect(m_recentRunsList, &QListWidget::currentItemChanged, this, &PuzzleRunnerWindow::onRecentRunSelected);

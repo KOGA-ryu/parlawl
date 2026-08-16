@@ -655,6 +655,8 @@ LichessBatchResult LichessClient::normalizeBatchFetch(
         puzzle.metadata.blackRating = playerRatingFromColor(playersValue, QStringLiteral("black"));
 
         puzzle.analysisSeed.sourceGameId = sourceGameId;
+        puzzle.analysisSeed.sourceProvider = QStringLiteral("lichess");
+        puzzle.analysisSeed.allowLichessPgnHydration = true;
         puzzle.analysisSeed.timeControl = timeControlFromObject(gameObject);
         puzzle.analysisSeed.sideToMove = replay.sideToMove;
         puzzle.analysisSeed.lastMove = replay.lastMoveUci;

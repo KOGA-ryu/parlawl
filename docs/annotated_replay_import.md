@@ -48,8 +48,9 @@ branch moves, and exact return to the immutable played-game checkpoint.
 
 A displayed alternative is a supplied review line, not a playable puzzle and
 not proof of an objectively best move. Puzzle creation remains a separate
-contract that requires a complete, independently engine-validated solution
-record.
+contract that requires a complete imported solution record whose producer
+declares `engine_validated`; ParlAWL can check that record's schema, identities,
+known cross-links, and legal replay, but does not rerun the engine.
 
 While replay mode is active, ParlAWL stops and resets any fresh Stockfish
 review, hides puzzle metadata, settings, analysis configuration, reports,

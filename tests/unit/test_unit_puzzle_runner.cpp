@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 
 #include "fixture_puzzle_source.h"
+#include "chess_position.h"
 #include "puzzle_engine.h"
 #include "puzzle_round.h"
 #include "session_controller.h"
@@ -33,6 +34,10 @@ private slots:
     void sessionControllerRevealSolutionFromSolvedStateIsStable();
     void sessionControllerRetryIsIdempotent();
     void sessionControllerRefillsPuzzleBatchWindow();
+    void sessionControllerAtomicallyAcceptsUniversalDifficultyPack();
+    void chessPositionValidatesEnPassantState();
+    void chessPositionEmitsOnlyCapturableEnPassant();
+    void lichessHydrationRequiresExplicitProvider();
 };
 
 void PuzzleRunnerTest::fixtureSourceLoadsBuiltInPuzzles()
@@ -104,6 +109,7 @@ void PuzzleRunnerTest::fixtureSourceParsesMetadataDefaults()
     QCOMPARE(puzzle.analysisSeed.rawPuzzleJson, QString());
     QCOMPARE(puzzle.analysisSeed.rawActivityJson, QString());
     QCOMPARE(puzzle.analysisSeed.sourceGamePgn, QString());
+    QCOMPARE(puzzle.analysisSeed.allowLichessPgnHydration, false);
 }
 
 void PuzzleRunnerTest::fixtureSourceKeepsAnalysisSeedConsistent()
@@ -481,6 +487,159 @@ void PuzzleRunnerTest::sessionControllerRefillsPuzzleBatchWindow()
     QCOMPARE(controller.currentPuzzleIndex(), 2);
     QCOMPARE(controller.puzzleCount(), 2);
     QVERIFY(!controller.canGoToNextPuzzle());
+}
+
+void PuzzleRunnerTest::sessionControllerAtomicallyAcceptsUniversalDifficultyPack()
+{
+    SessionController controller;
+    QString errorMessage;
+    QVERIFY2(controller.initialize(&errorMessage), qPrintable(errorMessage));
+    const QString originalId = controller.gameStateStore()->currentPuzzle().id;
+
+    PuzzleDefinition imported;
+    imported.id = QStringLiteral("validated-pack-puzzle");
+    imported.fenStart = QStringLiteral("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    imported.solutionMoves = {QStringLiteral("e2e4")};
+    imported.metadata.difficulty = QStringLiteral("all");
+    QVERIFY2(controller.replacePuzzles({imported}, &errorMessage), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+    QCOMPARE(controller.gameStateStore()->currentPuzzle().id, imported.id);
+
+    PuzzleDefinition invalid = imported;
+    invalid.id = QStringLiteral("invalid-replacement");
+    invalid.fenStart = QStringLiteral("not a fen");
+    QVERIFY(!controller.replacePuzzles({invalid}, &errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+    QCOMPARE(controller.gameStateStore()->currentPuzzle().id, imported.id);
+    QVERIFY(controller.gameStateStore()->currentPuzzle().id != originalId);
+
+    QVERIFY(!controller.replacePuzzles({imported, imported}, &errorMessage));
+    QVERIFY2(errorMessage.contains(QStringLiteral("repeats puzzle id")), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+    QCOMPARE(controller.gameStateStore()->currentPuzzle().id, imported.id);
+
+    PuzzleDefinition illegalLine = imported;
+    illegalLine.id = QStringLiteral("illegal-later-solution-ply");
+    illegalLine.solutionMoves = {
+        QStringLiteral("e2e4"),
+        QStringLiteral("e7e5"),
+        QStringLiteral("e1e3"),
+    };
+    QVERIFY(!controller.replacePuzzles({illegalLine}, &errorMessage));
+    QVERIFY2(errorMessage.contains(QStringLiteral("solution move 3")), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+    QCOMPARE(controller.gameStateStore()->currentPuzzle().id, imported.id);
+
+    PuzzleDefinition forgedImported = imported;
+    forgedImported.id = QStringLiteral("forged-imported-style");
+    forgedImported.metadata.title = importedEngineRecordTitle();
+    forgedImported.metadata.source = importedEngineRecordSource();
+    forgedImported.metadata.sourceLabel = importedEngineRecordSourceLabel(QStringLiteral("forged"));
+    forgedImported.analysisSeed.sourceProvider = QStringLiteral("forged");
+    forgedImported.analysisSeed.sourceRecordSchema = importedEngineRecordSchema();
+    forgedImported.analysisSeed.sourceRecordId = QStringLiteral(
+        "puzzle-record-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    forgedImported.analysisSeed.rawSourceRecordJson = QStringLiteral("{}");
+    QVERIFY(!controller.replacePuzzles({forgedImported}, &errorMessage));
+    QVERIFY2(errorMessage.contains(QStringLiteral("provenance")), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+    QCOMPARE(controller.gameStateStore()->currentPuzzle().id, imported.id);
+
+    QVERIFY(!controller.appendPuzzles({illegalLine}, &errorMessage));
+    QVERIFY2(errorMessage.contains(QStringLiteral("solution move 3")), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+
+    PuzzleDefinition appendable = imported;
+    appendable.id = QStringLiteral("duplicate-append-input");
+    QVERIFY(!controller.appendPuzzles({appendable, appendable}, &errorMessage));
+    QVERIFY2(errorMessage.contains(QStringLiteral("append input repeats")), qPrintable(errorMessage));
+    QCOMPARE(controller.puzzleCount(), 1);
+}
+
+void PuzzleRunnerTest::chessPositionValidatesEnPassantState()
+{
+    QString errorMessage;
+    auto whiteCapture = ChessPosition::fromFen(
+        QStringLiteral("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2"),
+        &errorMessage);
+    QVERIFY2(whiteCapture.has_value(), qPrintable(errorMessage));
+    const auto whiteMove = Move::fromUci(QStringLiteral("e5d6"));
+    QVERIFY(whiteMove.has_value());
+    QVERIFY(whiteCapture->isLegalMove(*whiteMove));
+    QVERIFY(whiteCapture->applyMove(*whiteMove));
+    QCOMPARE(
+        whiteCapture->toFen(),
+        QStringLiteral("4k3/8/3P4/8/8/8/8/4K3 b - - 0 2"));
+
+    auto blackCapture = ChessPosition::fromFen(
+        QStringLiteral("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1"),
+        &errorMessage);
+    QVERIFY2(blackCapture.has_value(), qPrintable(errorMessage));
+    const auto blackMove = Move::fromUci(QStringLiteral("d4e3"));
+    QVERIFY(blackMove.has_value());
+    QVERIFY(blackCapture->isLegalMove(*blackMove));
+    QVERIFY(blackCapture->applyMove(*blackMove));
+    QCOMPARE(
+        blackCapture->toFen(),
+        QStringLiteral("4k3/8/8/8/8/4p3/8/4K3 w - - 0 2"));
+
+    const QStringList impossibleFens{
+        QStringLiteral("4k3/8/8/3pP3/8/8/8/4K3 w - d3 0 2"),
+        QStringLiteral("4k3/8/3N4/3pP3/8/8/8/4K3 w - d6 0 2"),
+        QStringLiteral("4k3/8/8/4P3/8/8/8/4K3 w - d6 0 2"),
+        QStringLiteral("4k3/8/8/3PP3/8/8/8/4K3 w - d6 0 2"),
+        QStringLiteral("4k3/3p4/8/3pP3/8/8/8/4K3 w - d6 0 2"),
+        QStringLiteral("4k3/8/8/3p4/8/8/8/4K3 w - d6 0 2"),
+        QStringLiteral("4k3/8/8/3pP3/8/8/8/4K3 w - d6 1 2"),
+        QStringLiteral("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"),
+    };
+    for (const QString &fen : impossibleFens) {
+        errorMessage.clear();
+        QVERIFY2(!ChessPosition::fromFen(fen, &errorMessage).has_value(), qPrintable(fen));
+        QVERIFY2(!errorMessage.isEmpty(), qPrintable(fen));
+    }
+}
+
+void PuzzleRunnerTest::chessPositionEmitsOnlyCapturableEnPassant()
+{
+    QString errorMessage;
+    auto noCapturer = ChessPosition::fromFen(
+        QStringLiteral("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"),
+        &errorMessage);
+    QVERIFY2(noCapturer.has_value(), qPrintable(errorMessage));
+    const auto e2e4 = Move::fromUci(QStringLiteral("e2e4"));
+    QVERIFY(e2e4.has_value());
+    QVERIFY(noCapturer->applyMove(*e2e4));
+    QCOMPARE(noCapturer->toFen(), QStringLiteral("4k3/8/8/8/4P3/8/8/4K3 b - - 0 1"));
+
+    auto adjacentCapturer = ChessPosition::fromFen(
+        QStringLiteral("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1"),
+        &errorMessage);
+    QVERIFY2(adjacentCapturer.has_value(), qPrintable(errorMessage));
+    QVERIFY(adjacentCapturer->applyMove(*e2e4));
+    QCOMPARE(
+        adjacentCapturer->toFen(),
+        QStringLiteral("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1"));
+    const auto d4e3 = Move::fromUci(QStringLiteral("d4e3"));
+    QVERIFY(d4e3.has_value());
+    QVERIFY(adjacentCapturer->applyMove(*d4e3));
+    QCOMPARE(
+        adjacentCapturer->toFen(),
+        QStringLiteral("4k3/8/8/8/8/4p3/8/4K3 w - - 0 2"));
+}
+
+void PuzzleRunnerTest::lichessHydrationRequiresExplicitProvider()
+{
+    PuzzleAnalysisSeed seed;
+    QVERIFY(!allowsLichessPgnHydration(seed));
+    seed.allowLichessPgnHydration = true;
+    QVERIFY(!allowsLichessPgnHydration(seed));
+    seed.sourceProvider = QStringLiteral("unknown");
+    QVERIFY(!allowsLichessPgnHydration(seed));
+    seed.sourceProvider = QStringLiteral("Lichess");
+    QVERIFY(!allowsLichessPgnHydration(seed));
+    seed.sourceProvider = QStringLiteral("lichess");
+    QVERIFY(allowsLichessPgnHydration(seed));
 }
 
 QTEST_MAIN(PuzzleRunnerTest)

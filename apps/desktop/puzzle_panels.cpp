@@ -437,17 +437,21 @@ MetadataCard::MetadataCard(QWidget *parent)
     , m_rawEvidenceToggle(new QPushButton(QStringLiteral("Raw Evidence"), this))
     , m_rawEvidenceLabel(new QLabel(this))
 {
-    m_titleLabel->setWordWrap(true);
-    m_availabilityLabel->setWordWrap(true);
-    m_warningLabel->setWordWrap(true);
-    m_openingLabel->setWordWrap(true);
-    m_strategicErrorLabel->setWordWrap(true);
-    m_planLabel->setWordWrap(true);
-    m_criticalMistakeLabel->setWordWrap(true);
-    m_lastPracticalMistakeLabel->setWordWrap(true);
-    m_tacticalThemeLabel->setWordWrap(true);
-    m_rawEvidenceLabel->setWordWrap(true);
-    for (QLabel *label : {m_warningLabel, m_openingLabel, m_strategicErrorLabel, m_planLabel, m_criticalMistakeLabel, m_lastPracticalMistakeLabel, m_tacticalThemeLabel, m_rawEvidenceLabel}) {
+    const QList<QLabel *> dynamicLabels{
+        m_titleLabel,
+        m_availabilityLabel,
+        m_warningLabel,
+        m_openingLabel,
+        m_strategicErrorLabel,
+        m_planLabel,
+        m_criticalMistakeLabel,
+        m_lastPracticalMistakeLabel,
+        m_tacticalThemeLabel,
+        m_rawEvidenceLabel,
+    };
+    for (QLabel *label : dynamicLabels) {
+        label->setWordWrap(true);
+        label->setTextFormat(Qt::PlainText);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     }
     QFont titleFont = m_titleLabel->font();
@@ -492,17 +496,35 @@ MetadataCard::MetadataCard(QWidget *parent)
 void MetadataCard::setPuzzle(const parlawl::puzzle_runner::PuzzleDefinition &puzzle, int currentIndex, int puzzleCount, const QString &status)
 {
     Q_UNUSED(currentIndex)
-    m_titleLabel->setText(puzzle.metadata.title.isEmpty() ? puzzle.id : puzzle.metadata.title);
-    m_availabilityLabel->setText(QStringLiteral("%1 puzzles available to solve").arg(QString::number(std::max(puzzleCount, 0))));
-    m_warningLabel->setText(QStringLiteral("Run Analyze to generate the coach summary for this position."));
+    const bool importedValidatedLine = parlawl::puzzle_runner::isImportedEngineRecord(puzzle);
+    m_titleLabel->setText(importedValidatedLine
+            ? parlawl::puzzle_runner::importedEngineRecordTitle()
+            : (puzzle.metadata.title.isEmpty() ? puzzle.id : puzzle.metadata.title));
+    const QString provider = puzzle.analysisSeed.sourceProvider.trimmed().isEmpty()
+        ? QStringLiteral("unknown provider")
+        : puzzle.analysisSeed.sourceProvider.trimmed();
+    const QString importedTrustLabel = parlawl::puzzle_runner::importedEngineRecordSourceLabel(provider);
+    m_availabilityLabel->setText(importedValidatedLine
+            ? QStringLiteral("%1 puzzles available to solve\n%2")
+                  .arg(QString::number(std::max(puzzleCount, 0)), importedTrustLabel)
+            : QStringLiteral("%1 puzzles available to solve").arg(QString::number(std::max(puzzleCount, 0))));
+    m_warningLabel->setVisible(true);
+    m_warningLabel->setText(importedValidatedLine
+            ? importedTrustLabel
+            : QStringLiteral("Run Analyze to generate the coach summary for this position."));
     m_openingLabel->setText(QStringLiteral("Awaiting analysis."));
     m_strategicErrorLabel->setText(QStringLiteral("Awaiting analysis."));
     m_planLabel->setText(QStringLiteral("Awaiting analysis."));
     m_criticalMistakeLabel->setText(QStringLiteral("Awaiting analysis."));
     m_lastPracticalMistakeLabel->setText(QStringLiteral("Awaiting analysis."));
-    m_tacticalThemeLabel->setText(QStringLiteral("Awaiting analysis."));
+    m_tacticalThemeLabel->setText(importedValidatedLine && !puzzle.metadata.themes.isEmpty()
+            ? QStringLiteral("Supplied by imported record (not independently verified): %1")
+                  .arg(puzzle.metadata.themes.join(QStringLiteral(", ")))
+            : QStringLiteral("Awaiting analysis."));
     m_rawEvidenceToggle->setChecked(false);
-    m_rawEvidenceLabel->clear();
+    m_rawEvidenceLabel->setText(importedValidatedLine
+            ? puzzle.analysisSeed.rawSourceRecordJson
+            : QString());
     Q_UNUSED(status)
 }
 
@@ -535,6 +557,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     , m_availableToSolveLabel(new QLabel(this))
     , m_supplyStatusLabel(new QLabel(this))
     , m_reloadPuzzlesButton(new QPushButton(QStringLiteral("Reload puzzles"), this))
+    , m_openValidatedPuzzlePackButton(new QPushButton(QStringLiteral("Import Engine-Line Pack"), this))
     , m_keepRecentRunsCombo(new QComboBox(this))
     , m_preserveAnalyzedCheck(new QCheckBox(QStringLiteral("preserve analyzed"), this))
     , m_cleanupButton(new QPushButton(QStringLiteral("Cleanup now"), this))
@@ -569,13 +592,19 @@ SettingsCard::SettingsCard(QWidget *parent)
     layout->addWidget(m_refillThresholdCombo);
     m_availableToSolveLabel->setWordWrap(true);
     m_supplyStatusLabel->setWordWrap(true);
+    m_availableToSolveLabel->setTextFormat(Qt::PlainText);
+    m_supplyStatusLabel->setTextFormat(Qt::PlainText);
     QPalette supplyPalette = m_supplyStatusLabel->palette();
     supplyPalette.setColor(QPalette::WindowText, QColor(92, 92, 92));
     m_supplyStatusLabel->setPalette(supplyPalette);
     layout->addWidget(m_availableToSolveLabel);
     layout->addWidget(m_supplyStatusLabel);
+    layout->addWidget(m_openValidatedPuzzlePackButton);
     layout->addWidget(m_reloadPuzzlesButton);
-    auto *supplyNote = new QLabel(QStringLiteral("Reload uses the live Lichess API. Difficulty and queue size do not auto-fetch."), this);
+    auto *supplyNote = new QLabel(QStringLiteral(
+        "Import loads offline JSONL records that declare engine_validated. ParlAWL checks the records and "
+        "legal move lines without authenticating the producer or rerunning the engine. Remote top-up turns off; "
+        "Reload uses the live Lichess API."), this);
     supplyNote->setWordWrap(true);
     layout->addWidget(supplyNote);
 
@@ -593,6 +622,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     connect(m_refillWhenLowCheck, &QCheckBox::toggled, this, &SettingsCard::refillWhenLowChanged);
     connect(m_refillThresholdCombo, &QComboBox::currentTextChanged, this, &SettingsCard::refillThresholdChanged);
     connect(m_reloadPuzzlesButton, &QPushButton::clicked, this, &SettingsCard::reloadPuzzlesRequested);
+    connect(m_openValidatedPuzzlePackButton, &QPushButton::clicked, this, &SettingsCard::openValidatedPuzzlePackRequested);
     connect(m_keepRecentRunsCombo, &QComboBox::currentTextChanged, this, &SettingsCard::keepRecentRunsChanged);
     connect(m_preserveAnalyzedCheck, &QCheckBox::toggled, this, &SettingsCard::preserveAnalyzedChanged);
     connect(m_cleanupButton, &QPushButton::clicked, this, &SettingsCard::cleanupRequested);
@@ -711,10 +741,10 @@ EnginePanel::EnginePanel(QWidget *parent)
     , m_refreshButton(new QPushButton(QStringLiteral("Refresh"), this))
     , m_autoRefreshCheck(new QCheckBox(QStringLiteral("auto refresh"), this))
 {
-    m_statusLabel->setWordWrap(true);
-    m_evaluationLabel->setWordWrap(true);
-    m_bestMoveLabel->setWordWrap(true);
-    m_pvLabel->setWordWrap(true);
+    for (QLabel *label : {m_statusLabel, m_evaluationLabel, m_bestMoveLabel, m_pvLabel}) {
+        label->setWordWrap(true);
+        label->setTextFormat(Qt::PlainText);
+    }
     auto *layout = new QVBoxLayout(this);
     auto *controlsRow = new QHBoxLayout();
     controlsRow->setContentsMargins(0, 0, 0, 0);

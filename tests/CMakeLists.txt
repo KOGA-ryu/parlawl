@@ -58,6 +58,17 @@ target_include_directories(test_unit_annotated_replay_pack PRIVATE ${CMAKE_BINAR
 target_link_libraries(test_unit_annotated_replay_pack PRIVATE Qt6::Core Qt6::Test puzzle_runner)
 add_test(NAME test_unit_annotated_replay_pack COMMAND test_unit_annotated_replay_pack)
 
+add_executable(test_unit_engine_validated_puzzle_pack
+    unit/test_unit_engine_validated_puzzle_pack.cpp
+)
+target_compile_definitions(
+    test_unit_engine_validated_puzzle_pack
+    PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_include_directories(test_unit_engine_validated_puzzle_pack PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_engine_validated_puzzle_pack PRIVATE Qt6::Core Qt6::Test puzzle_runner)
+add_test(NAME test_unit_engine_validated_puzzle_pack COMMAND test_unit_engine_validated_puzzle_pack)
+
 add_executable(test_unit_replay_session
     unit/test_unit_replay_session.cpp
     unit/test_unit_annotated_replay_pack.cpp

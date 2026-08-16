@@ -31,7 +31,8 @@
   review, hides non-replay tabs and controls, and guards puzzle input, live
   supply, settings, analysis execution, and database/report handlers
 - recorded alternatives remain review lines; they are never promoted into
-  `PuzzleDefinition` without a separate engine-validated puzzle record
+  `PuzzleDefinition` without a separate imported puzzle record whose producer
+  declares `engine_validated`
 
 ## puzzle supply
 
@@ -39,6 +40,8 @@ Current puzzle supply modes:
 
 - local fixture puzzles for deterministic smoke/testing
 - explicit live Lichess batch loading through `Reload puzzles`
+- explicit offline v1 JSONL loading through `Import Engine-Line Pack` for records
+  that declare `engine_validated`
 
 Live supply rules:
 
@@ -48,6 +51,24 @@ Live supply rules:
 - fetched live batches are cached in app data and survive restart
 - cached live batches may be reused during cooldown and across sessions
 - background top-up is suppressed during cooldown
+- importing an engine-line pack checks every record before one atomic in-memory
+  queue replacement and disables remote top-up until an explicit live reload
+
+`libs/puzzle_runner/engine_validated_puzzle_pack.*` is the import boundary. It
+applies bounded strict JSON parsing, exact nested field/type checks,
+Python-compatible canonical semantic-ID recomputation, known tactical-profile
+cross-link checks, and independent legal solution replay. Its stricter consumer
+profile caps solutions at 1,024 plies, themes at 256, evidence and maps at 512
+entries, nesting at 48 levels, and integers at `2^53 - 1`. These checks establish
+internal consistency, not producer authenticity or engine optimality. Provider
+and hydration fields remain attached to the runtime puzzle so non-Lichess source
+IDs cannot trigger Lichess PGN fetches.
+
+Imported pack provenance is session-only. The selected JSONL remains the
+authority; importing does not persist a pack copy, database provenance row, or
+puzzle-attempt row. The runtime record must therefore be described as a
+producer-declared engine line, never as ParlAWL-authenticated engine evidence or
+proof of optimality, uniqueness, or forced play.
 
 ## source-game history
 
