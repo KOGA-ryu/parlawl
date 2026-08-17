@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QPair>
 
+#include <memory>
 #include <optional>
 
 #include "analysis_run.h"
@@ -18,6 +19,7 @@
 class AnalysisOrchestrator;
 class BoardWidget;
 class DatabaseManager;
+class PuzzleAttemptRepository;
 class EvaluationBarWidget;
 class EnginePanel;
 class PuzzleSupplyCoordinator;
@@ -77,6 +79,7 @@ private slots:
     void onCleanupRequested();
     void onReloadPuzzlesRequested();
     void onOpenValidatedPuzzlePackRequested();
+    void onExportSolveHistoryRequested();
     void onOpenAnnotatedReplayRequested();
     void onBackToPuzzlesRequested();
     void onShowReplayVariationRequested();
@@ -89,6 +92,7 @@ private:
     void loadDatabase();
     QString defaultDatabasePath() const;
     bool ensureDatabaseReady();
+    bool installPuzzleAttemptRepository(QString *errorMessage = nullptr);
     bool validateAnalyzeSettings(bool requireLichessToken, QString *message) const;
     void setAnalysisInProgress(bool inProgress);
     void refreshRecentRuns(const QString &preferredRunId = QString());
@@ -113,6 +117,10 @@ private:
     void refreshSupplyStatus();
 
     DatabaseManager *m_databaseManager;
+    std::unique_ptr<PuzzleAttemptRepository> m_puzzleAttemptRepository;
+    QString m_attemptRepositoryDatabasePath;
+    QString m_attemptSolverId;
+    QString m_attemptSessionId;
     AnalysisOrchestrator *m_orchestrator;
     QThread *m_orchestratorThread;
     parlawl::puzzle_runner::SessionController m_sessionController;

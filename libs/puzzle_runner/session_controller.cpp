@@ -3,15 +3,23 @@
 #include "engine_validated_puzzle_pack.h"
 #include "pgn_utils.h"
 
+#include <cstdlib>
+
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
+#include <QUuid>
 
 namespace parlawl::puzzle_runner {
 
+using namespace parlawl::attempts;
+
 namespace {
+
+constexpr qint64 kAttemptClockDriftToleranceMilliseconds = 5000;
+constexpr auto kAttemptClockPolicy = "parlawl-attempt-clock-v1";
 
 void setValidationError(QString *errorMessage, const QString &message)
 {
@@ -176,6 +184,76 @@ QJsonArray toJsonStringArray(const QStringList &values)
         array.append(value);
     }
     return array;
+}
+
+QJsonArray appliedMoveArray(const QVector<AppliedMove> &moves)
+{
+    QJsonArray array;
+    for (const AppliedMove &move : moves) {
+        array.append(QJsonObject{
+            {QStringLiteral("uci"), move.uci},
+            {QStringLiteral("user_move"), move.userMove},
+        });
+    }
+    return array;
+}
+
+QJsonObject attemptPuzzleSnapshot(const PuzzleDefinition &puzzle)
+{
+    return {
+        {QStringLiteral("difficulty"), puzzle.metadata.difficulty},
+        {QStringLiteral("initial_fen"), puzzle.fenStart},
+        {QStringLiteral("opening_name"), puzzle.analysisSeed.openingName},
+        {QStringLiteral("puzzle_id"), puzzle.id},
+        {QStringLiteral("puzzle_record_id"), puzzle.analysisSeed.sourceRecordId},
+        {QStringLiteral("puzzle_record_schema"), puzzle.analysisSeed.sourceRecordSchema},
+        {QStringLiteral("solution_uci"), toJsonStringArray(puzzle.solutionMoves)},
+        {QStringLiteral("source_game_id"), puzzle.analysisSeed.sourceGameId},
+        {QStringLiteral("source_provider"), puzzle.analysisSeed.sourceProvider},
+        {QStringLiteral("themes"), toJsonStringArray(puzzle.metadata.themes)},
+    };
+}
+
+QJsonObject exactAttemptMetadata()
+{
+    return {
+        {QStringLiteral("attempt_policy"), QStringLiteral("parlawl-terminal-attempt-v1")},
+        {QStringLiteral("interface"), QStringLiteral("ParlAWL")},
+    };
+}
+
+QJsonObject terminalEventPayload(
+    const QString &outcome,
+    const std::optional<qint64> &duration,
+    int wrongMoveCount,
+    int hintsUsed,
+    bool solutionRevealed,
+    const QJsonObject &details = {})
+{
+    QJsonObject payload = details;
+    payload.insert(
+        QStringLiteral("duration_milliseconds"),
+        duration.has_value() ? QJsonValue(*duration) : QJsonValue(QJsonValue::Null));
+    payload.insert(QStringLiteral("hints_used"), hintsUsed);
+    payload.insert(QStringLiteral("outcome"), outcome);
+    payload.insert(QStringLiteral("solution_revealed"), solutionRevealed);
+    payload.insert(QStringLiteral("wrong_move_count"), wrongMoveCount);
+    return payload;
+}
+
+void insertClockAnomalyDetails(
+    QJsonObject *payload,
+    const QDateTime &baselineUtc,
+    const QDateTime &wallUtc,
+    qint64 monotonicElapsedMilliseconds)
+{
+    const qint64 wallElapsedMilliseconds = baselineUtc.isValid()
+        ? baselineUtc.toUTC().msecsTo(wallUtc.toUTC())
+        : 0;
+    payload->insert(QStringLiteral("clock_policy"), QString::fromLatin1(kAttemptClockPolicy));
+    payload->insert(QStringLiteral("clock_tolerance_milliseconds"), kAttemptClockDriftToleranceMilliseconds);
+    payload->insert(QStringLiteral("monotonic_elapsed_milliseconds"), monotonicElapsedMilliseconds);
+    payload->insert(QStringLiteral("wall_elapsed_milliseconds"), wallElapsedMilliseconds);
 }
 
 QStringList sourceMoveList(const PuzzleDefinition &puzzle)
@@ -415,6 +493,270 @@ SessionController::SessionController(QObject *parent)
     connect(&m_gameStateStore, &GameStateStore::stateChanged, this, &SessionController::sessionChanged);
 }
 
+QDateTime SessionController::attemptUtcNow() const
+{
+    return m_attemptUtcNowProvider
+        ? m_attemptUtcNowProvider().toUTC()
+        : QDateTime::currentDateTimeUtc();
+}
+
+void SessionController::setAttemptUtcNowProviderForTesting(std::function<QDateTime()> provider)
+{
+    if (m_attemptState.exists) {
+        emit errorRaised(QStringLiteral("cannot replace the solve-history clock during an active attempt"));
+        return;
+    }
+    m_attemptUtcNowProvider = std::move(provider);
+}
+
+void SessionController::configurePuzzleAttemptLedger(
+    PuzzleAttemptSink *sink,
+    const QString &solverId,
+    const QString &sessionId)
+{
+    if (m_attemptState.exists) {
+        emit errorRaised(QStringLiteral("cannot replace the solve-history ledger during an active attempt"));
+        return;
+    }
+    m_attemptSink = sink;
+    m_solverId = solverId;
+    m_attemptSessionId = sessionId;
+    if (m_currentPuzzleIndex >= 0) {
+        m_puzzleExposureStartedAtUtc = attemptUtcNow();
+        m_attemptElapsed.start();
+    }
+}
+
+bool SessionController::hasTrackedPuzzleAttempt() const
+{
+    return m_attemptState.exists;
+}
+
+bool SessionController::currentPuzzleSupportsAttemptLedger() const
+{
+    if (m_attemptSink == nullptr || m_currentPuzzleIndex < 0 || m_currentPuzzleIndex >= m_puzzles.size()) {
+        return false;
+    }
+    const PuzzleDefinition &puzzle = m_puzzles.at(m_currentPuzzleIndex);
+    return isImportedEngineRecord(puzzle)
+        && puzzle.analysisSeed.sourceRecordSchema == QString::fromLatin1(kPuzzleRecordSchema)
+        && !puzzle.analysisSeed.sourceRecordId.isEmpty()
+        && !puzzle.analysisSeed.rawSourceRecordJson.isEmpty()
+        && !m_solverId.isEmpty() && !m_attemptSessionId.isEmpty();
+}
+
+SessionController::AttemptRuntimeState SessionController::attemptCandidate(const QDateTime &nowUtc) const
+{
+    if (m_attemptState.exists) {
+        return m_attemptState;
+    }
+    AttemptRuntimeState candidate;
+    if (!currentPuzzleSupportsAttemptLedger()) {
+        return candidate;
+    }
+    candidate.exists = true;
+    candidate.attemptInstanceId = QStringLiteral("parlawl-attempt-instance-v1:")
+        + QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+    candidate.wallClockBaselineUtc = m_puzzleExposureStartedAtUtc.isValid()
+        ? m_puzzleExposureStartedAtUtc.toUTC()
+        : nowUtc.toUTC();
+    candidate.startedAtUtc = candidate.wallClockBaselineUtc;
+    const QString puzzleId = m_puzzles.at(m_currentPuzzleIndex).id;
+    const QDateTime priorStart = m_lastAttemptStartByPuzzleId.value(puzzleId);
+    if (priorStart.isValid() && candidate.startedAtUtc <= priorStart) {
+        candidate.startedAtUtc = priorStart.addMSecs(1);
+    }
+    return candidate;
+}
+
+QDateTime SessionController::eventTimeForAttempt(
+    const AttemptRuntimeState &candidate,
+    const QDateTime &wallUtc) const
+{
+    if (!candidate.startedAtUtc.isValid() || wallUtc.toUTC() >= candidate.startedAtUtc.toUTC()) {
+        return wallUtc.toUTC();
+    }
+    // QDateTime has millisecond precision. A same-tick retry may reserve the next
+    // millisecond for a unique external logical ID; clamp only that synthetic gap.
+    if (!attemptWallClockRolledBack(candidate, wallUtc)) {
+        return candidate.startedAtUtc.toUTC();
+    }
+    return wallUtc.toUTC();
+}
+
+bool SessionController::attemptWallClockRolledBack(
+    const AttemptRuntimeState &candidate,
+    const QDateTime &wallUtc) const
+{
+    const QDateTime baseline = candidate.wallClockBaselineUtc.isValid()
+        ? candidate.wallClockBaselineUtc.toUTC()
+        : candidate.startedAtUtc.toUTC();
+    if (candidate.lastObservedWallUtc.isValid()
+        && wallUtc.toUTC() < candidate.lastObservedWallUtc.toUTC()) {
+        return true;
+    }
+    return baseline.isValid() && wallUtc.toUTC() < baseline;
+}
+
+bool SessionController::attemptClockDrifted(
+    const AttemptRuntimeState &candidate,
+    const QDateTime &wallUtc,
+    qint64 monotonicElapsedMilliseconds) const
+{
+    const QDateTime baseline = candidate.wallClockBaselineUtc.isValid()
+        ? candidate.wallClockBaselineUtc.toUTC()
+        : candidate.startedAtUtc.toUTC();
+    if (!baseline.isValid()) {
+        return false;
+    }
+    if (attemptWallClockRolledBack(candidate, wallUtc)) {
+        return true;
+    }
+    const qint64 wallElapsedMilliseconds = baseline.msecsTo(wallUtc.toUTC());
+    return std::abs(wallElapsedMilliseconds - monotonicElapsedMilliseconds)
+        > kAttemptClockDriftToleranceMilliseconds;
+}
+
+qint64 SessionController::attemptElapsedMilliseconds(const AttemptRuntimeState &candidate) const
+{
+    if (!m_attemptElapsed.isValid()) {
+        return 0;
+    }
+    if (m_attemptState.exists && candidate.attemptInstanceId != m_attemptState.attemptInstanceId) {
+        return 0;
+    }
+    return std::max<qint64>(0, m_attemptElapsed.elapsed());
+}
+
+bool SessionController::persistAttemptEvents(
+    const QString &startTrigger,
+    const AttemptRuntimeState &candidate,
+    const QList<AttemptEventInput> &events,
+    const std::optional<TerminalAttemptInput> &terminal,
+    QString *errorMessage)
+{
+    if (!candidate.exists || m_attemptSink == nullptr) {
+        return true;
+    }
+    const bool startsAttempt = !m_attemptState.exists;
+    AttemptAppendBatch batch;
+    batch.attemptInstanceId = candidate.attemptInstanceId;
+    batch.expectedNextEventIndex = startsAttempt ? 0 : m_attemptState.nextEventIndex;
+    batch.expectedPreviousHash = startsAttempt ? QString() : m_attemptState.previousHash;
+
+    if (startsAttempt) {
+        const PuzzleDefinition &puzzle = m_puzzles.at(m_currentPuzzleIndex);
+        RetainedPuzzleRecord retained;
+        retained.puzzleRecordId = puzzle.analysisSeed.sourceRecordId;
+        retained.puzzleId = puzzle.id;
+        retained.recordSchema = puzzle.analysisSeed.sourceRecordSchema;
+        retained.canonicalJson = puzzle.analysisSeed.rawSourceRecordJson.toUtf8();
+        // Exposure time belongs to the attempt identity. The source bytes are
+        // retained only now, in the first synchronous interaction transaction.
+        retained.retainedAtUtc = attemptUtcNow();
+        batch.retainedPuzzleRecord = retained;
+
+        AttemptInstance instance;
+        instance.attemptInstanceId = candidate.attemptInstanceId;
+        instance.puzzleId = puzzle.id;
+        instance.puzzleRecordId = puzzle.analysisSeed.sourceRecordId;
+        instance.solverId = m_solverId;
+        instance.sessionId = m_attemptSessionId;
+        instance.startedAtUtc = candidate.startedAtUtc;
+        instance.puzzleSnapshot = attemptPuzzleSnapshot(puzzle);
+        batch.newAttempt = instance;
+
+        AttemptEventInput started;
+        started.kind = QStringLiteral("attempt_started");
+        started.occurredAtUtc = candidate.startedAtUtc;
+        started.payload = {{QStringLiteral("trigger"), startTrigger}};
+        batch.events.append(started);
+    }
+    batch.events.append(events);
+    batch.terminalAttempt = terminal;
+
+    AttemptAppendReceipt receipt;
+    if (!m_attemptSink->appendBatch(batch, &receipt, errorMessage)) {
+        return false;
+    }
+    AttemptRuntimeState committed = candidate;
+    committed.nextEventIndex = receipt.nextEventIndex;
+    committed.previousHash = receipt.previousHash;
+    m_attemptState = committed;
+    if (startsAttempt) {
+        const QString puzzleId = m_puzzles.at(m_currentPuzzleIndex).id;
+        m_lastAttemptStartByPuzzleId.insert(puzzleId, committed.startedAtUtc.toUTC());
+    }
+    return true;
+}
+
+void SessionController::clearAttemptRuntime()
+{
+    m_attemptState = {};
+}
+
+bool SessionController::finishAttemptForTransition(
+    const QString &reason,
+    bool recordRetry,
+    QString *errorMessage)
+{
+    if (!m_attemptState.exists) {
+        return true;
+    }
+    if (m_attemptState.terminal) {
+        if (recordRetry) {
+            AttemptRuntimeState retryState = m_attemptState;
+            const QDateTime retryWallUtc = attemptUtcNow();
+            retryState.lastObservedWallUtc = retryWallUtc;
+            AttemptEventInput retry;
+            retry.kind = QStringLiteral("retry_requested");
+            retry.occurredAtUtc = eventTimeForAttempt(retryState, retryWallUtc);
+            retry.elapsedMilliseconds = attemptElapsedMilliseconds(retryState);
+            retry.payload = {{QStringLiteral("reason"), reason}};
+            if (!persistAttemptEvents(QString(), retryState, {retry}, std::nullopt, errorMessage)) {
+                return false;
+            }
+        }
+        clearAttemptRuntime();
+        return true;
+    }
+
+    AttemptRuntimeState abandoned = m_attemptState;
+    abandoned.terminal = true;
+    const QDateTime abandonWallUtc = attemptUtcNow();
+    abandoned.lastObservedWallUtc = abandonWallUtc;
+    AttemptEventInput event;
+    event.kind = QStringLiteral("attempt_abandoned");
+    event.terminalKind = QStringLiteral("abandoned");
+    event.occurredAtUtc = eventTimeForAttempt(abandoned, abandonWallUtc);
+    event.elapsedMilliseconds = attemptElapsedMilliseconds(abandoned);
+    event.payload = {{QStringLiteral("reason"), reason}};
+    QList<AttemptEventInput> events{event};
+    if (recordRetry) {
+        AttemptEventInput retry;
+        retry.kind = QStringLiteral("retry_requested");
+        retry.occurredAtUtc = event.occurredAtUtc;
+        retry.elapsedMilliseconds = event.elapsedMilliseconds;
+        retry.payload = {{QStringLiteral("reason"), reason}};
+        events.append(retry);
+    }
+    if (!persistAttemptEvents(QString(), abandoned, events, std::nullopt, errorMessage)) {
+        return false;
+    }
+    clearAttemptRuntime();
+    return true;
+}
+
+bool SessionController::finalizePuzzleAttemptForAppExit(QString *errorMessage)
+{
+    return finishAttemptForTransition(QStringLiteral("app_exit"), false, errorMessage);
+}
+
+bool SessionController::finalizePuzzleAttemptForAnnotatedReplay(QString *errorMessage)
+{
+    return finishAttemptForTransition(QStringLiteral("annotated_replay_opened"), false, errorMessage);
+}
+
 bool SessionController::initialize(QString *errorMessage)
 {
     const QVector<PuzzleDefinition> puzzles = m_puzzleSource.loadPuzzles(errorMessage);
@@ -469,6 +811,16 @@ bool SessionController::replacePuzzles(const QVector<PuzzleDefinition> &puzzles,
         return false;
     }
 
+    QString transitionError;
+    if (!finishAttemptForTransition(QStringLiteral("queue_replaced"), false, &transitionError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("could not preserve the current solve attempt before replacing the queue: %1")
+                                .arg(transitionError);
+        }
+        emit errorRaised(transitionError);
+        return false;
+    }
+
     // Commit only after the complete replacement batch has passed validation.
     m_puzzles = puzzles;
     m_filteredIndices = replacementFilteredIndices;
@@ -493,6 +845,12 @@ bool SessionController::setCurrentPuzzleSourceGamePgn(const QString &pgnText, co
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral(
                 "imported engine-line records keep their pack provenance session-only and disallow source-game hydration");
+        }
+        return false;
+    }
+    if (m_attemptState.exists || !m_gameStateStore.moves().isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("source-game history cannot reset a puzzle after its solve attempt has started");
         }
         return false;
     }
@@ -576,7 +934,9 @@ bool SessionController::appendPuzzles(const QVector<PuzzleDefinition> &puzzles, 
 bool SessionController::canSubmitMoves() const
 {
     return m_puzzleEngine.status() == SessionStatus::Active
-        && m_gameStateStore.isViewingLatest();
+        && m_gameStateStore.isViewingLatest()
+        && !m_solutionWasRevealed
+        && !m_attemptBlockedByDataError;
 }
 
 bool SessionController::shouldFetchMorePuzzles() const
@@ -670,6 +1030,12 @@ void SessionController::setDifficulty(const QString &difficulty)
     if (m_settings.difficulty == normalized) {
         return;
     }
+    QString attemptError;
+    if (!finishAttemptForTransition(QStringLiteral("difficulty_changed"), false, &attemptError)) {
+        emit errorRaised(QStringLiteral("difficulty change stopped because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
     m_settings.difficulty = normalized;
     rebuildFilteredPuzzleList();
     resetVisiblePuzzleWindow();
@@ -680,6 +1046,12 @@ void SessionController::setQueueSize(int queueSize)
 {
     const int normalized = std::max(queueSize, 1);
     if (m_settings.queueSize == normalized) {
+        return;
+    }
+    QString attemptError;
+    if (!finishAttemptForTransition(QStringLiteral("queue_size_changed"), false, &attemptError)) {
+        emit errorRaised(QStringLiteral("queue-size change stopped because solve history could not be saved: %1")
+                             .arg(attemptError));
         return;
     }
     m_settings.queueSize = normalized;
@@ -714,43 +1086,315 @@ void SessionController::submitUserMove(const QString &moveUci)
         return;
     }
 
-    const SubmissionResult result = m_puzzleEngine.submitUserMove(m_gameStateStore.latestPosition(), moveUci);
-    if (!result.accepted) {
+    const QDateTime wallUtc = attemptUtcNow();
+    AttemptRuntimeState attempt = attemptCandidate(wallUtc);
+    const QDateTime eventUtc = eventTimeForAttempt(attempt, wallUtc);
+    const qint64 elapsed = attemptElapsedMilliseconds(attempt);
+    const bool clockRollback = attempt.exists && attemptWallClockRolledBack(attempt, wallUtc);
+    const bool clockAnomaly = attempt.exists && attemptClockDrifted(attempt, wallUtc, elapsed);
+    attempt.lastObservedWallUtc = wallUtc.toUTC();
+    const int solutionIndexBefore = m_puzzleEngine.solutionIndex();
+    const QString expectedMove = m_puzzleEngine.nextExpectedMove();
+    PuzzleEngine stagedEngine = m_puzzleEngine;
+    const SubmissionResult result = stagedEngine.submitUserMove(m_gameStateStore.latestPosition(), moveUci);
+    const QString normalizedMove = moveUci.trimmed().toLower();
+    QJsonObject details{
+        {QStringLiteral("applied_moves"), appliedMoveArray(result.appliedMoves)},
+        {QStringLiteral("expected_move_uci"), expectedMove},
+        {QStringLiteral("move_uci"), normalizedMove},
+        {QStringLiteral("solution_index_after"), stagedEngine.solutionIndex()},
+        {QStringLiteral("solution_index_before"), solutionIndexBefore},
+    };
+    AttemptEventInput event;
+    event.occurredAtUtc = eventUtc;
+    event.elapsedMilliseconds = elapsed;
+    std::optional<TerminalAttemptInput> terminal;
+
+    if (clockAnomaly) {
+        attempt.terminal = true;
+        event.kind = QStringLiteral("attempt_invalidated");
+        event.terminalKind = QStringLiteral("invalidated");
+        details.insert(
+            QStringLiteral("reason"),
+            clockRollback ? QStringLiteral("wall_clock_rollback") : QStringLiteral("wall_clock_drift"));
+        details.insert(QStringLiteral("attempted_action"), QStringLiteral("move"));
+        insertClockAnomalyDetails(
+            &details, attempt.wallClockBaselineUtc, wallUtc, elapsed);
+        if (result.accepted) {
+            details.insert(
+                QStringLiteral("solver_outcome"),
+                result.status == SessionStatus::Solved
+                    ? QStringLiteral("solved")
+                    : (result.status == SessionStatus::Failed
+                            ? QStringLiteral("failed")
+                            : QStringLiteral("correct_move")));
+        }
+        event.payload = details;
+    } else if (!result.accepted) {
+        event.kind = QStringLiteral("move_rejected");
+        details.insert(QStringLiteral("reason"), QStringLiteral("illegal_or_malformed"));
+        event.payload = details;
+        QString attemptError;
+        if (!persistAttemptEvents(QStringLiteral("move"), attempt, {event}, std::nullopt, &attemptError)) {
+            emit errorRaised(QStringLiteral("move was not applied because solve history could not be saved: %1")
+                                 .arg(attemptError));
+            return;
+        }
         if (!result.prompt.isEmpty()) {
             emit promptChanged(result.prompt);
         }
         return;
     }
 
+    if (!clockAnomaly && result.status == SessionStatus::Solved) {
+        attempt.terminal = true;
+        event.kind = QStringLiteral("attempt_solved");
+        event.terminalKind = QStringLiteral("solved");
+        const std::optional<qint64> duration = elapsed > 0 ? std::optional<qint64>(elapsed) : std::nullopt;
+        event.payload = terminalEventPayload(
+            QStringLiteral("solved"), duration, attempt.wrongMoveCount, attempt.hintsUsed, false, details);
+        TerminalAttemptInput terminalValue;
+        terminalValue.outcome = QStringLiteral("solved");
+        terminalValue.observedAtUtc = eventUtc;
+        terminalValue.durationMilliseconds = duration;
+        terminalValue.wrongMoveCount = attempt.wrongMoveCount;
+        terminalValue.hintsUsed = attempt.hintsUsed;
+        terminalValue.metadata = exactAttemptMetadata();
+        terminal = terminalValue;
+    } else if (!clockAnomaly && result.status == SessionStatus::Failed && normalizedMove != expectedMove) {
+        attempt.terminal = true;
+        ++attempt.wrongMoveCount;
+        event.kind = QStringLiteral("attempt_failed_wrong_move");
+        event.terminalKind = QStringLiteral("failed_wrong_move");
+        const std::optional<qint64> duration = elapsed > 0 ? std::optional<qint64>(elapsed) : std::nullopt;
+        event.payload = terminalEventPayload(
+            QStringLiteral("failed"), duration, attempt.wrongMoveCount, attempt.hintsUsed, false, details);
+        TerminalAttemptInput terminalValue;
+        terminalValue.outcome = QStringLiteral("failed");
+        terminalValue.observedAtUtc = eventUtc;
+        terminalValue.durationMilliseconds = duration;
+        terminalValue.wrongMoveCount = attempt.wrongMoveCount;
+        terminalValue.hintsUsed = attempt.hintsUsed;
+        terminalValue.metadata = exactAttemptMetadata();
+        terminal = terminalValue;
+    } else if (!clockAnomaly && result.status == SessionStatus::Failed) {
+        attempt.terminal = true;
+        event.kind = QStringLiteral("attempt_invalidated");
+        event.terminalKind = QStringLiteral("invalidated");
+        details.insert(QStringLiteral("reason"), QStringLiteral("solution_continuation_error"));
+        event.payload = details;
+    } else if (!clockAnomaly) {
+        event.kind = QStringLiteral("move_correct");
+        event.payload = details;
+    }
+
+    QString attemptError;
+    if (!persistAttemptEvents(QStringLiteral("move"), attempt, {event}, terminal, &attemptError)) {
+        emit errorRaised(QStringLiteral("move was not applied because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
+    const bool continuationError = result.accepted
+        && result.status == SessionStatus::Failed
+        && normalizedMove == expectedMove;
+    if (continuationError) {
+        m_attemptBlockedByDataError = true;
+        emit errorRaised(QStringLiteral(
+            "the supplied solution continuation could not be replayed; the attempt was invalidated and the board was left unchanged"));
+        emit promptChanged(currentPrompt());
+        emit sessionChanged();
+        return;
+    }
+    m_puzzleEngine = stagedEngine;
     m_gameStateStore.applyMoveSequence(result.appliedMoves);
-    emit promptChanged(result.prompt);
+    if (clockAnomaly) {
+        m_attemptBlockedByDataError = true;
+        emit errorRaised(QStringLiteral(
+            "the wall clock diverged from monotonic time; this action was retained locally but excluded from solve-history export"));
+    }
+    emit promptChanged(clockAnomaly ? currentPrompt() : result.prompt);
     emit sessionChanged();
-    if (result.status == SessionStatus::Solved && m_settings.autoAdvance) {
+    if (!clockAnomaly && result.status == SessionStatus::Solved && m_settings.autoAdvance) {
         nextPuzzle();
     }
 }
 
 void SessionController::requestHint()
 {
+    if (!canSubmitMoves()) {
+        emit hintAvailable(QStringLiteral("no hint available"));
+        return;
+    }
     const QString hint = m_puzzleEngine.nextExpectedMove();
+    if (!hint.isEmpty()) {
+        const int solutionIndex = m_puzzleEngine.solutionIndex();
+        if (m_attemptState.exists && m_attemptState.disclosedHintIndices.contains(solutionIndex)) {
+            emit hintAvailable(QStringLiteral("next move: %1").arg(hint));
+            return;
+        }
+        const QDateTime wallUtc = attemptUtcNow();
+        AttemptRuntimeState attempt = attemptCandidate(wallUtc);
+        AttemptEventInput event;
+        event.occurredAtUtc = eventTimeForAttempt(attempt, wallUtc);
+        event.elapsedMilliseconds = attemptElapsedMilliseconds(attempt);
+        const bool clockRollback = attempt.exists && attemptWallClockRolledBack(attempt, wallUtc);
+        const bool clockAnomaly = attempt.exists
+            && attemptClockDrifted(attempt, wallUtc, event.elapsedMilliseconds);
+        attempt.lastObservedWallUtc = wallUtc.toUTC();
+        if (clockAnomaly) {
+            attempt.terminal = true;
+            event.kind = QStringLiteral("attempt_invalidated");
+            event.terminalKind = QStringLiteral("invalidated");
+            event.payload = {
+                {QStringLiteral("attempted_action"), QStringLiteral("hint")},
+                {QStringLiteral("hint_move_uci"), hint},
+                {QStringLiteral("reason"), clockRollback
+                     ? QStringLiteral("wall_clock_rollback")
+                     : QStringLiteral("wall_clock_drift")},
+                {QStringLiteral("solution_index"), solutionIndex},
+            };
+            insertClockAnomalyDetails(
+                &event.payload,
+                attempt.wallClockBaselineUtc,
+                wallUtc,
+                event.elapsedMilliseconds);
+        } else {
+            ++attempt.hintsUsed;
+            attempt.disclosedHintIndices.insert(solutionIndex);
+            event.kind = QStringLiteral("hint_granted");
+            event.payload = {
+                {QStringLiteral("hint_move_uci"), hint},
+                {QStringLiteral("solution_index"), solutionIndex},
+            };
+        }
+        QString attemptError;
+        if (!persistAttemptEvents(QStringLiteral("hint"), attempt, {event}, std::nullopt, &attemptError)) {
+            emit errorRaised(QStringLiteral("hint was withheld because solve history could not be saved: %1")
+                                 .arg(attemptError));
+            return;
+        }
+        if (clockAnomaly) {
+            m_attemptBlockedByDataError = true;
+            emit errorRaised(QStringLiteral(
+                "the wall clock diverged from monotonic time; the hint was retained locally but this attempt cannot be exported"));
+            emit promptChanged(currentPrompt());
+        }
+    }
     emit hintAvailable(hint.isEmpty() ? QStringLiteral("no hint available") : QStringLiteral("next move: %1").arg(hint));
 }
 
 void SessionController::revealSolution()
 {
-    applyCurrentPuzzle();
-    const SubmissionResult result = m_puzzleEngine.revealSolution(m_gameStateStore.latestPosition());
+    if (m_currentPuzzleIndex < 0 || m_currentPuzzleIndex >= m_puzzles.size()) {
+        return;
+    }
+    const PuzzleDefinition &puzzle = m_puzzles.at(m_currentPuzzleIndex);
+    QString positionError;
+    const auto initialPosition = ChessPosition::fromFen(puzzle.fenStart, &positionError);
+    if (!initialPosition.has_value()) {
+        emit errorRaised(positionError);
+        return;
+    }
+    PuzzleEngine stagedEngine;
+    stagedEngine.loadPuzzle(puzzle);
+    const SubmissionResult result = stagedEngine.revealSolution(*initialPosition);
     if (!result.accepted) {
         emit errorRaised(result.prompt);
         return;
     }
+
+    const QDateTime wallUtc = attemptUtcNow();
+    AttemptRuntimeState attempt = attemptCandidate(wallUtc);
+    const bool activeAttempt = !(m_attemptState.exists && m_attemptState.terminal);
+    const QDateTime eventUtc = eventTimeForAttempt(attempt, wallUtc);
+    const qint64 elapsed = attemptElapsedMilliseconds(attempt);
+    const bool clockRollback = attempt.exists && activeAttempt
+        && attemptWallClockRolledBack(attempt, wallUtc);
+    const bool clockAnomaly = attempt.exists && activeAttempt
+        && attemptClockDrifted(attempt, wallUtc, elapsed);
+    attempt.lastObservedWallUtc = wallUtc.toUTC();
+    QJsonObject details{
+        {QStringLiteral("applied_moves"), appliedMoveArray(result.appliedMoves)},
+        {QStringLiteral("solution_index_after"), stagedEngine.solutionIndex()},
+    };
+    AttemptEventInput event;
+    event.occurredAtUtc = eventUtc;
+    event.elapsedMilliseconds = elapsed;
+    std::optional<TerminalAttemptInput> terminal;
+    if (m_attemptState.exists && m_attemptState.terminal) {
+        event.kind = QStringLiteral("solution_revealed_review");
+        event.payload = details;
+    } else if (result.status == SessionStatus::Solved) {
+        attempt.terminal = true;
+        event.kind = QStringLiteral("solution_revealed");
+        event.terminalKind = QStringLiteral("revealed_failed");
+        const std::optional<qint64> duration = elapsed > 0 ? std::optional<qint64>(elapsed) : std::nullopt;
+        event.payload = terminalEventPayload(
+            QStringLiteral("failed"), duration, attempt.wrongMoveCount, attempt.hintsUsed, true, details);
+        TerminalAttemptInput terminalValue;
+        terminalValue.outcome = QStringLiteral("failed");
+        terminalValue.observedAtUtc = eventUtc;
+        terminalValue.durationMilliseconds = duration;
+        terminalValue.wrongMoveCount = attempt.wrongMoveCount;
+        terminalValue.hintsUsed = attempt.hintsUsed;
+        terminalValue.solutionRevealed = true;
+        terminalValue.metadata = exactAttemptMetadata();
+        terminal = terminalValue;
+    } else {
+        attempt.terminal = true;
+        event.kind = QStringLiteral("attempt_invalidated");
+        event.terminalKind = QStringLiteral("invalidated");
+        details.insert(QStringLiteral("reason"), QStringLiteral("solution_replay_error"));
+        event.payload = details;
+    }
+    if (clockAnomaly) {
+        terminal.reset();
+        attempt.terminal = true;
+        event.kind = QStringLiteral("attempt_invalidated");
+        event.terminalKind = QStringLiteral("invalidated");
+        event.payload = details;
+        event.payload.insert(
+            QStringLiteral("reason"),
+            clockRollback ? QStringLiteral("wall_clock_rollback") : QStringLiteral("wall_clock_drift"));
+        event.payload.insert(QStringLiteral("solver_outcome"), QStringLiteral("revealed_failed"));
+        insertClockAnomalyDetails(
+            &event.payload, attempt.wallClockBaselineUtc, wallUtc, elapsed);
+    }
+    QString attemptError;
+    if (!persistAttemptEvents(QStringLiteral("reveal"), attempt, {event}, terminal, &attemptError)) {
+        emit errorRaised(QStringLiteral("solution was not revealed because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
+    if (result.status != SessionStatus::Solved) {
+        m_attemptBlockedByDataError = true;
+        emit errorRaised(QStringLiteral(
+            "the supplied solution could not be replayed; the attempt was invalidated and the board was left unchanged"));
+        emit promptChanged(currentPrompt());
+        emit sessionChanged();
+        return;
+    }
+    m_puzzleEngine = stagedEngine;
+    m_gameStateStore.resetToInitial();
     m_gameStateStore.applyMoveSequence(result.appliedMoves);
-    emit promptChanged(result.prompt);
+    m_solutionWasRevealed = true;
+    if (clockAnomaly) {
+        m_attemptBlockedByDataError = true;
+        emit errorRaised(QStringLiteral(
+            "the wall clock diverged from monotonic time; the revealed line was retained locally but excluded from solve-history export"));
+    }
+    emit promptChanged(currentPrompt());
     emit sessionChanged();
 }
 
 void SessionController::retryPuzzle()
 {
+    QString attemptError;
+    if (!finishAttemptForTransition(QStringLiteral("retry"), true, &attemptError)) {
+        emit errorRaised(QStringLiteral("retry stopped because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
     applyCurrentPuzzle();
 }
 
@@ -773,12 +1417,30 @@ void SessionController::previousPuzzle()
     if (!canGoToPreviousPuzzle()) {
         return;
     }
+    QString attemptError;
+    if (!finishAttemptForTransition(QStringLiteral("previous_puzzle"), false, &attemptError)) {
+        emit errorRaised(QStringLiteral("navigation stopped because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
     --m_currentPuzzleSlot;
     applyCurrentPuzzle();
 }
 
 void SessionController::nextPuzzle()
 {
+    const bool canExpandAtBoundary = m_currentPuzzleSlot >= 0
+        && m_currentPuzzleSlot >= m_visiblePuzzleCount - 1
+        && m_visiblePuzzleCount < m_filteredIndices.size();
+    if (!canGoToNextPuzzle() && !canExpandAtBoundary) {
+        return;
+    }
+    QString attemptError;
+    if (!finishAttemptForTransition(QStringLiteral("next_puzzle"), false, &attemptError)) {
+        emit errorRaised(QStringLiteral("navigation stopped because solve history could not be saved: %1")
+                             .arg(attemptError));
+        return;
+    }
     maybeRefillVisiblePuzzleWindow(true);
     if (!canGoToNextPuzzle()) {
         return;
@@ -822,6 +1484,10 @@ void SessionController::applyCurrentPuzzle(QString *errorMessage)
 
     m_puzzleEngine.loadPuzzle(puzzle);
     m_gameStateStore.loadPuzzle(puzzle, sourceHistory);
+    m_solutionWasRevealed = false;
+    m_attemptBlockedByDataError = false;
+    m_puzzleExposureStartedAtUtc = attemptUtcNow();
+    m_attemptElapsed.start();
     emit promptChanged(currentPrompt());
     emit sessionChanged();
 }
@@ -876,6 +1542,12 @@ QString SessionController::currentPrompt() const
 {
     if (!m_gameStateStore.isViewingLatest()) {
         return QStringLiteral("reviewing previous position");
+    }
+    if (m_attemptBlockedByDataError) {
+        return QStringLiteral("solve history invalidated by a system or puzzle-data error; retry to continue");
+    }
+    if (m_solutionWasRevealed) {
+        return QStringLiteral("solution shown — attempt not solved; review the line or retry");
     }
     if (m_puzzleEngine.status() == SessionStatus::Failed) {
         return QStringLiteral("puzzle failed; review the position or retry");

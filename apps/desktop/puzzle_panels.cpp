@@ -558,6 +558,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     , m_supplyStatusLabel(new QLabel(this))
     , m_reloadPuzzlesButton(new QPushButton(QStringLiteral("Reload puzzles"), this))
     , m_openValidatedPuzzlePackButton(new QPushButton(QStringLiteral("Import Engine-Line Pack"), this))
+    , m_exportSolveHistoryButton(new QPushButton(QStringLiteral("Export Solve History"), this))
     , m_keepRecentRunsCombo(new QComboBox(this))
     , m_preserveAnalyzedCheck(new QCheckBox(QStringLiteral("preserve analyzed"), this))
     , m_cleanupButton(new QPushButton(QStringLiteral("Cleanup now"), this))
@@ -608,6 +609,18 @@ SettingsCard::SettingsCard(QWidget *parent)
     supplyNote->setWordWrap(true);
     layout->addWidget(supplyNote);
 
+    auto *solveHistoryLabel = new QLabel(QStringLiteral("solve history"), this);
+    solveHistoryLabel->setFont(sectionFont);
+    layout->addWidget(solveHistoryLabel);
+    layout->addWidget(m_exportSolveHistoryButton);
+    auto *solveHistoryNote = new QLabel(QStringLiteral(
+        "Exports only completed solved or failed attempts against exact retained imported engine-line records. "
+        "Local, open, abandoned, invalid, and non-imported attempts are not exported. "
+        "Hashes show internal consistency, not authenticity, and exported attempts are not used to train anything automatically."), this);
+    solveHistoryNote->setWordWrap(true);
+    solveHistoryNote->setTextFormat(Qt::PlainText);
+    layout->addWidget(solveHistoryNote);
+
     auto *retentionLabel = new QLabel(QStringLiteral("cleanup"), this);
     retentionLabel->setFont(sectionFont);
     layout->addWidget(retentionLabel);
@@ -623,6 +636,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     connect(m_refillThresholdCombo, &QComboBox::currentTextChanged, this, &SettingsCard::refillThresholdChanged);
     connect(m_reloadPuzzlesButton, &QPushButton::clicked, this, &SettingsCard::reloadPuzzlesRequested);
     connect(m_openValidatedPuzzlePackButton, &QPushButton::clicked, this, &SettingsCard::openValidatedPuzzlePackRequested);
+    connect(m_exportSolveHistoryButton, &QPushButton::clicked, this, &SettingsCard::exportSolveHistoryRequested);
     connect(m_keepRecentRunsCombo, &QComboBox::currentTextChanged, this, &SettingsCard::keepRecentRunsChanged);
     connect(m_preserveAnalyzedCheck, &QCheckBox::toggled, this, &SettingsCard::preserveAnalyzedChanged);
     connect(m_cleanupButton, &QPushButton::clicked, this, &SettingsCard::cleanupRequested);

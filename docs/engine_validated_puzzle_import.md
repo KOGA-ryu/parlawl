@@ -41,10 +41,14 @@ live Lichess top-up. Imported records retain their provider, schema, record ID,
 and raw canonical source record. They explicitly disallow Lichess PGN hydration,
 so a Chess.com or other provider game ID is never treated as a Lichess ID.
 
-Import provenance is session-only. The selected JSONL pack remains the authority;
-ParlAWL does not turn it into a database provenance row, save a copy of the pack,
-or create a puzzle-attempt row while loading or solving it. Reopen the pack after
-an app restart when that provenance is needed again.
+The selected JSONL pack remains the authority. ParlAWL does not turn it into a
+database provenance row, save a copy of the pack, or create a puzzle-attempt row
+merely by opening the file. When an imported solve actually begins, the local
+append-only journal retains the exact canonical source record needed to bind
+that attempt. The retained record supports later consistency checks and
+terminal-attempt publication; it is not a substitute for the pack and does not
+restore the imported queue after restart. Reopen the pack when that queue is
+needed again.
 
 Imported records do not invent a human rating or difficulty. They are available
 under either trainer difficulty filter and display their rating as hidden. The
@@ -57,6 +61,59 @@ verified semantic claim.
 
 Choosing **Reload puzzles** later replaces the imported queue with the explicit
 live Lichess flow.
+
+## local solve journal
+
+For exact imported engine-line puzzles, ParlAWL writes solve activity to a local
+append-only SQLite journal. An attempt
+has an immutable instance record and ordered, hash-linked events. A terminal
+attempt has a separate immutable publication record. The journal rejects
+updates and deletes, broken sequence or hash links, and replacement of an
+existing identity. Hashes demonstrate internal consistency only; they do not
+authenticate the player or the pack producer.
+
+Each accepted journal batch commits before the matching in-memory transition or
+automatic navigation. A crash can nevertheless leave a committed attempt open.
+That open attempt remains explicitly incomplete: ParlAWL does not silently turn
+it into a failed or abandoned result after restart, and it cannot be exported as
+a terminal v1 attempt.
+
+The versioned `parlawl-attempt-clock-v1` policy compares elapsed monotonic time
+with wall-clock time from puzzle exposure. Any backward wall-clock movement, or
+absolute drift greater than 5,000 ms in either direction, locally invalidates
+the attempt and excludes it from publication. A one-millisecond synthetic start
+allocation used only to distinguish same-tick retries is explicitly exempt.
+
+Only solved or failed completed attempts bound to an exact retained imported
+engine-line record are eligible for `esports-probability-lab/puzzle-attempt/v1`
+publication. Local fixtures, live puzzles, and other non-imported puzzles are
+not admitted to this ledger. Open, abandoned, invalid, and crash-interrupted
+imported attempts remain local and are excluded.
+This boundary prevents a local interaction from being presented as evidence
+against a source record the application does not possess exactly.
+
+In **Settings**, choose **Export Solve History** to publish the eligible
+records explicitly. The exporter creates a new regular file with owner-only
+`0600` permissions and refuses to overwrite any existing path, including a
+symlink. A failed write is not reported as a successful publication. Export is
+local and user-initiated: ParlAWL does not upload attempts or use them to train a
+model automatically. The original JSONL pack remains the puzzle-record
+authority after export.
+
+Solver and app-session IDs are opaque pseudonyms, not anonymous identities.
+The solver ID persists in local application settings and can link a person's
+exports over time; the session ID is newly generated for each app run and is
+shared by that run's attempts and retries. Neither field accepts an email,
+person name, device name, or filesystem path. The local retained source record
+can still contain public player/game provenance supplied by the imported pack.
+Exported v1 attempt rows contain opaque IDs and attempt facts, not the raw
+retained puzzle record.
+
+Opening an annotated replay synchronously abandons an active imported solve
+attempt before the workspace changes; v1 has no pause/resume state. If that
+journal write fails, the replay does not open. Returning resets the puzzle and
+exposure clock, while database persistence remains lazy until the next solve
+interaction.
 
 ## offline acceptance check
 

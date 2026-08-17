@@ -1,6 +1,7 @@
 #include "puzzle_runner_window.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -27,6 +28,7 @@
 #include <QTextEdit>
 #include <QTextStream>
 #include <QThread>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -40,6 +42,7 @@
 #include "parlawl_config.h"
 #include "puzzle_supply_coordinator.h"
 #include "puzzle_info_summary_builder.h"
+#include "puzzle_attempt_repository.h"
 #include "puzzle_panels.h"
 #include "pgn_utils.h"
 #include "report_formatter.h"
@@ -60,6 +63,22 @@ QString timestamped(const QString &message)
 {
     const auto nowUtc = QDateTime::currentDateTimeUtc();
     return QStringLiteral("%1  %2").arg(nowUtc.toString(Qt::ISODateWithMs), message);
+}
+
+QString newOpaqueUuid(const QString &prefix)
+{
+    return prefix + QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+}
+
+bool isExactOpaqueUuid(const QString &value, const QString &prefix)
+{
+    if (!value.startsWith(prefix) || value.size() != prefix.size() + 36
+        || value != value.toLower()) {
+        return false;
+    }
+    const QString suffix = value.mid(prefix.size());
+    const QUuid uuid = QUuid::fromString(suffix);
+    return !uuid.isNull() && uuid.toString(QUuid::WithoutBraces).toLower() == suffix;
 }
 
 bool readDirectRegularFile(
@@ -473,6 +492,10 @@ bool parseAssistantInferenceArtifact(
 PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_databaseManager(new DatabaseManager(this))
+    , m_puzzleAttemptRepository()
+    , m_attemptRepositoryDatabasePath()
+    , m_attemptSolverId()
+    , m_attemptSessionId(newOpaqueUuid(QStringLiteral("parlawl-session-v1:")))
     , m_orchestrator(new AnalysisOrchestrator())
     , m_orchestratorThread(new QThread(this))
     , m_sessionController(this)
@@ -556,6 +579,12 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
 
 PuzzleRunnerWindow::~PuzzleRunnerWindow()
 {
+    if (m_sessionController.hasTrackedPuzzleAttempt()) {
+        QString attemptError;
+        if (!m_sessionController.finalizePuzzleAttemptForAppExit(&attemptError)) {
+            qWarning().noquote() << "could not finalize solve history during destruction:" << attemptError;
+        }
+    }
     if (m_analysisInProgress) {
         m_orchestrator->requestCancel();
     }
@@ -568,6 +597,16 @@ PuzzleRunnerWindow::~PuzzleRunnerWindow()
 void PuzzleRunnerWindow::closeEvent(QCloseEvent *event)
 {
     if (!m_analysisInProgress) {
+        QString attemptError;
+        if (!m_sessionController.finalizePuzzleAttemptForAppExit(&attemptError)) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("solve history"),
+                QStringLiteral("ParlAWL could not safely finish the current solve attempt:\n%1\n\nThe window will remain open.")
+                    .arg(attemptError));
+            event->ignore();
+            return;
+        }
         QMainWindow::closeEvent(event);
         return;
     }
@@ -613,6 +652,16 @@ bool PuzzleRunnerWindow::loadAnnotatedReplayFile(const QString &path, QString *e
     if (!parsed.has_value()) {
         if (errorMessage != nullptr) {
             *errorMessage = parseError.isEmpty() ? QStringLiteral("analysis replay is invalid") : parseError;
+        }
+        return false;
+    }
+
+    QString attemptError;
+    if (!m_sessionController.finalizePuzzleAttemptForAnnotatedReplay(&attemptError)) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral(
+                "analysis replay was not opened because the active solve attempt could not be preserved: %1")
+                                .arg(attemptError);
         }
         return false;
     }
@@ -742,6 +791,62 @@ void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()
     }
 }
 
+void PuzzleRunnerWindow::onExportSolveHistoryRequested()
+{
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("solve history"),
+            QStringLiteral("Return to puzzles before exporting solve history."));
+        return;
+    }
+    if (!ensureDatabaseReady() || !m_puzzleAttemptRepository) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("solve history"),
+            QStringLiteral("The local solve-history ledger is not available."));
+        return;
+    }
+
+    QString exportDirectory = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (exportDirectory.isEmpty()) {
+        exportDirectory = QDir::homePath();
+    }
+    const QString suggestedPath = exportDirectory + QStringLiteral("/parlawl-solve-history-%1.jsonl")
+        .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss")));
+    const QString path = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Export Solve History"),
+        suggestedPath,
+        QStringLiteral("Solve history (*.jsonl);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (QFileInfo::exists(path)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("solve history"),
+            QStringLiteral("Choose a new file name. Solve-history export never overwrites an existing file."));
+        return;
+    }
+
+    int exportedCount = 0;
+    QString errorMessage;
+    if (!m_puzzleAttemptRepository->exportTerminalAttempts(path, &exportedCount, &errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("solve history"), errorMessage);
+        return;
+    }
+    appendLogMessage(timestamped(
+        QStringLiteral("exported %1 completed solve attempt(s) to %2; nothing was uploaded or used for training")
+            .arg(exportedCount)
+            .arg(path)));
+    QMessageBox::information(
+        this,
+        QStringLiteral("solve history"),
+        QStringLiteral("Exported %1 completed attempt(s).\n\nThe file was created locally; nothing was uploaded or used for training.")
+            .arg(exportedCount));
+}
+
 void PuzzleRunnerWindow::onBackToPuzzlesRequested()
 {
     if (m_workspaceMode != WorkspaceMode::AnnotatedReplay) {
@@ -756,6 +861,9 @@ void PuzzleRunnerWindow::onBackToPuzzlesRequested()
     m_annotatedReplayPack.reset();
     m_replaySession = ReplaySession {};
     m_replayVariationAnchorPly = 0;
+    // Replay transitions do not pause solve attempts. Reset the puzzle and its
+    // exposure baseline; persistence remains lazy until the next interaction.
+    m_sessionController.retryPuzzle();
     setAnnotatedReplayWorkspaceUi(false);
     m_replayEvidencePanel->setEmptyState();
     refreshUi();
@@ -1478,6 +1586,13 @@ void PuzzleRunnerWindow::persistSettings()
 void PuzzleRunnerWindow::loadSettings()
 {
     QSettings settings;
+    const QString solverPrefix = QStringLiteral("parlawl-solver-v1:");
+    m_attemptSolverId = settings.value(QStringLiteral("privacy/solve_history_solver_id")).toString();
+    if (!isExactOpaqueUuid(m_attemptSolverId, solverPrefix)) {
+        m_attemptSolverId = newOpaqueUuid(solverPrefix);
+        settings.setValue(QStringLiteral("privacy/solve_history_solver_id"), m_attemptSolverId);
+        settings.sync();
+    }
     const QString resolvedToken = resolveLichessToken().trimmed();
     const QString persistedToken = settings.value(QStringLiteral("settings/lichess_api_token")).toString().trimmed();
     m_lichessTokenEdit->setText(resolvedToken.isEmpty() ? persistedToken : resolvedToken);
@@ -1531,8 +1646,20 @@ bool PuzzleRunnerWindow::ensureDatabaseReady()
         return false;
     }
 
-    if (m_databaseManager->database().isOpen()
-        && QFileInfo(m_databaseManager->databasePath()).absoluteFilePath() == QFileInfo(requestedPath).absoluteFilePath()) {
+    const QString absoluteRequestedPath = QFileInfo(requestedPath).absoluteFilePath();
+    const bool databaseMatches = m_databaseManager->database().isOpen()
+        && QFileInfo(m_databaseManager->databasePath()).absoluteFilePath() == absoluteRequestedPath;
+    if (m_sessionController.hasTrackedPuzzleAttempt() && !databaseMatches) {
+        appendLogMessage(timestamped(QStringLiteral(
+            "database change blocked until the active solve attempt is finished or abandoned")));
+        return false;
+    }
+    if (databaseMatches) {
+        QString ledgerError;
+        if (!installPuzzleAttemptRepository(&ledgerError)) {
+            appendLogMessage(timestamped(QStringLiteral("solve-history ledger unavailable: %1").arg(ledgerError)));
+            return false;
+        }
         return true;
     }
 
@@ -1546,7 +1673,44 @@ bool PuzzleRunnerWindow::ensureDatabaseReady()
     }
 
     appendLogMessage(timestamped(result.message));
-    return result.ok;
+    if (!result.ok) {
+        return false;
+    }
+    QString ledgerError;
+    if (!installPuzzleAttemptRepository(&ledgerError)) {
+        appendLogMessage(timestamped(QStringLiteral("solve-history ledger unavailable: %1").arg(ledgerError)));
+        return false;
+    }
+    return true;
+}
+
+bool PuzzleRunnerWindow::installPuzzleAttemptRepository(QString *errorMessage)
+{
+    if (!m_databaseManager->database().isOpen()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("database is not open");
+        }
+        return false;
+    }
+    const QString databasePath = QFileInfo(m_databaseManager->databasePath()).absoluteFilePath();
+    if (m_puzzleAttemptRepository && m_attemptRepositoryDatabasePath == databasePath) {
+        return true;
+    }
+    if (m_sessionController.hasTrackedPuzzleAttempt()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("an active solve attempt still belongs to the previous ledger");
+        }
+        return false;
+    }
+    auto replacement = std::make_unique<PuzzleAttemptRepository>(m_databaseManager->database());
+    PuzzleAttemptRepository *replacementPointer = replacement.get();
+    m_sessionController.configurePuzzleAttemptLedger(
+        replacementPointer,
+        m_attemptSolverId,
+        m_attemptSessionId);
+    m_puzzleAttemptRepository = std::move(replacement);
+    m_attemptRepositoryDatabasePath = databasePath;
+    return true;
 }
 
 bool PuzzleRunnerWindow::validateAnalyzeSettings(bool requireLichessToken, QString *message) const
@@ -2305,6 +2469,7 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_settingsCard, &SettingsCard::cleanupRequested, this, &PuzzleRunnerWindow::onCleanupRequested);
     connect(m_settingsCard, &SettingsCard::reloadPuzzlesRequested, this, &PuzzleRunnerWindow::onReloadPuzzlesRequested);
     connect(m_settingsCard, &SettingsCard::openValidatedPuzzlePackRequested, this, &PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested);
+    connect(m_settingsCard, &SettingsCard::exportSolveHistoryRequested, this, &PuzzleRunnerWindow::onExportSolveHistoryRequested);
     connect(m_enginePanel, &EnginePanel::refreshRequested, this, &PuzzleRunnerWindow::onEngineRefreshRequested);
     connect(m_enginePanel, &EnginePanel::autoRefreshChanged, this, &PuzzleRunnerWindow::onEngineAutoRefreshChanged);
     connect(m_recentRunsList, &QListWidget::currentItemChanged, this, &PuzzleRunnerWindow::onRecentRunSelected);

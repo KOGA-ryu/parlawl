@@ -105,6 +105,7 @@ QStringList MigrationRunner::availableVersions() const
         QStringLiteral("020_structural_evidence_v3"),
         QStringLiteral("021_structural_evidence_v4"),
         QStringLiteral("022_critical_move_structural_v4_links"),
+        QStringLiteral("023_puzzle_attempt_ledger_v1"),
     };
 }
 

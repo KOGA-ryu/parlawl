@@ -5,6 +5,8 @@ add_library(storage STATIC
     database_manager.h
     migration_runner.cpp
     migration_runner.h
+    puzzle_attempt_repository.cpp
+    puzzle_attempt_repository.h
 )
 
 target_include_directories(storage
@@ -17,4 +19,5 @@ target_link_libraries(storage
         Qt6::Core
         Qt6::Sql
         domain
+        puzzle_runner
 )

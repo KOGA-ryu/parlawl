@@ -6,6 +6,15 @@ target_include_directories(test_unit_storage PRIVATE ${CMAKE_BINARY_DIR}/generat
 target_link_libraries(test_unit_storage PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
 add_test(NAME test_unit_storage COMMAND test_unit_storage)
 
+add_executable(test_unit_puzzle_attempt_repository
+    unit/test_unit_puzzle_attempt_repository.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_unit_puzzle_attempt_repository PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_puzzle_attempt_repository PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_puzzle_attempt_repository PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
+add_test(NAME test_unit_puzzle_attempt_repository COMMAND test_unit_puzzle_attempt_repository)
+
 add_executable(test_unit_analysis_row_mappers
     unit/test_unit_analysis_row_mappers.cpp
     ../apps/desktop/resources.qrc
@@ -47,6 +56,7 @@ add_executable(test_unit_puzzle_runner
     unit/test_unit_puzzle_runner.cpp
     ../apps/desktop/resources.qrc
 )
+target_compile_definitions(test_unit_puzzle_runner PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_include_directories(test_unit_puzzle_runner PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(test_unit_puzzle_runner PRIVATE Qt6::Core Qt6::Test puzzle_runner)
 add_test(NAME test_unit_puzzle_runner COMMAND test_unit_puzzle_runner)

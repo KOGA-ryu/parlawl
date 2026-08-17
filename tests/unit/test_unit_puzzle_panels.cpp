@@ -25,6 +25,7 @@ private slots:
     void settingsCardShowsSupplyStatusText();
     void enginePanelTreatsDynamicMarkupAsPlainText();
     void settingsCardOffersValidatedPackAction();
+    void settingsCardOffersTerminalAttemptExportAction();
     void metadataCardLabelsImportedLineWithoutProofClaim();
     void metadataCardTreatsDynamicMarkupAsPlainText();
 };
@@ -181,6 +182,36 @@ void TestUnitPuzzlePanels::settingsCardOffersValidatedPackAction()
     QSignalSpy spy(&card, &SettingsCard::openValidatedPuzzlePackRequested);
     openButton->click();
     QCOMPARE(spy.count(), 1);
+}
+
+void TestUnitPuzzlePanels::settingsCardOffersTerminalAttemptExportAction()
+{
+    SettingsCard card;
+    QPushButton *exportButton = nullptr;
+    for (QPushButton *button : card.findChildren<QPushButton *>()) {
+        if (button->text() == QStringLiteral("Export Solve History")) {
+            exportButton = button;
+            break;
+        }
+    }
+    QVERIFY(exportButton != nullptr);
+
+    QSignalSpy spy(&card, &SettingsCard::exportSolveHistoryRequested);
+    exportButton->click();
+    QCOMPARE(spy.count(), 1);
+
+    bool foundBoundaryNote = false;
+    for (const QLabel *label : card.findChildren<QLabel *>()) {
+        if (label->text().contains(QStringLiteral("only completed solved or failed attempts"))) {
+            foundBoundaryNote = true;
+            QCOMPARE(label->textFormat(), Qt::PlainText);
+            QVERIFY(label->text().contains(QStringLiteral("exact retained imported engine-line records")));
+            QVERIFY(label->text().contains(QStringLiteral("Local, open, abandoned, invalid, and non-imported attempts are not exported")));
+            QVERIFY(label->text().contains(QStringLiteral("internal consistency, not authenticity")));
+            QVERIFY(label->text().contains(QStringLiteral("not used to train anything automatically")));
+        }
+    }
+    QVERIFY(foundBoundaryNote);
 }
 
 void TestUnitPuzzlePanels::metadataCardLabelsImportedLineWithoutProofClaim()
