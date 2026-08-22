@@ -31,5 +31,4 @@ target_link_libraries(puzzle_runner
     PUBLIC
         Qt6::Core
         domain
-        strict_json
 )

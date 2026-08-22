@@ -2,8 +2,6 @@
 
 #include "opening_resolution.h"
 
-// Keep opening-facing summary prose aligned with the shared resolver.
-
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>

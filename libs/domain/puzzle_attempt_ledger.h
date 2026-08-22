@@ -15,14 +15,6 @@ inline constexpr auto kAttemptRecordSchema = "esports-probability-lab/puzzle-att
 inline constexpr auto kLocalAttemptSchema = "parlawl/puzzle-attempt-instance/v1";
 inline constexpr auto kLocalEventSchema = "parlawl/puzzle-attempt-event/v1";
 
-// The market family. Beside the chess constants rather than replacing them,
-// because the types below carry no chess and are reused unchanged; only these
-// four strings were ever domain-bound.
-inline constexpr auto kMarketPuzzleRecordSchema = "arc/market-puzzle/v1";
-inline constexpr auto kMarketResultRecordSchema = "arc/market-solve-result/v1";
-inline constexpr auto kMarketLocalAttemptSchema = "parlawl/market-attempt-instance/v1";
-inline constexpr auto kMarketLocalEventSchema = "parlawl/market-attempt-event/v1";
-
 struct RetainedPuzzleRecord
 {
     QString puzzleRecordId;

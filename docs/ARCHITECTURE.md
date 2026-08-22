@@ -17,16 +17,6 @@
 7. `libs/storage/` owns SQLite bootstrap, migrations, and repository operations
 8. `libs/reporting/` owns human-readable report and puzzle-info summary formatting
 9. `workers/analysis_py/` owns bounded Stockfish-backed evidence extraction and tactical event generation
-10. `libs/strict_json/` owns the Python-compatible canonical-JSON core, the strict
-    bounded parser, and the generic field checkers shared by every strict import
-    boundary. It is domain-free and is linked by both `libs/puzzle_runner/` and
-    `libs/market/`; the engine-line importer calls it rather than carrying its
-    own copy
-11. `libs/market/` owns the market-rep domain: bars, task and ply types, the four
-    recomputed HUD derivations, per-ply and calibration scoring, the trade-line
-    replay, the solver rating update, the `market-puzzle-pack-v1` import
-    boundary, the sealed continuation vault, and the market queue and solve
-    lifecycle. It links Qt Core only, like `libs/domain/`
 
 ## annotated replay boundary
 
@@ -43,91 +33,6 @@
 - recorded alternatives remain review lines; they are never promoted into
   `PuzzleDefinition` without a separate imported puzzle record whose producer
   declares `engine_validated`
-
-## market workspace and the look-ahead law
-
-`libs/market/market_puzzle_pack.*` is the market import boundary. It rides the
-same discipline as the engine-line importer — bounded framing (64 MiB per file,
-1 MiB per line, 100,000 records, strict UTF-8 without BOM or NUL), recursive
-duplicate-key rejection, exact field sets, Python-compatible canonical
-semantic-ID recomputation, and `canonical_json(parse(line)) == line` for every
-line — with a consumer profile capping bars at 512, HUD stats at 64, plies at 32,
-themes at 16, nesting at 48 levels and integers at `2^53 - 1`.
-
-Two things are new relative to the chess boundary:
-
-- **Both files or neither.** A pack is `<name>.visible.jsonl` plus
-  `<name>.sealed.jsonl`. A visible file whose sealed partner is missing,
-  mismatched or short one record does not load, and the queue is untouched.
-  There is no blitz-only mode that runs without the key.
-- **The look-ahead law is enforced by the type system, not by convention.** A
-  puzzle's visible window ends at its decision time T. Segregation is three
-  layers deep:
-  1. *File* — the continuation is not in the record the loader hands the UI.
-  2. *Type* — the loader produces `MarketPuzzleVisible`, which has no
-     continuation member at any depth, and a `SealedContinuationVault` whose
-     header cannot put `MarketContinuation` into scope (it is behind an opaque
-     `Impl`). No translation unit under `apps/desktop/` includes
-     `market_continuation.h`, `market_grader.h` or
-     `sealed_continuation_vault_p.h`, and a source-scan test fails the suite if
-     one ever does.
-  3. *Ticket* — `RevealTicket` has a private constructor whose only friend is
-     `MarketAttemptRepository`, which mints one only from a committed,
-     exportable terminal event. The vault re-asks the journal to confirm the
-     ticket's attempt and terminal event hash before it opens, so the guard is
-     testable at runtime and not only at compile time.
-
-The continuation leaves the vault only as a `MarketReveal`: identity, the bars
-after T, the citation chain's identifying half, and the declared rule's line
-rendered as text beside the sentence that says what the line is not.
-
-Blitz and study differ in exactly two ways: study has no per-ply deadline and
-allows post-reveal navigation. Neither mode has a peek, and there is no setting
-that adds one. Zero context while deciding, history lesson after.
-
-The four `verified_stats` (`atr_pct_20`, `range_position_20`, `return_5`,
-`return_20`) are recomputed by ParlAWL from the visible bars and must agree to
-1e-6, because the HUD is what the operator decides on. Unknown `stat_id`,
-unknown theme, a theme that is not `knowable_at_t`, a rating seed outside the
-declared band, a rating basis outside the permitted set, a varying response
-horizon, and a ply shape that disagrees with its task kind are each a rejection
-rather than pass-through.
-
-A pack is training material, not evidence. Its scoring key is a declared rule's
-line replayed on the continuation — not the right answer, not the optimal
-answer, and not evidence that the rule has an edge. Every surface that shows a
-key shows that sentence with it.
-
-## market solve journal
-
-`schemas/024_market_solve_journal_v1.sql` adds `market_attempt_puzzle_records`,
-`market_solve_attempt_instances`, `market_solve_attempt_events` and
-`market_solve_attempt_terminal_records` beside the `023` chess ledger rather
-than widening it: SQLite cannot alter a CHECK in place, and rebuilding an
-append-only ledger would destroy the guarantee its triggers exist to give. Every
-`023` trigger has a `024` counterpart. Event kinds are the market set, and
-`reveal_opened` is a review event admitted only after a terminal.
-
-`libs/storage/append_only_export.*` is the extracted unit both repositories
-call: the `openat`/`O_NOFOLLOW` directory walk, the `O_CREAT|O_EXCL` /
-`0600` / `fsync` / `linkat` publication dance, the canonical encoder, the
-semantic-ID helper and the Python UTC spelling. It was extracted rather than
-copied; the chess repository was refactored onto it in the same change, so
-`test_unit_puzzle_attempt_repository` exercises both paths.
-
-Scoring is deliberately not part of the terminal record. A score is a function
-of the sealed key, and the key does not open until the terminal is committed, so
-the terminal event carries the raw answers and the display-integrity block while
-the graded half arrives with `reveal_opened`; **Export Market Solve History**
-joins them and computes `result_id` over the whole record. An ungraded rep
-exports as ungraded rather than as zeros that would read as a perfect miss.
-Only `completed` and `timed_out` terminals export. A timed-out rep is kept and
-counted — dropping the reps where the operator froze is the most flattering
-possible selection bias.
-
-`parlawl-attempt-clock-v1` applies unchanged and matters more here, because
-latency is the headline measurement: a backward wall-clock movement or drift
-above 5,000 ms invalidates the rep locally and excludes it from export.
 
 ## puzzle supply
 
