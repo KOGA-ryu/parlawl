@@ -5,12 +5,15 @@
 
 #include "puzzle_info_summary_builder.h"
 #include "puzzle_types.h"
+#include "annotated_replay_pack.h"
+#include "replay_session.h"
 
 class QLabel;
 class QTableWidget;
 class QPushButton;
 class QCheckBox;
 class QComboBox;
+class QTextEdit;
 
 namespace parlawl::puzzle_runner {
 class ReviewEngineAdapter;
@@ -26,11 +29,53 @@ public:
         const parlawl::puzzle_runner::PuzzleDefinition &puzzle,
         const QVector<parlawl::puzzle_runner::AppliedMove> &moves,
         int currentViewIndex);
+    void setAnnotatedReplay(
+        const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+        int currentMainlinePly,
+        bool variationActive,
+        int variationAnchorPly);
     [[nodiscard]] QString truthStatusText() const;
+
+signals:
+    void replayPlyRequested(int ply);
 
 private:
     QLabel *m_truthStatusLabel;
     QTableWidget *m_table;
+    bool m_showingAnnotatedReplay = false;
+    int m_replayMoveCount = 0;
+};
+
+class ReplayEvidencePanel : public QGroupBox
+{
+    Q_OBJECT
+
+public:
+    explicit ReplayEvidencePanel(QWidget *parent = nullptr);
+    void setEmptyState();
+    void setReplayState(
+        const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+        const parlawl::puzzle_runner::ReplaySession &session,
+        int variationAnchorPly);
+    [[nodiscard]] QString summaryText() const;
+    [[nodiscard]] bool canShowEngineLine() const;
+    [[nodiscard]] bool canReturnToGame() const;
+
+signals:
+    void openReplayRequested();
+    void backToPuzzlesRequested();
+    void showEngineLineRequested();
+    void returnToGameRequested();
+
+private:
+    QLabel *m_gameLabel;
+    QLabel *m_openingLabel;
+    QLabel *m_engineLabel;
+    QTextEdit *m_summaryView;
+    QPushButton *m_openButton;
+    QPushButton *m_backButton;
+    QPushButton *m_showEngineLineButton;
+    QPushButton *m_returnToGameButton;
 };
 
 class MetadataCard : public QGroupBox
@@ -80,6 +125,8 @@ signals:
     void preserveAnalyzedChanged(bool enabled);
     void cleanupRequested();
     void reloadPuzzlesRequested();
+    void openValidatedPuzzlePackRequested();
+    void exportSolveHistoryRequested();
 
 private:
     QCheckBox *m_autoAdvanceCheck;
@@ -90,6 +137,8 @@ private:
     QLabel *m_availableToSolveLabel;
     QLabel *m_supplyStatusLabel;
     QPushButton *m_reloadPuzzlesButton;
+    QPushButton *m_openValidatedPuzzlePackButton;
+    QPushButton *m_exportSolveHistoryButton;
     QComboBox *m_keepRecentRunsCombo;
     QCheckBox *m_preserveAnalyzedCheck;
     QPushButton *m_cleanupButton;
@@ -107,6 +156,7 @@ public:
         bool canStepForward,
         bool canGoToPreviousPuzzle,
         bool canGoToNextPuzzle);
+    void setReplayMode(bool enabled);
 
 signals:
     void previousRequested();

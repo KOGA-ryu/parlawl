@@ -5,15 +5,21 @@
 #include <QMainWindow>
 #include <QPair>
 
+#include <memory>
+#include <optional>
+
 #include "analysis_run.h"
 #include "analysis_repository.h"
 #include "puzzle_round.h"
 #include "session_controller.h"
 #include "source_game.h"
+#include "annotated_replay_pack.h"
+#include "replay_session.h"
 
 class AnalysisOrchestrator;
 class BoardWidget;
 class DatabaseManager;
+class PuzzleAttemptRepository;
 class EvaluationBarWidget;
 class EnginePanel;
 class PuzzleSupplyCoordinator;
@@ -24,7 +30,9 @@ class QListWidget;
 class QListWidgetItem;
 class MetadataCard;
 class MoveListPanel;
+class ReplayEvidencePanel;
 class QPushButton;
+class QTabWidget;
 class QTextEdit;
 class QThread;
 class StockfishReviewController;
@@ -70,6 +78,13 @@ private slots:
     void onEngineAutoRefreshChanged(bool enabled);
     void onCleanupRequested();
     void onReloadPuzzlesRequested();
+    void onOpenValidatedPuzzlePackRequested();
+    void onExportSolveHistoryRequested();
+    void onOpenAnnotatedReplayRequested();
+    void onBackToPuzzlesRequested();
+    void onShowReplayVariationRequested();
+    void onReturnFromReplayVariationRequested();
+    void onReplayPlyRequested(int ply);
 
 private:
     void buildUi();
@@ -77,12 +92,19 @@ private:
     void loadDatabase();
     QString defaultDatabasePath() const;
     bool ensureDatabaseReady();
+    bool installPuzzleAttemptRepository(QString *errorMessage = nullptr);
     bool validateAnalyzeSettings(bool requireLichessToken, QString *message) const;
     void setAnalysisInProgress(bool inProgress);
     void refreshRecentRuns(const QString &preferredRunId = QString());
     void showRunSummary(const AnalysisRun &run);
     void updateBoard();
     void updatePanels();
+    void updateReplayBoard();
+    void updateReplayPanels();
+    void refreshReplayUi();
+    void setAnnotatedReplayWorkspaceUi(bool enabled);
+    bool loadAnnotatedReplayFile(const QString &path, QString *errorMessage = nullptr);
+    bool loadValidatedPuzzlePackFile(const QString &path, QString *errorMessage = nullptr);
     void clearSelectionIfInvalid();
     void maybeRefreshEngineReview(bool forceRefresh = false);
     void resetPuzzleScopedUiState(const QString &puzzleId);
@@ -95,12 +117,27 @@ private:
     void refreshSupplyStatus();
 
     DatabaseManager *m_databaseManager;
+    std::unique_ptr<PuzzleAttemptRepository> m_puzzleAttemptRepository;
+    QString m_attemptRepositoryDatabasePath;
+    QString m_attemptSolverId;
+    QString m_attemptSessionId;
     AnalysisOrchestrator *m_orchestrator;
     QThread *m_orchestratorThread;
     parlawl::puzzle_runner::SessionController m_sessionController;
     StockfishReviewController *m_stockfishReviewController;
     PuzzleSupplyCoordinator *m_puzzleSupplyCoordinator;
     SourceGamePgnCache *m_sourceGamePgnCache;
+
+    enum class WorkspaceMode {
+        Puzzle,
+        AnnotatedReplay,
+    };
+    WorkspaceMode m_workspaceMode = WorkspaceMode::Puzzle;
+    std::optional<parlawl::puzzle_runner::AnnotatedReplayPack> m_annotatedReplayPack;
+    parlawl::puzzle_runner::ReplaySession m_replaySession;
+    int m_replayVariationAnchorPly = 0;
+    int m_preReplayInfoTabIndex = 0;
+    bool m_replayWorkspaceUiActive = false;
 
     QLineEdit *m_lichessTokenEdit;
     QLineEdit *m_stockfishPathEdit;
@@ -109,6 +146,10 @@ private:
     EvaluationBarWidget *m_evaluationBarWidget;
     BoardWidget *m_boardWidget;
     MoveListPanel *m_moveListPanel;
+    ReplayEvidencePanel *m_replayEvidencePanel;
+    QTabWidget *m_rightTabs;
+    QTabWidget *m_infoTabs;
+    QWidget *m_settingsPage;
     MetadataCard *m_metadataCard;
     SettingsCard *m_settingsCard;
     TransportControls *m_transportControls;
@@ -141,6 +182,8 @@ private:
     bool m_preserveAnalyzedSetting;
     bool m_liveSupplyReloadInProgress = false;
     bool m_liveSupplyActive = false;
+    bool m_validatedPuzzlePackActive = false;
+    int m_validatedPuzzlePackCount = 0;
     int m_lastSupplyCheckSlot = -1;
     bool m_sourceHistoryHydrationInProgress = false;
 };

@@ -46,6 +46,7 @@ QJsonObject toJson(const PuzzleDefinition &puzzle)
 
     QJsonObject analysisSeed{
         {QStringLiteral("source_game_id"), puzzle.analysisSeed.sourceGameId},
+        {QStringLiteral("source_provider"), puzzle.analysisSeed.sourceProvider},
         {QStringLiteral("time_control"), puzzle.analysisSeed.timeControl},
         {QStringLiteral("side_to_move"), puzzle.analysisSeed.sideToMove},
         {QStringLiteral("last_move"), puzzle.analysisSeed.lastMove},
@@ -53,6 +54,7 @@ QJsonObject toJson(const PuzzleDefinition &puzzle)
         {QStringLiteral("raw_activity_json"), puzzle.analysisSeed.rawActivityJson},
         {QStringLiteral("source_game_pgn"), puzzle.analysisSeed.sourceGamePgn},
         {QStringLiteral("opening_name"), puzzle.analysisSeed.openingName},
+        {QStringLiteral("allow_lichess_pgn_hydration"), puzzle.analysisSeed.allowLichessPgnHydration},
     };
 
     QJsonArray solutionMoves;
@@ -99,6 +101,7 @@ std::optional<PuzzleDefinition> fromJson(const QJsonObject &object)
 
     const QJsonObject analysisSeed = object.value(QStringLiteral("analysis_seed")).toObject();
     puzzle.analysisSeed.sourceGameId = analysisSeed.value(QStringLiteral("source_game_id")).toString();
+    puzzle.analysisSeed.sourceProvider = analysisSeed.value(QStringLiteral("source_provider")).toString();
     puzzle.analysisSeed.timeControl = analysisSeed.value(QStringLiteral("time_control")).toString();
     puzzle.analysisSeed.sideToMove = analysisSeed.value(QStringLiteral("side_to_move")).toString();
     puzzle.analysisSeed.lastMove = analysisSeed.value(QStringLiteral("last_move")).toString();
@@ -106,6 +109,8 @@ std::optional<PuzzleDefinition> fromJson(const QJsonObject &object)
     puzzle.analysisSeed.rawActivityJson = analysisSeed.value(QStringLiteral("raw_activity_json")).toString();
     puzzle.analysisSeed.sourceGamePgn = analysisSeed.value(QStringLiteral("source_game_pgn")).toString();
     puzzle.analysisSeed.openingName = analysisSeed.value(QStringLiteral("opening_name")).toString();
+    puzzle.analysisSeed.allowLichessPgnHydration =
+        analysisSeed.value(QStringLiteral("allow_lichess_pgn_hydration")).toBool(false);
     return puzzle;
 }
 

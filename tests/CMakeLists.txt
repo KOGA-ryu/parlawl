@@ -6,6 +6,15 @@ target_include_directories(test_unit_storage PRIVATE ${CMAKE_BINARY_DIR}/generat
 target_link_libraries(test_unit_storage PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
 add_test(NAME test_unit_storage COMMAND test_unit_storage)
 
+add_executable(test_unit_puzzle_attempt_repository
+    unit/test_unit_puzzle_attempt_repository.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_unit_puzzle_attempt_repository PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_puzzle_attempt_repository PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_puzzle_attempt_repository PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
+add_test(NAME test_unit_puzzle_attempt_repository COMMAND test_unit_puzzle_attempt_repository)
+
 add_executable(test_unit_analysis_row_mappers
     unit/test_unit_analysis_row_mappers.cpp
     ../apps/desktop/resources.qrc
@@ -47,14 +56,44 @@ add_executable(test_unit_puzzle_runner
     unit/test_unit_puzzle_runner.cpp
     ../apps/desktop/resources.qrc
 )
+target_compile_definitions(test_unit_puzzle_runner PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_include_directories(test_unit_puzzle_runner PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(test_unit_puzzle_runner PRIVATE Qt6::Core Qt6::Test puzzle_runner)
 add_test(NAME test_unit_puzzle_runner COMMAND test_unit_puzzle_runner)
 
+add_executable(test_unit_annotated_replay_pack
+    unit/test_unit_annotated_replay_pack.cpp
+)
+target_include_directories(test_unit_annotated_replay_pack PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_annotated_replay_pack PRIVATE Qt6::Core Qt6::Test puzzle_runner)
+add_test(NAME test_unit_annotated_replay_pack COMMAND test_unit_annotated_replay_pack)
+
+add_executable(test_unit_engine_validated_puzzle_pack
+    unit/test_unit_engine_validated_puzzle_pack.cpp
+)
+target_compile_definitions(
+    test_unit_engine_validated_puzzle_pack
+    PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_include_directories(test_unit_engine_validated_puzzle_pack PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_engine_validated_puzzle_pack PRIVATE Qt6::Core Qt6::Test puzzle_runner)
+add_test(NAME test_unit_engine_validated_puzzle_pack COMMAND test_unit_engine_validated_puzzle_pack)
+
+add_executable(test_unit_replay_session
+    unit/test_unit_replay_session.cpp
+    unit/test_unit_annotated_replay_pack.cpp
+)
+target_compile_definitions(test_unit_replay_session PRIVATE PARLAWL_REPLAY_FIXTURE_PROVIDER_ONLY)
+target_include_directories(test_unit_replay_session PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_replay_session PRIVATE Qt6::Core Qt6::Test puzzle_runner)
+add_test(NAME test_unit_replay_session COMMAND test_unit_replay_session)
+
 add_executable(test_unit_puzzle_panels
     unit/test_unit_puzzle_panels.cpp
+    unit/test_unit_annotated_replay_pack.cpp
     ../apps/desktop/puzzle_panels.cpp
 )
+target_compile_definitions(test_unit_puzzle_panels PRIVATE PARLAWL_REPLAY_FIXTURE_PROVIDER_ONLY)
 target_include_directories(test_unit_puzzle_panels PRIVATE ${CMAKE_BINARY_DIR}/generated ../apps/desktop)
 target_link_libraries(test_unit_puzzle_panels PRIVATE Qt6::Core Qt6::Widgets Qt6::Test puzzle_runner reporting)
 add_test(NAME test_unit_puzzle_panels COMMAND test_unit_puzzle_panels)

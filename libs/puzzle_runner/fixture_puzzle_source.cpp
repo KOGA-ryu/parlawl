@@ -65,13 +65,20 @@ QVector<PuzzleDefinition> FixturePuzzleSource::loadPuzzles(QString *errorMessage
         puzzle.metadata.blackName = object.value(QStringLiteral("black_name")).toString();
         puzzle.metadata.blackRating = object.value(QStringLiteral("black_rating")).toInt();
         puzzle.analysisSeed.sourceGameId = object.value(QStringLiteral("source_game_id")).toString().trimmed();
+        puzzle.analysisSeed.sourceProvider = object.value(QStringLiteral("source_provider")).toString().trimmed();
+        puzzle.analysisSeed.sourceRecordSchema = object.value(QStringLiteral("source_record_schema")).toString().trimmed();
+        puzzle.analysisSeed.sourceRecordId = object.value(QStringLiteral("source_record_id")).toString().trimmed();
         puzzle.analysisSeed.timeControl = object.value(QStringLiteral("time_control")).toString().trimmed();
         puzzle.analysisSeed.sideToMove = object.value(QStringLiteral("side_to_move")).toString().trimmed();
         puzzle.analysisSeed.lastMove = object.value(QStringLiteral("last_move")).toString().trimmed().toLower();
         puzzle.analysisSeed.rawPuzzleJson = object.value(QStringLiteral("raw_puzzle_json")).toString();
         puzzle.analysisSeed.rawActivityJson = object.value(QStringLiteral("raw_activity_json")).toString();
+        puzzle.analysisSeed.rawSourceRecordJson = object.value(QStringLiteral("raw_source_record_json")).toString();
         puzzle.analysisSeed.sourceGamePgn = object.value(QStringLiteral("source_game_pgn")).toString();
         puzzle.analysisSeed.openingName = object.value(QStringLiteral("opening_name")).toString();
+        puzzle.analysisSeed.allowLichessPgnHydration = object.contains(QStringLiteral("allow_lichess_pgn_hydration"))
+            ? object.value(QStringLiteral("allow_lichess_pgn_hydration")).toBool()
+            : false;
         for (const QJsonValue &themeValue : object.value(QStringLiteral("themes")).toArray()) {
             const QString theme = themeValue.toString().trimmed();
             if (!theme.isEmpty()) {

@@ -220,7 +220,7 @@ std::optional<ChessPosition> ChessPosition::fromFen(const QString &fen, QString 
 
     bool ok = false;
     position.m_halfmoveClock = parts.at(4).toInt(&ok);
-    if (!ok) {
+    if (!ok || position.m_halfmoveClock < 0) {
         if (errorMessage != nullptr) {
             *errorMessage = QStringLiteral("invalid halfmove clock");
         }
@@ -232,6 +232,69 @@ std::optional<ChessPosition> ChessPosition::fromFen(const QString &fen, QString 
             *errorMessage = QStringLiteral("invalid fullmove number");
         }
         return std::nullopt;
+    }
+
+    if (position.m_enPassantSquare >= 0) {
+        const int targetFile = fileOf(position.m_enPassantSquare);
+        const int targetRank = rankOf(position.m_enPassantSquare);
+        const int direction = position.m_sideToMove == PieceColor::White ? 1 : -1;
+        const int expectedTargetRank = position.m_sideToMove == PieceColor::White ? 5 : 2;
+        const int capturedPawnRank = targetRank - direction;
+        const int priorPawnRank = targetRank + direction;
+
+        if (targetRank != expectedTargetRank) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant square has the wrong rank for the side to move");
+            }
+            return std::nullopt;
+        }
+        if (!position.pieceAt(position.m_enPassantSquare).isEmpty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant target square must be empty");
+            }
+            return std::nullopt;
+        }
+
+        const Piece capturedPawn = position.pieceAt(squareIndex(targetFile, capturedPawnRank));
+        if (capturedPawn.type != PieceType::Pawn
+            || capturedPawn.color != opposite(position.m_sideToMove)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant target lacks the opponent pawn that just double-stepped");
+            }
+            return std::nullopt;
+        }
+        if (!position.pieceAt(squareIndex(targetFile, priorPawnRank)).isEmpty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant pawn's prior double-step square must be empty");
+            }
+            return std::nullopt;
+        }
+
+        bool hasAdjacentCapturer = false;
+        for (const int fileOffset : {-1, 1}) {
+            const int adjacentFile = targetFile + fileOffset;
+            if (!isOnBoard(adjacentFile, capturedPawnRank)) {
+                continue;
+            }
+            const Piece adjacent = position.pieceAt(squareIndex(adjacentFile, capturedPawnRank));
+            if (adjacent.type == PieceType::Pawn && adjacent.color == position.m_sideToMove) {
+                hasAdjacentCapturer = true;
+                break;
+            }
+        }
+        if (!hasAdjacentCapturer) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant target lacks an adjacent pawn for the side to move");
+            }
+            return std::nullopt;
+        }
+        if (position.m_halfmoveClock != 0
+            || (position.m_sideToMove == PieceColor::White && position.m_fullmoveNumber < 2)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral("en passant counters cannot follow a pawn double-step");
+            }
+            return std::nullopt;
+        }
     }
 
     return position;
@@ -595,8 +658,13 @@ void ChessPosition::addPawnMoves(QVector<Move> *moves, int square, const Piece &
             } else {
                 moves->append(Move{square, targetSquare, PieceType::None});
             }
-        } else if (targetSquare == m_enPassantSquare) {
-            moves->append(Move{square, targetSquare, PieceType::None});
+        } else if (targetSquare == m_enPassantSquare && targetPiece.isEmpty()) {
+            const int capturedPawnRank = targetRank - direction;
+            const Piece capturedPawn = pieceAt(squareIndex(targetFile, capturedPawnRank));
+            if (capturedPawn.type == PieceType::Pawn
+                && capturedPawn.color == opposite(piece.color)) {
+                moves->append(Move{square, targetSquare, PieceType::None});
+            }
         }
     }
 }
@@ -710,11 +778,26 @@ bool ChessPosition::applyUnchecked(const Move &move)
     const int fromFile = fileOf(move.from);
     const int toFile = fileOf(move.to);
 
+    int enPassantCapturedPawnSquare = -1;
+    if (movingPiece.type == PieceType::Pawn && move.to == m_enPassantSquare
+        && capturedPiece.isEmpty() && fromFile != toFile) {
+        const int capturedPawnRank = rankOf(move.to)
+            + (movingPiece.color == PieceColor::White ? -1 : 1);
+        if (!isOnBoard(toFile, capturedPawnRank)) {
+            return false;
+        }
+        enPassantCapturedPawnSquare = squareIndex(toFile, capturedPawnRank);
+        const Piece capturedPawn = pieceAt(enPassantCapturedPawnSquare);
+        if (capturedPawn.type != PieceType::Pawn
+            || capturedPawn.color != opposite(movingPiece.color)) {
+            return false;
+        }
+    }
+
     m_board[static_cast<size_t>(move.from)] = {};
 
-    if (movingPiece.type == PieceType::Pawn && move.to == m_enPassantSquare && capturedPiece.isEmpty() && fromFile != toFile) {
-        const int capturedPawnRank = rankOf(move.to) + (movingPiece.color == PieceColor::White ? -1 : 1);
-        m_board[static_cast<size_t>(squareIndex(toFile, capturedPawnRank))] = {};
+    if (enPassantCapturedPawnSquare >= 0) {
+        m_board[static_cast<size_t>(enPassantCapturedPawnSquare)] = {};
     }
 
     if (movingPiece.type == PieceType::King) {
@@ -764,10 +847,24 @@ bool ChessPosition::applyUnchecked(const Move &move)
     }
     m_board[static_cast<size_t>(move.to)] = movingPiece;
 
-    if (movingPiece.type == PieceType::Pawn && std::abs(rankOf(move.to) - rankOf(move.from)) == 2) {
-        m_enPassantSquare = squareIndex(fromFile, (rankOf(move.to) + rankOf(move.from)) / 2);
-    } else {
-        m_enPassantSquare = -1;
+    m_enPassantSquare = -1;
+    if (movingPiece.type == PieceType::Pawn
+        && std::abs(rankOf(move.to) - rankOf(move.from)) == 2) {
+        const int destinationRank = rankOf(move.to);
+        for (const int fileOffset : {-1, 1}) {
+            const int adjacentFile = fromFile + fileOffset;
+            if (!isOnBoard(adjacentFile, destinationRank)) {
+                continue;
+            }
+            const Piece adjacent = pieceAt(squareIndex(adjacentFile, destinationRank));
+            if (adjacent.type == PieceType::Pawn
+                && adjacent.color == opposite(movingPiece.color)) {
+                m_enPassantSquare = squareIndex(
+                    fromFile,
+                    (rankOf(move.to) + rankOf(move.from)) / 2);
+                break;
+            }
+        }
     }
 
     const bool pawnMove = movingPiece.type == PieceType::Pawn;

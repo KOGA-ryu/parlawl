@@ -10,6 +10,7 @@ Core entry points:
 - [final_pre_ship_verification.md](final_pre_ship_verification.md): runtime verification findings and remaining risks
 - [edge_case_audit.md](edge_case_audit.md): practical watchlist of failure seams, fallback traps, and missing guardrails
 - [puzzle_api_options.md](puzzle_api_options.md): centralized Lichess puzzle endpoint models and constraints
+- [engine_validated_puzzle_import.md](engine_validated_puzzle_import.md): strict offline v1 engine-line import, producer-claim boundary, and session-only queue behavior
 
 Historical notes kept for context:
 

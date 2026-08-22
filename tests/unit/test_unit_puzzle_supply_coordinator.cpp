@@ -1,6 +1,11 @@
 #include <QtTest/QtTest>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
+#include "puzzle_supply_cache.h"
 #include "puzzle_supply_coordinator.h"
 
 using namespace parlawl::puzzle_runner;
@@ -14,6 +19,8 @@ PuzzleDefinition makePuzzle(const QString &id, const QString &difficulty)
     puzzle.fenStart = QStringLiteral("8/8/8/8/8/8/8/8 w - - 0 1");
     puzzle.solutionMoves = {QStringLiteral("a1a1")};
     puzzle.metadata.difficulty = difficulty;
+    puzzle.analysisSeed.sourceProvider = QStringLiteral("lichess");
+    puzzle.analysisSeed.allowLichessPgnHydration = true;
     return puzzle;
 }
 
@@ -29,10 +36,13 @@ private slots:
     void cooldownBlocksRemoteFetches();
     void restoreCachedBatchUsesPersistedBatchWithoutNetwork();
     void persistedCooldownAndCacheSurviveNewCoordinator();
+    void legacyUnknownCacheDefaultsHydrationOff();
 };
 
 void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     bool nestedRequestWasRejected = false;
     PuzzleSupplyCoordinator *coordinatorPtr = nullptr;
@@ -55,7 +65,8 @@ void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
             result.statusCode = 200;
             result.puzzles = {makePuzzle(QStringLiteral("p1"), QStringLiteral("hard"))};
             return result;
-        }));
+        }),
+        cacheDir.path());
     coordinatorPtr = &coordinator;
 
     const PuzzleSupplyBatchResponse response = coordinator.requestBatch(
@@ -72,6 +83,8 @@ void PuzzleSupplyCoordinatorTest::reentrantRequestDoesNotFetchTwice()
 
 void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     bool shouldRateLimit = false;
     PuzzleSupplyCoordinator coordinator(
@@ -91,7 +104,8 @@ void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
                 makePuzzle(QStringLiteral("p2"), difficulty),
             };
             return result;
-        });
+        },
+        cacheDir.path());
 
     const QDateTime firstRequestTime = QDateTime::fromString(QStringLiteral("2026-03-30T16:30:00Z"), Qt::ISODate);
     const PuzzleSupplyBatchResponse firstResponse = coordinator.requestBatch(
@@ -112,6 +126,8 @@ void PuzzleSupplyCoordinatorTest::rateLimitStartsCooldownAndUsesCache()
 
 void PuzzleSupplyCoordinatorTest::cooldownBlocksRemoteFetches()
 {
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
     int fetchCount = 0;
     PuzzleSupplyCoordinator coordinator(
         [&](const QString &, int, const QString &) {
@@ -121,7 +137,8 @@ void PuzzleSupplyCoordinatorTest::cooldownBlocksRemoteFetches()
             result.statusCode = 429;
             result.errorMessage = QStringLiteral("GET /api/puzzle/batch failed (429)");
             return result;
-        });
+        },
+        cacheDir.path());
 
     const QDateTime firstAttempt = QDateTime::fromString(QStringLiteral("2026-03-30T16:30:00Z"), Qt::ISODate);
     const PuzzleSupplyBatchResponse firstResponse = coordinator.requestBatch(
@@ -151,8 +168,13 @@ void PuzzleSupplyCoordinatorTest::restoreCachedBatchUsesPersistedBatchWithoutNet
             LichessBatchResult result;
             result.ok = true;
             result.statusCode = 200;
+            PuzzleDefinition first = makePuzzle(QStringLiteral("cached-1"), difficulty);
+            first.analysisSeed.sourceRecordSchema = importedEngineRecordSchema();
+            first.analysisSeed.sourceRecordId = QStringLiteral(
+                "puzzle-record-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            first.analysisSeed.rawSourceRecordJson = QStringLiteral("authoritative pack line stays session-only");
             result.puzzles = {
-                makePuzzle(QStringLiteral("cached-1"), difficulty),
+                first,
                 makePuzzle(QStringLiteral("cached-2"), difficulty),
             };
             return result;
@@ -186,6 +208,11 @@ void PuzzleSupplyCoordinatorTest::restoreCachedBatchUsesPersistedBatchWithoutNet
     QCOMPARE(restoredResponse.source, PuzzleSupplySource::Cache);
     QCOMPARE(restoredResponse.puzzles.size(), 2);
     QCOMPARE(restoredResponse.message, QStringLiteral("restored cached live puzzle batch"));
+    QCOMPARE(restoredResponse.puzzles.first().analysisSeed.sourceProvider, QStringLiteral("lichess"));
+    QCOMPARE(restoredResponse.puzzles.first().analysisSeed.allowLichessPgnHydration, true);
+    QCOMPARE(restoredResponse.puzzles.first().analysisSeed.sourceRecordSchema, QString());
+    QCOMPARE(restoredResponse.puzzles.first().analysisSeed.sourceRecordId, QString());
+    QCOMPARE(restoredResponse.puzzles.first().analysisSeed.rawSourceRecordJson, QString());
     QCOMPARE(secondCoordinatorFetchCount, 0);
 }
 
@@ -250,6 +277,43 @@ void PuzzleSupplyCoordinatorTest::persistedCooldownAndCacheSurviveNewCoordinator
     QCOMPARE(persistedResponse.puzzles.size(), 2);
     QCOMPARE(persistedResponse.puzzles.front().id, QStringLiteral("persisted-1"));
     QCOMPARE(secondCoordinatorFetchCount, 0);
+}
+
+void PuzzleSupplyCoordinatorTest::legacyUnknownCacheDefaultsHydrationOff()
+{
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
+    PuzzleSupplyCache cache(cacheDir.path());
+    QString errorMessage;
+    QVERIFY2(
+        cache.storeBatch(
+            QStringLiteral("hard"),
+            {makePuzzle(QStringLiteral("legacy-unknown"), QStringLiteral("hard"))},
+            &errorMessage),
+        qPrintable(errorMessage));
+
+    QFile cacheFile(cacheDir.filePath(QStringLiteral("hard.json")));
+    QVERIFY(cacheFile.open(QIODevice::ReadOnly));
+    QJsonArray rows = QJsonDocument::fromJson(cacheFile.readAll()).array();
+    cacheFile.close();
+    QVERIFY(!rows.isEmpty());
+    QJsonObject row = rows.first().toObject();
+    QJsonObject seed = row.value(QStringLiteral("analysis_seed")).toObject();
+    seed.remove(QStringLiteral("source_provider"));
+    seed.remove(QStringLiteral("allow_lichess_pgn_hydration"));
+    row.insert(QStringLiteral("analysis_seed"), seed);
+    rows[0] = row;
+    QVERIFY(cacheFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray legacyPayload = QJsonDocument(rows).toJson(QJsonDocument::Compact);
+    QCOMPARE(cacheFile.write(legacyPayload), static_cast<qint64>(legacyPayload.size()));
+    cacheFile.close();
+
+    const QVector<PuzzleDefinition> loaded = cache.loadBatch(QStringLiteral("hard"), &errorMessage);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    QCOMPARE(loaded.size(), 1);
+    QCOMPARE(loaded.first().analysisSeed.sourceProvider, QString());
+    QCOMPARE(loaded.first().analysisSeed.allowLichessPgnHydration, false);
+    QVERIFY(!allowsLichessPgnHydration(loaded.first().analysisSeed));
 }
 
 QTEST_MAIN(PuzzleSupplyCoordinatorTest)
