@@ -559,6 +559,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     , m_reloadPuzzlesButton(new QPushButton(QStringLiteral("Reload puzzles"), this))
     , m_openValidatedPuzzlePackButton(new QPushButton(QStringLiteral("Import Engine-Line Pack"), this))
     , m_exportSolveHistoryButton(new QPushButton(QStringLiteral("Export Solve History"), this))
+    , m_openMarketWorkspaceButton(new QPushButton(QStringLiteral("Open Market Workspace"), this))
     , m_keepRecentRunsCombo(new QComboBox(this))
     , m_preserveAnalyzedCheck(new QCheckBox(QStringLiteral("preserve analyzed"), this))
     , m_cleanupButton(new QPushButton(QStringLiteral("Cleanup now"), this))
@@ -621,6 +622,20 @@ SettingsCard::SettingsCard(QWidget *parent)
     solveHistoryNote->setTextFormat(Qt::PlainText);
     layout->addWidget(solveHistoryNote);
 
+    auto *marketLabel = new QLabel(QStringLiteral("market reps"), this);
+    marketLabel->setFont(sectionFont);
+    layout->addWidget(marketLabel);
+    layout->addWidget(m_openMarketWorkspaceButton);
+    auto *marketNote = new QLabel(QStringLiteral(
+        "Opens the market decision workspace and loads a market-puzzle-pack-v1 pair. "
+        "A rep's window ends at its decision time; the continuation is sealed and unreachable "
+        "until the rep reaches a committed terminal, in both rush and study mode. "
+        "A pack is training material, not evidence, and its scoring key is a declared rule's line "
+        "replayed on the continuation rather than the right answer."), this);
+    marketNote->setWordWrap(true);
+    marketNote->setTextFormat(Qt::PlainText);
+    layout->addWidget(marketNote);
+
     auto *retentionLabel = new QLabel(QStringLiteral("cleanup"), this);
     retentionLabel->setFont(sectionFont);
     layout->addWidget(retentionLabel);
@@ -637,6 +652,7 @@ SettingsCard::SettingsCard(QWidget *parent)
     connect(m_reloadPuzzlesButton, &QPushButton::clicked, this, &SettingsCard::reloadPuzzlesRequested);
     connect(m_openValidatedPuzzlePackButton, &QPushButton::clicked, this, &SettingsCard::openValidatedPuzzlePackRequested);
     connect(m_exportSolveHistoryButton, &QPushButton::clicked, this, &SettingsCard::exportSolveHistoryRequested);
+    connect(m_openMarketWorkspaceButton, &QPushButton::clicked, this, &SettingsCard::openMarketWorkspaceRequested);
     connect(m_keepRecentRunsCombo, &QComboBox::currentTextChanged, this, &SettingsCard::keepRecentRunsChanged);
     connect(m_preserveAnalyzedCheck, &QCheckBox::toggled, this, &SettingsCard::preserveAnalyzedChanged);
     connect(m_cleanupButton, &QPushButton::clicked, this, &SettingsCard::cleanupRequested);

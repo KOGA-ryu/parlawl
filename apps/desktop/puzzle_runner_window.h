@@ -3,6 +3,7 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QMainWindow>
+#include <QPointer>
 #include <QPair>
 
 #include <memory>
@@ -19,6 +20,8 @@
 class AnalysisOrchestrator;
 class BoardWidget;
 class DatabaseManager;
+class MarketAttemptRepository;
+class MarketWorkspaceWindow;
 class PuzzleAttemptRepository;
 class EvaluationBarWidget;
 class EnginePanel;
@@ -80,6 +83,7 @@ private slots:
     void onReloadPuzzlesRequested();
     void onOpenValidatedPuzzlePackRequested();
     void onExportSolveHistoryRequested();
+    void onOpenMarketWorkspaceRequested();
     void onOpenAnnotatedReplayRequested();
     void onBackToPuzzlesRequested();
     void onShowReplayVariationRequested();
@@ -118,6 +122,8 @@ private:
 
     DatabaseManager *m_databaseManager;
     std::unique_ptr<PuzzleAttemptRepository> m_puzzleAttemptRepository;
+    std::unique_ptr<MarketAttemptRepository> m_marketAttemptRepository;
+    QPointer<MarketWorkspaceWindow> m_marketWorkspaceWindow;
     QString m_attemptRepositoryDatabasePath;
     QString m_attemptSolverId;
     QString m_attemptSessionId;

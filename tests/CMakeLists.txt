@@ -184,3 +184,71 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/.venv/bin/python")
     )
     set_tests_properties(test_python_worker_logic PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
+
+add_executable(test_unit_market_puzzle_pack
+    unit/test_unit_market_puzzle_pack.cpp
+)
+target_compile_definitions(test_unit_market_puzzle_pack PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_market_puzzle_pack PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_market_puzzle_pack PRIVATE Qt6::Core Qt6::Test market strict_json)
+add_test(NAME test_unit_market_puzzle_pack COMMAND test_unit_market_puzzle_pack)
+
+add_executable(test_unit_market_scoring
+    unit/test_unit_market_scoring.cpp
+)
+target_include_directories(test_unit_market_scoring PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_unit_market_scoring PRIVATE Qt6::Core Qt6::Test market)
+add_test(NAME test_unit_market_scoring COMMAND test_unit_market_scoring)
+
+add_executable(test_unit_market_continuation_segregation
+    unit/test_unit_market_continuation_segregation.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_unit_market_continuation_segregation PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_market_continuation_segregation PRIVATE ${CMAKE_BINARY_DIR}/generated support)
+target_link_libraries(test_unit_market_continuation_segregation PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
+add_test(NAME test_unit_market_continuation_segregation COMMAND test_unit_market_continuation_segregation)
+
+add_executable(test_unit_market_attempt_repository
+    unit/test_unit_market_attempt_repository.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_unit_market_attempt_repository PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_market_attempt_repository PRIVATE ${CMAKE_BINARY_DIR}/generated support)
+target_link_libraries(test_unit_market_attempt_repository PRIVATE Qt6::Core Qt6::Sql Qt6::Test storage)
+add_test(NAME test_unit_market_attempt_repository COMMAND test_unit_market_attempt_repository)
+
+add_executable(test_unit_market_panels
+    unit/test_unit_market_panels.cpp
+    ../apps/desktop/market_chart_widget.cpp
+    ../apps/desktop/market_hud_widget.cpp
+    ../apps/desktop/market_rush_panel.cpp
+    ../apps/desktop/market_study_panel.cpp
+    ../apps/desktop/market_workspace_window.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_unit_market_panels PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_unit_market_panels PRIVATE ${CMAKE_BINARY_DIR}/generated support ../apps/desktop)
+target_link_libraries(test_unit_market_panels PRIVATE Qt6::Charts Qt6::Core Qt6::Sql Qt6::Test Qt6::Widgets storage)
+add_test(NAME test_unit_market_panels COMMAND test_unit_market_panels)
+
+# The compiled Arc packs live outside this repository. Point
+# PARLAWL_REAL_PACK_DIR at `<Arc>/data/puzzle_packs` to run the integration
+# against them; without it the case skips and the suite still runs green.
+set(PARLAWL_REAL_PACK_DIR "" CACHE PATH "Directory holding the compiled Arc market puzzle packs")
+
+add_executable(test_integration_market_real_packs
+    integration/test_integration_market_real_packs.cpp
+    ../apps/desktop/market_chart_widget.cpp
+    ../apps/desktop/market_hud_widget.cpp
+    ../apps/desktop/market_rush_panel.cpp
+    ../apps/desktop/market_study_panel.cpp
+    ../apps/desktop/market_workspace_window.cpp
+    ../apps/desktop/resources.qrc
+)
+target_compile_definitions(test_integration_market_real_packs PRIVATE PARLAWL_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(test_integration_market_real_packs PRIVATE ${CMAKE_BINARY_DIR}/generated support ../apps/desktop)
+target_link_libraries(test_integration_market_real_packs PRIVATE Qt6::Charts Qt6::Core Qt6::Sql Qt6::Test Qt6::Widgets storage)
+add_test(NAME test_integration_market_real_packs COMMAND test_integration_market_real_packs)
+set_tests_properties(test_integration_market_real_packs PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PARLAWL_REAL_PACK_DIR=${PARLAWL_REAL_PACK_DIR}")

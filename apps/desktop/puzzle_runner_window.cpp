@@ -1,5 +1,8 @@
 #include "puzzle_runner_window.h"
 
+#include "market_attempt_repository.h"
+#include "market_workspace_window.h"
+
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -789,6 +792,37 @@ void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()
     if (!loadValidatedPuzzlePackFile(path, &errorMessage)) {
         QMessageBox::warning(this, QStringLiteral("engine-line pack"), errorMessage);
     }
+}
+
+void PuzzleRunnerWindow::onOpenMarketWorkspaceRequested()
+{
+    if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("market workspace"),
+            QStringLiteral("Return to puzzles before opening the market workspace."));
+        return;
+    }
+    if (!ensureDatabaseReady()) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("market workspace"),
+            QStringLiteral("The local market solve journal is not available."));
+        return;
+    }
+    if (!m_marketAttemptRepository) {
+        m_marketAttemptRepository =
+            std::make_unique<MarketAttemptRepository>(m_databaseManager->database());
+    }
+    if (m_marketWorkspaceWindow.isNull()) {
+        m_marketWorkspaceWindow = new MarketWorkspaceWindow(
+            m_marketAttemptRepository.get(), m_attemptSolverId, m_attemptSessionId, this);
+        m_marketWorkspaceWindow->setAttribute(Qt::WA_DeleteOnClose);
+        m_marketWorkspaceWindow->setWindowFlag(Qt::Window);
+    }
+    m_marketWorkspaceWindow->show();
+    m_marketWorkspaceWindow->raise();
+    m_marketWorkspaceWindow->activateWindow();
 }
 
 void PuzzleRunnerWindow::onExportSolveHistoryRequested()
@@ -2470,6 +2504,7 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_settingsCard, &SettingsCard::reloadPuzzlesRequested, this, &PuzzleRunnerWindow::onReloadPuzzlesRequested);
     connect(m_settingsCard, &SettingsCard::openValidatedPuzzlePackRequested, this, &PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested);
     connect(m_settingsCard, &SettingsCard::exportSolveHistoryRequested, this, &PuzzleRunnerWindow::onExportSolveHistoryRequested);
+    connect(m_settingsCard, &SettingsCard::openMarketWorkspaceRequested, this, &PuzzleRunnerWindow::onOpenMarketWorkspaceRequested);
     connect(m_enginePanel, &EnginePanel::refreshRequested, this, &PuzzleRunnerWindow::onEngineRefreshRequested);
     connect(m_enginePanel, &EnginePanel::autoRefreshChanged, this, &PuzzleRunnerWindow::onEngineAutoRefreshChanged);
     connect(m_recentRunsList, &QListWidget::currentItemChanged, this, &PuzzleRunnerWindow::onRecentRunSelected);

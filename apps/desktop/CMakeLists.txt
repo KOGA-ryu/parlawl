@@ -4,6 +4,16 @@ qt_add_executable(parlawl_desktop MACOSX_BUNDLE
     evaluation_bar_widget.cpp
     evaluation_bar_widget.h
     main.cpp
+    market_chart_widget.cpp
+    market_chart_widget.h
+    market_hud_widget.cpp
+    market_hud_widget.h
+    market_rush_panel.cpp
+    market_rush_panel.h
+    market_study_panel.cpp
+    market_study_panel.h
+    market_workspace_window.cpp
+    market_workspace_window.h
     puzzle_panels.cpp
     puzzle_panels.h
     puzzle_runner_window.cpp
@@ -20,6 +30,7 @@ target_include_directories(parlawl_desktop
 
 target_link_libraries(parlawl_desktop
     PRIVATE
+        Qt6::Charts
         Qt6::Core
         Qt6::Widgets
         domain

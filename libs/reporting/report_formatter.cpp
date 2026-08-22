@@ -2,6 +2,8 @@
 
 #include "opening_resolution.h"
 
+// Keep report opening prose aligned with the shared resolver.
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>

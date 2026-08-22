@@ -12,7 +12,10 @@ set(CMAKE_AUTORCC ON)
 
 option(PARLAWL_BUILD_TESTS "Build parlawl test targets" OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql Network Test)
+# The market workspace draws OHLCV with the Qt Charts module
+# (QCandlestickSeries plus a volume bar series). It is required, not optional:
+# a chart drawn by hand in QPainter would be a second renderer to keep honest.
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql Network Test Charts)
 
 qt_standard_project_setup()
 
@@ -23,6 +26,8 @@ configure_file(
 )
 
 add_subdirectory(libs/domain)
+add_subdirectory(libs/strict_json)
+add_subdirectory(libs/market)
 add_subdirectory(libs/lichess)
 add_subdirectory(libs/storage)
 add_subdirectory(libs/reporting)

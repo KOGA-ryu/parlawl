@@ -28,6 +28,20 @@ anonymous IDs: the solver ID persists locally and one session ID is generated
 per app run. Export rows do not contain the retained raw puzzle record, though
 that local record may contain the pack's public player/game provenance.
 
+The workspace can also open a market decision deck. **Open Market Workspace**
+loads a `market-puzzle-pack-v1` pair — `<name>.visible.jsonl` and its
+`<name>.sealed.jsonl` partner — atomically or not at all, and serves reps in
+RUSH (keyboard-first, per-ply deadline, streak) or STUDY (write the line, then
+step the reveal bar by bar). A rep's visible window ends at its decision time;
+tickers, dates and everything after that moment are sealed and structurally
+unreachable until the rep reaches a committed terminal, in both modes. ParlAWL
+recomputes the pack's content IDs, its window digest and four of its HUD stats
+from the bytes it read; it does not authenticate the producer. A pack is
+training material, not evidence, and its scoring key is a declared rule's line
+replayed on the continuation rather than the right answer. **Export Market Solve
+History** publishes only completed or timed-out reps, under the same
+owner-only, no-overwrite, never-uploaded rules as the chess export.
+
 ## quick start
 
 ```bash
@@ -46,3 +60,5 @@ open -a /Users/kogaryu/dev/parlawl/build/apps/desktop/parlawl.app
 - [docs/edge_case_audit.md](docs/edge_case_audit.md)
 - [docs/annotated_replay_import.md](docs/annotated_replay_import.md)
 - [docs/engine_validated_puzzle_import.md](docs/engine_validated_puzzle_import.md)
+- [docs/market_puzzle_pack_v1.md](docs/market_puzzle_pack_v1.md)
+- [docs/market_solve_results_v1.md](docs/market_solve_results_v1.md)

@@ -106,6 +106,7 @@ QStringList MigrationRunner::availableVersions() const
         QStringLiteral("021_structural_evidence_v4"),
         QStringLiteral("022_critical_move_structural_v4_links"),
         QStringLiteral("023_puzzle_attempt_ledger_v1"),
+        QStringLiteral("024_market_solve_journal_v1"),
     };
 }
 

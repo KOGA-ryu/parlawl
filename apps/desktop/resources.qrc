@@ -23,6 +23,7 @@
         <file>../../schemas/021_structural_evidence_v4.sql</file>
         <file>../../schemas/022_critical_move_structural_v4_links.sql</file>
         <file>../../schemas/023_puzzle_attempt_ledger_v1.sql</file>
+        <file>../../schemas/024_market_solve_journal_v1.sql</file>
         <file>puzzle_runner/fixtures/puzzles_v1.json</file>
     </qresource>
 </RCC>
