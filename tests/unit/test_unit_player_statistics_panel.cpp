@@ -202,6 +202,155 @@ QByteArray snapshotBytes()
     return QJsonDocument(root).toJson(QJsonDocument::Compact) + '\n';
 }
 
+QStringList structureMetricCodes()
+{
+    QStringList output;
+    const QStringList phases {
+        QStringLiteral("all"), QStringLiteral("opening"),
+        QStringLiteral("middlegame"), QStringLiteral("endgame"),
+    };
+    for (const QString &predicate : {
+             QStringLiteral("both_queens_absent"),
+             QStringLiteral("own_passed_pawn_present"),
+             QStringLiteral("own_isolated_pawn_present"),
+             QStringLiteral("own_doubled_pawn_excess_present"),
+             QStringLiteral("own_two_or_more_bishops_present"),
+         }) {
+        for (const QString &phase : phases) {
+            output.append(QStringLiteral("binary.%1.%2.share").arg(predicate, phase));
+        }
+    }
+    for (const QString &state : {
+             QStringLiteral("ahead"), QStringLiteral("equal"),
+             QStringLiteral("behind"),
+         }) {
+        for (const QString &phase : phases) {
+            output.append(QStringLiteral("material_relation.%1.%2.share").arg(state, phase));
+        }
+    }
+    for (const QString &phase : phases) {
+        output.append(QStringLiteral("material_delta_mean.%1").arg(phase));
+    }
+    output.append(QStringLiteral("focal_castling.any"));
+    output.append(QStringLiteral("focal_castling.kingside"));
+    output.append(QStringLiteral("focal_castling.queenside"));
+    return output;
+}
+
+qint64 structurePlayerNumerator(const QString &code, bool alpha)
+{
+    if (code.startsWith(QStringLiteral("material_delta_mean."))) {
+        return alpha ? 1 : -1;
+    }
+    if (code.startsWith(QStringLiteral("material_relation.equal."))
+        || code == QStringLiteral("focal_castling.queenside")) {
+        return 0;
+    }
+    if (code.startsWith(QStringLiteral("material_relation.behind."))) {
+        return alpha ? 0 : 1;
+    }
+    return alpha ? 1 : 0;
+}
+
+QJsonObject structureMetric(const QString &code, bool alpha)
+{
+    const qint64 numerator = structurePlayerNumerator(code, alpha);
+    const qint64 pairedDifference = (
+        numerator - structurePlayerNumerator(code, !alpha)) * 1'000'000;
+    return QJsonObject {
+        {QStringLiteral("aggregate_status"), QStringLiteral("observed")},
+        {QStringLiteral("aggregate_value_ppm"), numerator * 1'000'000},
+        {QStringLiteral("denominator_sum"), 1},
+        {QStringLiteral("mean_player_minus_opponent_ppm"), pairedDifference},
+        {QStringLiteral("metric_code"), code},
+        {QStringLiteral("not_applicable_player_game_count"), 0},
+        {QStringLiteral("numerator_sum"), numerator},
+        {QStringLiteral("observed_player_game_count"), 1},
+        {QStringLiteral("paired_player_game_count"), 1},
+    };
+}
+
+QJsonArray structurePlayerMetrics(bool alpha)
+{
+    QJsonArray output;
+    for (const QString &code : structureMetricCodes()) {
+        output.append(structureMetric(code, alpha));
+    }
+    return output;
+}
+
+QJsonArray structureGlobalMetrics()
+{
+    QJsonArray output;
+    for (const QString &code : structureMetricCodes()) {
+        const qint64 numerator = structurePlayerNumerator(code, true)
+            + structurePlayerNumerator(code, false);
+        output.append(QJsonObject {
+            {QStringLiteral("aggregate_status"), QStringLiteral("observed")},
+            {QStringLiteral("aggregate_value_ppm"), numerator * 500'000},
+            {QStringLiteral("denominator_sum"), 2},
+            {QStringLiteral("mean_player_minus_opponent_ppm"), 0},
+            {QStringLiteral("metric_code"), code},
+            {QStringLiteral("not_applicable_player_game_count"), 0},
+            {QStringLiteral("numerator_sum"), numerator},
+            {QStringLiteral("observed_player_game_count"), 2},
+            {QStringLiteral("paired_player_game_count"), 2},
+        });
+    }
+    return output;
+}
+
+QJsonObject structurePlayer(const QString &playerId, bool alpha)
+{
+    return QJsonObject {
+        {QStringLiteral("black_game_count"), alpha ? 0 : 1},
+        {QStringLiteral("distinct_opponent_count"), 1},
+        {QStringLiteral("draw_count"), 0},
+        {QStringLiteral("game_count"), 1},
+        {QStringLiteral("loss_count"), alpha ? 0 : 1},
+        {QStringLiteral("metrics"), structurePlayerMetrics(alpha)},
+        {QStringLiteral("player_id"), playerId},
+        {QStringLiteral("score_rate_ppm"), alpha ? 1'000'000 : 0},
+        {QStringLiteral("white_game_count"), alpha ? 1 : 0},
+        {QStringLiteral("win_count"), alpha ? 1 : 0},
+    };
+}
+
+QByteArray structureSnapshotBytes()
+{
+    const QJsonObject root {
+        {QStringLiteral("claim_boundary"), QJsonObject {
+            {QStringLiteral("board_metrics_are_postgame_mechanical_descriptions"), true},
+            {QStringLiteral("chunk_membership_defines_history"), false},
+            {QStringLiteral("descriptive_outcomes_only"), true},
+            {QStringLiteral("effective_sample_size_claim"), false},
+            {QStringLiteral("independence_claim"), false},
+            {QStringLiteral("model_or_prediction"), false},
+            {QStringLiteral("pregame_feature_claim"), false},
+            {QStringLiteral("style_intent_skill_quality_or_causality"), false},
+        }},
+        {QStringLiteral("descriptive_metric_registry_id"), QStringLiteral(
+            "chess-board-structure-descriptive-metric-registry-v1:f7d33c22e381a574ea1f0a29ebbf5eae5c7da332b9b8fa2d500b2f3e2585676e")},
+        {QStringLiteral("display_schema"), QStringLiteral(
+            "chess-board-structure-player-statistics-display-v1")},
+        {QStringLiteral("global_statistics"), QJsonObject {
+            {QStringLiteral("black_win_game_count"), 0},
+            {QStringLiteral("distinct_player_count"), 2},
+            {QStringLiteral("draw_game_count"), 0},
+            {QStringLiteral("game_count"), 1},
+            {QStringLiteral("metrics"), structureGlobalMetrics()},
+            {QStringLiteral("player_game_count"), 2},
+            {QStringLiteral("white_win_game_count"), 1},
+        }},
+        {QStringLiteral("players"), QJsonArray {
+            structurePlayer(QStringLiteral("alpha"), true),
+            structurePlayer(QStringLiteral("beta"), false),
+        }},
+        {QStringLiteral("source_plan_v2_id"), QStringLiteral("chess-cohort-source-chunk-plan-v2:fixture")},
+    };
+    return QJsonDocument(root).toJson(QJsonDocument::Compact) + '\n';
+}
+
 QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = false)
 {
     const QString path = directory->filePath(QStringLiteral("player-explorer.sqlite3"));
@@ -428,6 +577,8 @@ private slots:
     void loadsExplorerAndAppliesSharedFilters();
     void exposesExactGameBreakdownAndActivation();
     void loadsPartialPersistedEngineEvidenceWithoutFabricatingMissingGame();
+    void loadsBoardStructureAlongsideExplorerAndSwitchesPerspective();
+    void rejectsBrokenBoardStructureWithoutReplacingState();
     void loadsRealSnapshotWhenProvided();
 };
 
@@ -448,12 +599,13 @@ void TestUnitPlayerStatisticsPanel::loadsGlobalSummaryAndConservesRows()
     const QTabWidget *tabs = panel.findChild<QTabWidget *>(
         QStringLiteral("playerStatisticsDetailTabs"));
     QVERIFY(tabs != nullptr);
-    QCOMPARE(tabs->count(), 5);
+    QCOMPARE(tabs->count(), 6);
     QCOMPARE(tabs->tabText(0), QStringLiteral("Overview"));
     QCOMPARE(tabs->tabText(1), QStringLiteral("Games"));
     QCOMPARE(tabs->tabText(2), QStringLiteral("Openings"));
     QCOMPARE(tabs->tabText(3), QStringLiteral("Opponents"));
     QCOMPARE(tabs->tabText(4), QStringLiteral("Longest Moves"));
+    QCOMPARE(tabs->tabText(5), QStringLiteral("Board Structure"));
     QCOMPARE(panel.phaseRowCount(), 3);
     QCOMPARE(panel.decisionContextRowCount(), 4);
     QCOMPARE(panel.opponentRowCount(), 0);
@@ -640,6 +792,82 @@ void TestUnitPlayerStatisticsPanel::loadsPartialPersistedEngineEvidenceWithoutFa
     QVERIFY(std::all_of(missing->moves.cbegin(), missing->moves.cend(), [](const PlayerStatisticsGameMove &move) {
         return !move.engineEvidence.has_value();
     }));
+}
+
+void TestUnitPlayerStatisticsPanel::loadsBoardStructureAlongsideExplorerAndSwitchesPerspective()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = createExplorerDatabase(&directory);
+    QVERIFY(!path.isEmpty());
+    PlayerStatisticsPanel panel;
+    QString error;
+    QVERIFY2(panel.loadExplorerDatabase(path, &error), qPrintable(error));
+    QCOMPARE(panel.selectedPlayerId(), QStringLiteral("alpha"));
+    const int explorerGames = panel.gameRowCount();
+
+    QVERIFY2(panel.loadBoardStructureSnapshot(structureSnapshotBytes(), &error), qPrintable(error));
+    QVERIFY(panel.hasBoardStructureSnapshot());
+    QCOMPARE(panel.gameRowCount(), explorerGames);
+    QCOMPARE(panel.boardStructureMetricRowCount(), 9);
+    QCOMPARE(panel.boardStructureCastlingRowCount(), 3);
+    const QLabel *summary = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsStructureSummary"));
+    QVERIFY(summary != nullptr);
+    QVERIFY(summary->text().contains(QStringLiteral("alpha · 1 games")));
+    const QTableWidget *metrics = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureTable"));
+    QVERIFY(metrics != nullptr);
+    QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("100.0%")));
+    QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("1 obs")));
+    QVERIFY(metrics->item(8, 1)->toolTip().contains(QStringLiteral("not engine evaluation"), Qt::CaseInsensitive));
+
+    QVERIFY(panel.selectPlayer(QStringLiteral("beta")));
+    QVERIFY(summary->text().contains(QStringLiteral("beta · 1 games")));
+    QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("0.0%")));
+
+    QPushButton *structureButton = nullptr;
+    for (QPushButton *button : panel.findChildren<QPushButton *>()) {
+        if (button->text() == QStringLiteral("Replace Structure Stats")) {
+            structureButton = button;
+            break;
+        }
+    }
+    QVERIFY(structureButton != nullptr);
+    QSignalSpy spy(&panel, &PlayerStatisticsPanel::openBoardStructureSnapshotRequested);
+    structureButton->click();
+    QCOMPARE(spy.count(), 1);
+}
+
+void TestUnitPlayerStatisticsPanel::rejectsBrokenBoardStructureWithoutReplacingState()
+{
+    PlayerStatisticsPanel panel;
+    QString error;
+    QVERIFY2(panel.loadBoardStructureSnapshot(structureSnapshotBytes(), &error), qPrintable(error));
+    const QTableWidget *metrics = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureTable"));
+    QVERIFY(metrics != nullptr);
+    const QString stableCell = metrics->item(0, 1)->text();
+
+    QJsonObject wrongSchema = QJsonDocument::fromJson(structureSnapshotBytes()).object();
+    wrongSchema.insert(QStringLiteral("display_schema"), QStringLiteral("unsupported"));
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(wrongSchema).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("not a supported")));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject broken = QJsonDocument::fromJson(structureSnapshotBytes()).object();
+    QJsonObject global = broken.value(QStringLiteral("global_statistics")).toObject();
+    QJsonArray rows = global.value(QStringLiteral("metrics")).toArray();
+    QJsonObject first = rows.at(0).toObject();
+    first.insert(QStringLiteral("denominator_sum"), 1);
+    rows.replace(0, first);
+    global.insert(QStringLiteral("metrics"), rows);
+    broken.insert(QStringLiteral("global_statistics"), global);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(broken).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("BoardStructure"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
 }
 
 void TestUnitPlayerStatisticsPanel::loadsRealSnapshotWhenProvided()

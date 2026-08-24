@@ -478,6 +478,248 @@ bool validateSnapshot(
     return true;
 }
 
+QStringList boardStructureMetricCodes()
+{
+    static const QStringList codes = [] {
+        QStringList output;
+        const QStringList phases {
+            QStringLiteral("all"),
+            QStringLiteral("opening"),
+            QStringLiteral("middlegame"),
+            QStringLiteral("endgame"),
+        };
+        const QStringList predicates {
+            QStringLiteral("both_queens_absent"),
+            QStringLiteral("own_passed_pawn_present"),
+            QStringLiteral("own_isolated_pawn_present"),
+            QStringLiteral("own_doubled_pawn_excess_present"),
+            QStringLiteral("own_two_or_more_bishops_present"),
+        };
+        for (const QString &predicate : predicates) {
+            for (const QString &phase : phases) {
+                output.append(QStringLiteral("binary.%1.%2.share").arg(predicate, phase));
+            }
+        }
+        for (const QString &state : {
+                 QStringLiteral("ahead"),
+                 QStringLiteral("equal"),
+                 QStringLiteral("behind"),
+             }) {
+            for (const QString &phase : phases) {
+                output.append(QStringLiteral("material_relation.%1.%2.share").arg(state, phase));
+            }
+        }
+        for (const QString &phase : phases) {
+            output.append(QStringLiteral("material_delta_mean.%1").arg(phase));
+        }
+        for (const QString &category : {
+                 QStringLiteral("any"),
+                 QStringLiteral("kingside"),
+                 QStringLiteral("queenside"),
+             }) {
+            output.append(QStringLiteral("focal_castling.%1").arg(category));
+        }
+        return output;
+    }();
+    return codes;
+}
+
+qint64 roundedSignedPpm(qint64 numerator, qint64 denominator)
+{
+    const qint64 magnitude = (std::abs(numerator) * kPpm + denominator / 2)
+        / denominator;
+    return numerator < 0 ? -magnitude : magnitude;
+}
+
+bool validateBoardStructureMetrics(
+    const QJsonArray &metrics,
+    qint64 expectedPlayerGames,
+    QString *errorMessage)
+{
+    const QStringList codes = boardStructureMetricCodes();
+    if (metrics.size() != codes.size()) {
+        setError(errorMessage, QStringLiteral("BoardStructure metrics must contain the exact 39-cell registry"));
+        return false;
+    }
+    for (qsizetype index = 0; index < metrics.size(); ++index) {
+        if (!metrics.at(index).isObject()) {
+            setError(errorMessage, QStringLiteral("BoardStructure metric row is malformed"));
+            return false;
+        }
+        const QJsonObject metric = metrics.at(index).toObject();
+        const QString code = metric.value(QStringLiteral("metric_code")).toString();
+        const QString status = metric.value(QStringLiteral("aggregate_status")).toString();
+        const bool signedMaterial = code.startsWith(QStringLiteral("material_delta_mean."));
+        qint64 observed = 0;
+        qint64 notApplicable = 0;
+        qint64 denominator = 0;
+        qint64 paired = 0;
+        if (code != codes.at(index)
+            || !exactInteger(metric.value(QStringLiteral("observed_player_game_count")), 0, expectedPlayerGames, &observed)
+            || !exactInteger(metric.value(QStringLiteral("not_applicable_player_game_count")), 0, expectedPlayerGames, &notApplicable)
+            || observed + notApplicable != expectedPlayerGames
+            || !exactInteger(metric.value(QStringLiteral("denominator_sum")), 0, kMaximumDecisions, &denominator)
+            || !exactInteger(metric.value(QStringLiteral("paired_player_game_count")), 0, expectedPlayerGames, &paired)) {
+            setError(errorMessage, QStringLiteral("BoardStructure metric counts do not conserve"));
+            return false;
+        }
+
+        const QJsonValue numeratorValue = metric.value(QStringLiteral("numerator_sum"));
+        const QJsonValue aggregateValue = metric.value(QStringLiteral("aggregate_value_ppm"));
+        if (status == QStringLiteral("observed")) {
+            qint64 numerator = 0;
+            qint64 aggregate = 0;
+            // Promotions can legitimately exceed the starting 39-point material total.
+            const qint64 minimumNumerator = signedMaterial ? -128 * denominator : 0;
+            const qint64 maximumNumerator = signedMaterial ? 128 * denominator : denominator;
+            if (observed == 0 || denominator == 0
+                || !exactInteger(numeratorValue, minimumNumerator, maximumNumerator, &numerator)
+                || !exactInteger(aggregateValue, -128 * kPpm, 128 * kPpm, &aggregate)
+                || aggregate != roundedSignedPpm(numerator, denominator)) {
+                setError(errorMessage, QStringLiteral("observed BoardStructure metric value is inconsistent"));
+                return false;
+            }
+        } else if (status == QStringLiteral("not_applicable")) {
+            if (observed != 0 || denominator != 0 || !numeratorValue.isNull()
+                || !aggregateValue.isNull()) {
+                setError(errorMessage, QStringLiteral("not-applicable BoardStructure metric became numeric"));
+                return false;
+            }
+        } else {
+            setError(errorMessage, QStringLiteral("BoardStructure metric status is unsupported"));
+            return false;
+        }
+
+        const QJsonValue pairedMean = metric.value(
+            QStringLiteral("mean_player_minus_opponent_ppm"));
+        qint64 ignoredMean = 0;
+        if ((paired == 0 && !pairedMean.isNull())
+            || (paired > 0
+                && !exactInteger(pairedMean, -256 * kPpm, 256 * kPpm, &ignoredMean))) {
+            setError(errorMessage, QStringLiteral("BoardStructure paired comparison is inconsistent"));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validateBoardStructurePlayer(
+    const QJsonObject &player,
+    qint64 globalGames,
+    QString *errorMessage)
+{
+    qint64 games = 0;
+    qint64 white = 0;
+    qint64 black = 0;
+    qint64 wins = 0;
+    qint64 draws = 0;
+    qint64 losses = 0;
+    qint64 opponents = 0;
+    qint64 score = 0;
+    if (!boundedText(player.value(QStringLiteral("player_id")), 128)
+        || !exactInteger(player.value(QStringLiteral("game_count")), 1, globalGames, &games)
+        || !exactInteger(player.value(QStringLiteral("white_game_count")), 0, games, &white)
+        || !exactInteger(player.value(QStringLiteral("black_game_count")), 0, games, &black)
+        || white + black != games
+        || !exactInteger(player.value(QStringLiteral("win_count")), 0, games, &wins)
+        || !exactInteger(player.value(QStringLiteral("draw_count")), 0, games, &draws)
+        || !exactInteger(player.value(QStringLiteral("loss_count")), 0, games, &losses)
+        || wins + draws + losses != games
+        || !exactInteger(player.value(QStringLiteral("score_rate_ppm")), 0, kPpm, &score)
+        || score != roundedSignedPpm(2 * wins + draws, 2 * games)
+        || !exactInteger(player.value(QStringLiteral("distinct_opponent_count")), 1, games, &opponents)
+        || !validateBoardStructureMetrics(
+            player.value(QStringLiteral("metrics")).toArray(),
+            games,
+            errorMessage)) {
+        setError(errorMessage, QStringLiteral("BoardStructure player summary is invalid"));
+        return false;
+    }
+    return true;
+}
+
+bool validateBoardStructureSnapshot(
+    const QJsonObject &root,
+    QHash<QString, QJsonObject> *playersById,
+    QString *errorMessage)
+{
+    if (root.value(QStringLiteral("display_schema")).toString()
+            != QStringLiteral("chess-board-structure-player-statistics-display-v1")
+        || root.value(QStringLiteral("descriptive_metric_registry_id")).toString()
+            != QStringLiteral("chess-board-structure-descriptive-metric-registry-v1:f7d33c22e381a574ea1f0a29ebbf5eae5c7da332b9b8fa2d500b2f3e2585676e")
+        || !boundedText(root.value(QStringLiteral("source_plan_v2_id")))
+        || !root.value(QStringLiteral("source_plan_v2_id")).toString().startsWith(
+            QStringLiteral("chess-cohort-source-chunk-plan-v2:"))) {
+        setError(errorMessage, QStringLiteral("file is not a supported BoardStructure player snapshot"));
+        return false;
+    }
+    const QJsonObject claim = root.value(QStringLiteral("claim_boundary")).toObject();
+    if (claim.value(QStringLiteral("board_metrics_are_postgame_mechanical_descriptions")).toBool() != true
+        || claim.value(QStringLiteral("descriptive_outcomes_only")).toBool() != true
+        || !exactFalse(claim, QStringLiteral("chunk_membership_defines_history"))
+        || !exactFalse(claim, QStringLiteral("effective_sample_size_claim"))
+        || !exactFalse(claim, QStringLiteral("independence_claim"))
+        || !exactFalse(claim, QStringLiteral("model_or_prediction"))
+        || !exactFalse(claim, QStringLiteral("pregame_feature_claim"))
+        || !exactFalse(claim, QStringLiteral("style_intent_skill_quality_or_causality"))) {
+        setError(errorMessage, QStringLiteral("BoardStructure snapshot claim boundary is unsupported"));
+        return false;
+    }
+
+    const QJsonObject global = root.value(QStringLiteral("global_statistics")).toObject();
+    qint64 games = 0;
+    qint64 playerGames = 0;
+    qint64 players = 0;
+    qint64 whiteWins = 0;
+    qint64 draws = 0;
+    qint64 blackWins = 0;
+    if (!exactInteger(global.value(QStringLiteral("game_count")), 1, 5'000, &games)
+        || !exactInteger(global.value(QStringLiteral("player_game_count")), 2, 10'000, &playerGames)
+        || playerGames != 2 * games
+        || !exactInteger(global.value(QStringLiteral("distinct_player_count")), 2, kMaximumPlayers, &players)
+        || !exactInteger(global.value(QStringLiteral("white_win_game_count")), 0, games, &whiteWins)
+        || !exactInteger(global.value(QStringLiteral("draw_game_count")), 0, games, &draws)
+        || !exactInteger(global.value(QStringLiteral("black_win_game_count")), 0, games, &blackWins)
+        || whiteWins + draws + blackWins != games
+        || !validateBoardStructureMetrics(
+            global.value(QStringLiteral("metrics")).toArray(),
+            playerGames,
+            errorMessage)) {
+        setError(errorMessage, QStringLiteral("global BoardStructure summary is invalid"));
+        return false;
+    }
+
+    const QJsonArray playerRows = root.value(QStringLiteral("players")).toArray();
+    if (playerRows.size() != players) {
+        setError(errorMessage, QStringLiteral("BoardStructure player population is incomplete"));
+        return false;
+    }
+    QHash<QString, QJsonObject> parsedPlayers;
+    QString previousPlayer;
+    qint64 playerGameTotal = 0;
+    for (const QJsonValue &value : playerRows) {
+        const QJsonObject player = value.toObject();
+        const QString playerId = player.value(QStringLiteral("player_id")).toString();
+        if ((!previousPlayer.isEmpty() && playerId <= previousPlayer)
+            || parsedPlayers.contains(playerId)
+            || !validateBoardStructurePlayer(player, games, errorMessage)) {
+            setError(errorMessage, QStringLiteral("BoardStructure player rows are duplicated, unordered, or invalid"));
+            return false;
+        }
+        previousPlayer = playerId;
+        parsedPlayers.insert(playerId, player);
+        const qint64 playerGameCount = static_cast<qint64>(
+            player.value(QStringLiteral("game_count")).toDouble());
+        playerGameTotal += playerGameCount;
+    }
+    if (playerGameTotal != playerGames) {
+        setError(errorMessage, QStringLiteral("BoardStructure player games do not conserve"));
+        return false;
+    }
+    *playersById = parsedPlayers;
+    return true;
+}
+
 QString durationText(const QJsonValue &value)
 {
     if (!value.isDouble()) {
@@ -500,6 +742,94 @@ QString coverageText(const QJsonValue &value)
 QString numberText(qint64 value)
 {
     return QLocale().toString(value);
+}
+
+QJsonObject boardStructureMetric(const QJsonArray &metrics, const QString &code)
+{
+    for (const QJsonValue &value : metrics) {
+        const QJsonObject metric = value.toObject();
+        if (metric.value(QStringLiteral("metric_code")).toString() == code) {
+            return metric;
+        }
+    }
+    return {};
+}
+
+QString signedFixedPointText(qint64 value, double divisor, const QString &suffix)
+{
+    const double converted = static_cast<double>(value) / divisor;
+    const QString sign = converted > 0.0 ? QStringLiteral("+") : QString();
+    return sign + QString::number(converted, 'f', suffix.isEmpty() ? 2 : 1) + suffix;
+}
+
+QString boardStructureValueText(const QJsonObject &metric)
+{
+    const QJsonValue value = metric.value(QStringLiteral("aggregate_value_ppm"));
+    if (!value.isDouble()) {
+        return QStringLiteral("N/A");
+    }
+    const qint64 ppm = static_cast<qint64>(value.toDouble());
+    if (metric.value(QStringLiteral("metric_code")).toString().startsWith(
+            QStringLiteral("material_delta_mean."))) {
+        return signedFixedPointText(ppm, static_cast<double>(kPpm), QString());
+    }
+    return QStringLiteral("%1%").arg(
+        QString::number(static_cast<double>(ppm) / 10'000.0, 'f', 1));
+}
+
+QString boardStructurePairedText(const QJsonObject &metric)
+{
+    const QJsonValue value = metric.value(
+        QStringLiteral("mean_player_minus_opponent_ppm"));
+    if (!value.isDouble()) {
+        return QStringLiteral("N/A");
+    }
+    const qint64 ppm = static_cast<qint64>(value.toDouble());
+    if (metric.value(QStringLiteral("metric_code")).toString().startsWith(
+            QStringLiteral("material_delta_mean."))) {
+        return signedFixedPointText(ppm, static_cast<double>(kPpm), QString());
+    }
+    return signedFixedPointText(ppm, 10'000.0, QStringLiteral(" pp"));
+}
+
+QString boardStructureCellText(const QJsonObject &metric)
+{
+    const qint64 observed = static_cast<qint64>(metric.value(
+        QStringLiteral("observed_player_game_count")).toDouble());
+    const qint64 notApplicable = static_cast<qint64>(metric.value(
+        QStringLiteral("not_applicable_player_game_count")).toDouble());
+    return QStringLiteral("%1\n%2 obs · %3 N/A")
+        .arg(boardStructureValueText(metric))
+        .arg(numberText(observed))
+        .arg(numberText(notApplicable));
+}
+
+QString boardStructureTooltip(const QJsonObject &metric)
+{
+    const QJsonValue numerator = metric.value(QStringLiteral("numerator_sum"));
+    const QString numeratorText = numerator.isDouble()
+        ? numberText(static_cast<qint64>(numerator.toDouble()))
+        : QStringLiteral("N/A");
+    QString output = QStringLiteral(
+        "%1\nNumerator %2 · denominator %3\nObserved rows %4 · N/A rows %5\n"
+        "Paired rows %6 · mean player minus opponent %7")
+        .arg(metric.value(QStringLiteral("metric_code")).toString())
+        .arg(numeratorText)
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("denominator_sum")).toDouble())))
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("observed_player_game_count")).toDouble())))
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("not_applicable_player_game_count")).toDouble())))
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("paired_player_game_count")).toDouble())))
+        .arg(boardStructurePairedText(metric));
+    if (metric.value(QStringLiteral("metric_code")).toString().startsWith(
+            QStringLiteral("material_delta_mean."))) {
+        output += QStringLiteral(
+            "\nFixed 1/3/3/5/9 material units; not engine evaluation or winning chance.");
+    }
+    return output;
 }
 
 QString phaseText(QString value)
@@ -770,6 +1100,7 @@ QString explorerFilterSql()
 PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     : QGroupBox(QStringLiteral("player statistics"), parent)
     , m_openButton(new QPushButton(QStringLiteral("Open Player Statistics"), this))
+    , m_openStructureButton(new QPushButton(QStringLiteral("Open Structure Stats"), this))
     , m_playerCombo(new QComboBox(this))
     , m_explorerFilterPanel(new QWidget(this))
     , m_fromDateEdit(new QDateEdit(this))
@@ -791,6 +1122,8 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_p90MetricLabel(nullptr)
     , m_pressureLabel(new QLabel(this))
     , m_opponentHintLabel(new QLabel(this))
+    , m_structureStatusLabel(new QLabel(this))
+    , m_structureSummaryLabel(new QLabel(this))
     , m_detailTabs(new QTabWidget(this))
     , m_phaseTable(new QTableWidget(this))
     , m_decisionContextTable(new QTableWidget(this))
@@ -798,12 +1131,15 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_openingTable(new QTableWidget(this))
     , m_opponentTable(new QTableWidget(this))
     , m_longestTable(new QTableWidget(this))
+    , m_structureMetricTable(new QTableWidget(this))
+    , m_structureCastlingTable(new QTableWidget(this))
     , m_updatingExplorerFilters(false)
 {
     setMinimumWidth(520);
     auto *layout = new QVBoxLayout(this);
     auto *actions = new QHBoxLayout();
     actions->addWidget(m_openButton);
+    actions->addWidget(m_openStructureButton);
     actions->addWidget(new QLabel(QStringLiteral("Player"), this));
     actions->addWidget(m_playerCombo, 1);
     layout->addLayout(actions);
@@ -911,6 +1247,15 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         {QStringLiteral("Elapsed"), QStringLiteral("UTC"), QStringLiteral("Opponent"),
          QStringLiteral("Color"), QStringLiteral("Move"), QStringLiteral("Phase"),
          QStringLiteral("Clock before")});
+    configureTable(
+        m_structureMetricTable,
+        {QStringLiteral("Measure"), QStringLiteral("Overall"),
+         QStringLiteral("Opening"), QStringLiteral("Middlegame"),
+         QStringLiteral("Endgame")});
+    configureTable(
+        m_structureCastlingTable,
+        {QStringLiteral("Castling"), QStringLiteral("Rate"),
+         QStringLiteral("Observed / N/A"), QStringLiteral("Paired vs opponent")});
     for (QTableWidget *table : {m_phaseTable, m_decisionContextTable}) {
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -1002,15 +1347,59 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     longestLayout->addWidget(longestHint);
     longestLayout->addWidget(m_longestTable, 1);
 
+    auto *structurePage = new QWidget(m_detailTabs);
+    auto *structureLayout = new QVBoxLayout(structurePage);
+    structureLayout->setContentsMargins(8, 8, 8, 8);
+    structureLayout->setSpacing(8);
+    for (QLabel *label : {m_structureStatusLabel, m_structureSummaryLabel}) {
+        label->setTextFormat(Qt::PlainText);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        label->setWordWrap(true);
+        structureLayout->addWidget(label);
+    }
+    m_structureStatusLabel->setObjectName(QStringLiteral("playerStatisticsStructureStatus"));
+    m_structureSummaryLabel->setObjectName(QStringLiteral("playerStatisticsStructureSummary"));
+    auto *structureHint = new QLabel(
+        QStringLiteral(
+            "Display-only mechanical postgame descriptions labeled for the complete target corpus; "
+            "ParlAWL does not authenticate the snapshot. Explorer filters do not alter this tab. "
+            "Hover a cell for its numerator, denominator, observability, and same-game paired comparison."),
+        structurePage);
+    structureHint->setTextFormat(Qt::PlainText);
+    structureHint->setWordWrap(true);
+    structureLayout->addWidget(structureHint);
+    m_structureMetricTable->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureTable"));
+    m_structureMetricTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    for (int column = 1; column < m_structureMetricTable->columnCount(); ++column) {
+        m_structureMetricTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::Stretch);
+    }
+    m_structureMetricTable->verticalHeader()->setDefaultSectionSize(46);
+    structureLayout->addWidget(m_structureMetricTable, 1);
+    m_structureCastlingTable->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureCastlingTable"));
+    m_structureCastlingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_structureCastlingTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    m_structureCastlingTable->setMaximumHeight(145);
+    structureLayout->addWidget(m_structureCastlingTable);
+
     m_detailTabs->setObjectName(QStringLiteral("playerStatisticsDetailTabs"));
     m_detailTabs->addTab(overviewPage, QStringLiteral("Overview"));
     m_detailTabs->addTab(gamesPage, QStringLiteral("Games"));
     m_detailTabs->addTab(openingsPage, QStringLiteral("Openings"));
     m_detailTabs->addTab(opponentPage, QStringLiteral("Opponents"));
     m_detailTabs->addTab(longestPage, QStringLiteral("Longest Moves"));
+    m_detailTabs->addTab(structurePage, QStringLiteral("Board Structure"));
     layout->addWidget(m_detailTabs, 1);
 
     connect(m_openButton, &QPushButton::clicked, this, &PlayerStatisticsPanel::openSnapshotRequested);
+    connect(
+        m_openStructureButton,
+        &QPushButton::clicked,
+        this,
+        &PlayerStatisticsPanel::openBoardStructureSnapshotRequested);
     connect(m_gameTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
         const QTableWidgetItem *item = m_gameTable->item(row, 0);
         if (item == nullptr) {
@@ -1411,8 +1800,9 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
     m_explorerMetadata = metadata;
     database = QSqlDatabase();
     m_explorerFilterPanel->setVisible(true);
-    m_detailTabs->setTabEnabled(1, true);
-    m_detailTabs->setTabEnabled(2, true);
+    for (int index = 0; index < 5; ++index) {
+        m_detailTabs->setTabEnabled(index, true);
+    }
     populateExplorerPlayers(preferredPlayer);
     resetExplorerFilters();
     populateExplorerDependentFilters();
@@ -1443,8 +1833,11 @@ bool PlayerStatisticsPanel::loadSnapshot(const QByteArray &raw, QString *errorMe
     m_snapshot = root;
     m_playersById = playersById;
     m_explorerFilterPanel->setVisible(false);
+    m_detailTabs->setTabEnabled(0, true);
     m_detailTabs->setTabEnabled(1, false);
     m_detailTabs->setTabEnabled(2, false);
+    m_detailTabs->setTabEnabled(3, true);
+    m_detailTabs->setTabEnabled(4, true);
     m_gameTable->setRowCount(0);
     m_replayGameButton->setEnabled(false);
     m_openingTable->setRowCount(0);
@@ -1463,11 +1856,64 @@ bool PlayerStatisticsPanel::loadSnapshot(const QByteArray &raw, QString *errorMe
     return true;
 }
 
+bool PlayerStatisticsPanel::loadBoardStructureSnapshot(
+    const QByteArray &raw,
+    QString *errorMessage)
+{
+    if (raw.isEmpty() || raw.size() > kMaximumSnapshotBytes) {
+        setError(errorMessage, QStringLiteral("BoardStructure snapshot is empty or exceeds 64 MiB"));
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(raw, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        setError(errorMessage, QStringLiteral("BoardStructure snapshot is not valid JSON"));
+        return false;
+    }
+    QHash<QString, QJsonObject> playersById;
+    const QJsonObject root = document.object();
+    if (!validateBoardStructureSnapshot(root, &playersById, errorMessage)) {
+        return false;
+    }
+
+    const bool primaryDataLoaded = !m_snapshot.isEmpty()
+        || !m_explorerConnectionName.isEmpty();
+    m_structureSnapshot = root;
+    m_structurePlayersById = playersById;
+    if (!primaryDataLoaded) {
+        m_playerCombo->blockSignals(true);
+        m_playerCombo->clear();
+        m_playerCombo->addItem(QStringLiteral("All players"), QString());
+        QStringList ids = m_structurePlayersById.keys();
+        std::sort(ids.begin(), ids.end());
+        for (const QString &playerId : ids) {
+            m_playerCombo->addItem(playerId, playerId);
+        }
+        m_playerCombo->setCurrentIndex(0);
+        m_playerCombo->setEnabled(true);
+        m_playerCombo->blockSignals(false);
+        for (int index = 0; index < m_detailTabs->count() - 1; ++index) {
+            m_detailTabs->setTabEnabled(index, false);
+        }
+        m_statusLabel->setText(
+            QStringLiteral("Display-only BoardStructure snapshot; no source replay or engine runs in ParlAWL."));
+        m_summaryLabel->setText(
+            QStringLiteral("Use the Board Structure tab to inspect global or per-player mechanical descriptions."));
+    }
+    m_openStructureButton->setText(QStringLiteral("Replace Structure Stats"));
+    m_detailTabs->setTabEnabled(m_detailTabs->count() - 1, true);
+    m_detailTabs->setCurrentIndex(m_detailTabs->count() - 1);
+    rebuildBoardStructureView();
+    return true;
+}
+
 void PlayerStatisticsPanel::clearSnapshot()
 {
     closeExplorerDatabase();
     m_snapshot = {};
     m_playersById.clear();
+    m_structureSnapshot = {};
+    m_structurePlayersById.clear();
     m_explorerFilterPanel->setVisible(false);
     m_detailTabs->setTabEnabled(1, false);
     m_detailTabs->setTabEnabled(2, false);
@@ -1475,6 +1921,7 @@ void PlayerStatisticsPanel::clearSnapshot()
     m_playerCombo->addItem(QStringLiteral("No snapshot loaded"), QString());
     m_playerCombo->setEnabled(false);
     m_openButton->setText(QStringLiteral("Open Snapshot"));
+    m_openStructureButton->setText(QStringLiteral("Open Structure Stats"));
     m_statusLabel->setText(
         QStringLiteral("Display-only viewer. ParlAWL does not authenticate or rebuild source evidence."));
     m_statusLabel->setToolTip(QString());
@@ -1501,6 +1948,13 @@ void PlayerStatisticsPanel::clearSnapshot()
     m_openingTable->setRowCount(0);
     m_opponentTable->setRowCount(0);
     m_longestTable->setRowCount(0);
+    m_structureStatusLabel->setText(
+        QStringLiteral("No BoardStructure player statistics loaded."));
+    m_structureSummaryLabel->setText(
+        QStringLiteral("This tab reports descriptive mechanical structure only, never engine evaluation or pregame prediction."));
+    m_structureMetricTable->setRowCount(0);
+    m_structureCastlingTable->setRowCount(0);
+    m_detailTabs->setTabEnabled(m_detailTabs->count() - 1, false);
 }
 
 void PlayerStatisticsPanel::populateExplorerPlayers(const QString &preferredPlayerId)
@@ -1970,6 +2424,7 @@ void PlayerStatisticsPanel::rebuildExplorerView()
                 .arg(numberText(summary.black))));
     }
     m_openingTable->setSortingEnabled(true);
+    rebuildBoardStructureView();
 }
 
 bool PlayerStatisticsPanel::selectPlayer(const QString &playerId)
@@ -1999,7 +2454,13 @@ void PlayerStatisticsPanel::selectTypedPlayer()
 
 bool PlayerStatisticsPanel::hasSnapshot() const
 {
-    return !m_snapshot.isEmpty() || !m_explorerConnectionName.isEmpty();
+    return !m_snapshot.isEmpty() || !m_explorerConnectionName.isEmpty()
+        || !m_structureSnapshot.isEmpty();
+}
+
+bool PlayerStatisticsPanel::hasBoardStructureSnapshot() const
+{
+    return !m_structureSnapshot.isEmpty();
 }
 
 QString PlayerStatisticsPanel::selectedPlayerId() const
@@ -2025,7 +2486,9 @@ QStringList PlayerStatisticsPanel::playerIds() const
         std::sort(ids.begin(), ids.end());
         return ids;
     }
-    QStringList ids = m_playersById.keys();
+    QStringList ids = m_playersById.isEmpty()
+        ? m_structurePlayersById.keys()
+        : m_playersById.keys();
     std::sort(ids.begin(), ids.end());
     return ids;
 }
@@ -2058,6 +2521,16 @@ int PlayerStatisticsPanel::gameRowCount() const
 int PlayerStatisticsPanel::openingRowCount() const
 {
     return m_openingTable->rowCount();
+}
+
+int PlayerStatisticsPanel::boardStructureMetricRowCount() const
+{
+    return m_structureMetricTable->rowCount();
+}
+
+int PlayerStatisticsPanel::boardStructureCastlingRowCount() const
+{
+    return m_structureCastlingTable->rowCount();
 }
 
 std::optional<PlayerStatisticsGameBreakdown> PlayerStatisticsPanel::gameBreakdown(
@@ -2390,6 +2863,152 @@ std::optional<PlayerStatisticsGameBreakdown> PlayerStatisticsPanel::gameBreakdow
     return output;
 }
 
+void PlayerStatisticsPanel::rebuildBoardStructureView()
+{
+    if (m_structureSnapshot.isEmpty()) {
+        m_structureStatusLabel->setText(
+            QStringLiteral("No BoardStructure player statistics loaded."));
+        m_structureMetricTable->setRowCount(0);
+        m_structureCastlingTable->setRowCount(0);
+        return;
+    }
+    const QString playerId = selectedPlayerId();
+    const bool globalView = playerId.isEmpty();
+    if (!globalView && !m_structurePlayersById.contains(playerId)) {
+        m_structureStatusLabel->setText(
+            QStringLiteral("No BoardStructure summary is available for %1.").arg(playerId));
+        m_structureSummaryLabel->setText(
+            QStringLiteral("The player selector may contain players from a different loaded explorer or timing snapshot."));
+        m_structureMetricTable->setRowCount(0);
+        m_structureCastlingTable->setRowCount(0);
+        return;
+    }
+    const QJsonObject view = globalView
+        ? m_structureSnapshot.value(QStringLiteral("global_statistics")).toObject()
+        : m_structurePlayersById.value(playerId);
+    const QJsonArray metrics = view.value(QStringLiteral("metrics")).toArray();
+    const QString sourcePlan = m_structureSnapshot.value(
+        QStringLiteral("source_plan_v2_id")).toString();
+    m_structureStatusLabel->setText(
+        QStringLiteral("Display snapshot · source %1 · not source-authenticated · explorer filters do not alter these values")
+            .arg(compactSourcePlan(sourcePlan)));
+    m_structureStatusLabel->setToolTip(
+        sourcePlan + QLatin1Char('\n')
+        + m_structureSnapshot.value(
+            QStringLiteral("descriptive_metric_registry_id")).toString());
+    if (globalView) {
+        m_structureSummaryLabel->setText(
+            QStringLiteral("%1 games · %2 player rows · %3 players · White wins %4 · draws %5 · Black wins %6")
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("player_game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("distinct_player_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("white_win_game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("draw_game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("black_win_game_count")).toDouble()))));
+    } else {
+        m_structureSummaryLabel->setText(
+            QStringLiteral("%1 · %2 games · %3 White / %4 Black · %5-%6-%7 · score %8% · %9 opponents")
+                .arg(playerId)
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("white_game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("black_game_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("win_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("draw_count")).toDouble())))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("loss_count")).toDouble())))
+                .arg(QString::number(view.value(
+                    QStringLiteral("score_rate_ppm")).toDouble() / 10'000.0, 'f', 1))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("distinct_opponent_count")).toDouble()))));
+    }
+
+    struct StructureRow {
+        QString label;
+        QString prefix;
+        bool shareSuffix;
+    };
+    const QVector<StructureRow> rows {
+        {QStringLiteral("Queens off"), QStringLiteral("binary.both_queens_absent"), true},
+        {QStringLiteral("Passed pawn present"), QStringLiteral("binary.own_passed_pawn_present"), true},
+        {QStringLiteral("Isolated pawn present"), QStringLiteral("binary.own_isolated_pawn_present"), true},
+        {QStringLiteral("Doubled pawn present"), QStringLiteral("binary.own_doubled_pawn_excess_present"), true},
+        {QStringLiteral("Bishop pair present"), QStringLiteral("binary.own_two_or_more_bishops_present"), true},
+        {QStringLiteral("Material ahead"), QStringLiteral("material_relation.ahead"), true},
+        {QStringLiteral("Material equal"), QStringLiteral("material_relation.equal"), true},
+        {QStringLiteral("Material behind"), QStringLiteral("material_relation.behind"), true},
+        {QStringLiteral("Mean material edge"), QStringLiteral("material_delta_mean"), false},
+    };
+    const QStringList phases {
+        QStringLiteral("all"),
+        QStringLiteral("opening"),
+        QStringLiteral("middlegame"),
+        QStringLiteral("endgame"),
+    };
+    m_structureMetricTable->clearContents();
+    m_structureMetricTable->setRowCount(rows.size());
+    for (qsizetype row = 0; row < rows.size(); ++row) {
+        auto *labelItem = readOnlyItem(rows.at(row).label);
+        if (!rows.at(row).shareSuffix) {
+            labelItem->setToolTip(
+                QStringLiteral("Signed fixed 1/3/3/5/9 material units; not engine evaluation or winning chance."));
+        }
+        m_structureMetricTable->setItem(row, 0, labelItem);
+        for (qsizetype phase = 0; phase < phases.size(); ++phase) {
+            QString code = rows.at(row).prefix + QLatin1Char('.') + phases.at(phase);
+            if (rows.at(row).shareSuffix) {
+                code += QStringLiteral(".share");
+            }
+            const QJsonObject metric = boardStructureMetric(metrics, code);
+            auto *item = readOnlyItem(boardStructureCellText(metric));
+            item->setToolTip(boardStructureTooltip(metric));
+            item->setTextAlignment(Qt::AlignCenter);
+            m_structureMetricTable->setItem(row, phase + 1, item);
+        }
+    }
+
+    const QStringList castlingLabels {
+        QStringLiteral("Any castle"),
+        QStringLiteral("Kingside"),
+        QStringLiteral("Queenside"),
+    };
+    const QStringList castlingCodes {
+        QStringLiteral("focal_castling.any"),
+        QStringLiteral("focal_castling.kingside"),
+        QStringLiteral("focal_castling.queenside"),
+    };
+    m_structureCastlingTable->clearContents();
+    m_structureCastlingTable->setRowCount(castlingCodes.size());
+    for (qsizetype row = 0; row < castlingCodes.size(); ++row) {
+        const QJsonObject metric = boardStructureMetric(metrics, castlingCodes.at(row));
+        const qint64 observed = static_cast<qint64>(metric.value(
+            QStringLiteral("observed_player_game_count")).toDouble());
+        const qint64 notApplicable = static_cast<qint64>(metric.value(
+            QStringLiteral("not_applicable_player_game_count")).toDouble());
+        const QStringList values {
+            castlingLabels.at(row),
+            boardStructureValueText(metric),
+            QStringLiteral("%1 / %2").arg(numberText(observed), numberText(notApplicable)),
+            boardStructurePairedText(metric),
+        };
+        for (qsizetype column = 0; column < values.size(); ++column) {
+            auto *item = readOnlyItem(values.at(column));
+            item->setToolTip(boardStructureTooltip(metric));
+            m_structureCastlingTable->setItem(row, column, item);
+        }
+    }
+}
+
 void PlayerStatisticsPanel::rebuildView()
 {
     if (!hasSnapshot()) {
@@ -2397,6 +3016,10 @@ void PlayerStatisticsPanel::rebuildView()
     }
     if (!m_explorerConnectionName.isEmpty()) {
         rebuildExplorerView();
+        return;
+    }
+    if (m_snapshot.isEmpty()) {
+        rebuildBoardStructureView();
         return;
     }
     const QString playerId = selectedPlayerId();
@@ -2469,6 +3092,7 @@ void PlayerStatisticsPanel::rebuildView()
     populateOpponentTable(
         globalView ? QJsonArray {} : view.value(QStringLiteral("opponents")).toArray());
     populateLongestTable(view.value(QStringLiteral("longest_observed_moves")).toArray());
+    rebuildBoardStructureView();
 }
 
 void PlayerStatisticsPanel::populateDecisionContextTable(

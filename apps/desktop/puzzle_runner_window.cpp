@@ -817,6 +817,35 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
             "opened a local display-only player-statistics snapshot; ParlAWL did not authenticate or rebuild its source evidence")));
 }
 
+void PuzzleRunnerWindow::onOpenBoardStructureStatisticsRequested()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Open Board Structure Statistics"),
+        QDir::homePath(),
+        QStringLiteral("BoardStructure snapshot (*.json);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QString errorMessage;
+    QByteArray raw;
+    const bool loaded = readDirectRegularFile(
+            path,
+            64 * 1024 * 1024,
+            QStringLiteral("BoardStructure player-statistics snapshot"),
+            &raw,
+            &errorMessage)
+        && m_playerStatisticsPanel->loadBoardStructureSnapshot(raw, &errorMessage);
+    if (!loaded) {
+        QMessageBox::warning(this, QStringLiteral("Board Structure statistics"), errorMessage);
+        return;
+    }
+    m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
+    appendLogMessage(timestamped(
+        QStringLiteral(
+            "opened local display-only BoardStructure statistics; ParlAWL did not authenticate source replay or run an engine")));
+}
+
 bool PuzzleRunnerWindow::openPlayerGameExplorer(
     const QString &absoluteSqlitePath,
     const QString &playerId,
@@ -2601,6 +2630,7 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_importAssistantInferenceButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onImportAssistantInferenceRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::openReplayRequested, this, &PuzzleRunnerWindow::onOpenAnnotatedReplayRequested);
     connect(m_playerStatisticsPanel, &PlayerStatisticsPanel::openSnapshotRequested, this, &PuzzleRunnerWindow::onOpenPlayerStatisticsRequested);
+    connect(m_playerStatisticsPanel, &PlayerStatisticsPanel::openBoardStructureSnapshotRequested, this, &PuzzleRunnerWindow::onOpenBoardStructureStatisticsRequested);
     connect(m_playerStatisticsPanel, &PlayerStatisticsPanel::gameBreakdownRequested, this, &PuzzleRunnerWindow::onPlayerGameBreakdownRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::backToPuzzlesRequested, this, &PuzzleRunnerWindow::onBackToPuzzlesRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::showEngineLineRequested, this, &PuzzleRunnerWindow::onShowReplayVariationRequested);

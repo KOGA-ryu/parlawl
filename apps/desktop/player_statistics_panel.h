@@ -104,11 +104,15 @@ public:
     ~PlayerStatisticsPanel() override;
 
     bool loadSnapshot(const QByteArray &raw, QString *errorMessage = nullptr);
+    bool loadBoardStructureSnapshot(
+        const QByteArray &raw,
+        QString *errorMessage = nullptr);
     bool loadExplorerDatabase(const QString &path, QString *errorMessage = nullptr);
     void clearSnapshot();
     bool selectPlayer(const QString &playerId);
 
     [[nodiscard]] bool hasSnapshot() const;
+    [[nodiscard]] bool hasBoardStructureSnapshot() const;
     [[nodiscard]] QString selectedPlayerId() const;
     [[nodiscard]] QString summaryText() const;
     [[nodiscard]] QStringList playerIds() const;
@@ -118,12 +122,15 @@ public:
     [[nodiscard]] int longestMoveRowCount() const;
     [[nodiscard]] int gameRowCount() const;
     [[nodiscard]] int openingRowCount() const;
+    [[nodiscard]] int boardStructureMetricRowCount() const;
+    [[nodiscard]] int boardStructureCastlingRowCount() const;
     [[nodiscard]] std::optional<PlayerStatisticsGameBreakdown> gameBreakdown(
         const QString &sourceGameId,
         QString *errorMessage = nullptr) const;
 
 signals:
     void openSnapshotRequested();
+    void openBoardStructureSnapshotRequested();
     void gameBreakdownRequested(const QString &sourceGameId);
 
 private:
@@ -135,6 +142,7 @@ private:
     void bindExplorerFilters(QSqlQuery *query) const;
     void selectTypedPlayer();
     void rebuildView();
+    void rebuildBoardStructureView();
     void populatePhaseTable(const QJsonArray &groups);
     void populateDecisionContextTable(
         const QJsonArray &colors,
@@ -143,6 +151,7 @@ private:
     void populateLongestTable(const QJsonArray &moves);
 
     QPushButton *m_openButton;
+    QPushButton *m_openStructureButton;
     QComboBox *m_playerCombo;
     QWidget *m_explorerFilterPanel;
     QDateEdit *m_fromDateEdit;
@@ -164,6 +173,8 @@ private:
     QLabel *m_p90MetricLabel;
     QLabel *m_pressureLabel;
     QLabel *m_opponentHintLabel;
+    QLabel *m_structureStatusLabel;
+    QLabel *m_structureSummaryLabel;
     QTabWidget *m_detailTabs;
     QTableWidget *m_phaseTable;
     QTableWidget *m_decisionContextTable;
@@ -171,8 +182,12 @@ private:
     QTableWidget *m_openingTable;
     QTableWidget *m_opponentTable;
     QTableWidget *m_longestTable;
+    QTableWidget *m_structureMetricTable;
+    QTableWidget *m_structureCastlingTable;
     QJsonObject m_snapshot;
     QHash<QString, QJsonObject> m_playersById;
+    QJsonObject m_structureSnapshot;
+    QHash<QString, QJsonObject> m_structurePlayersById;
     QHash<QString, QString> m_explorerMetadata;
     QString m_explorerConnectionName;
     bool m_updatingExplorerFilters;

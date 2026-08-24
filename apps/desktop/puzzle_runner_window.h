@@ -89,6 +89,7 @@ private slots:
     void onExportSolveHistoryRequested();
     void onOpenAnnotatedReplayRequested();
     void onOpenPlayerStatisticsRequested();
+    void onOpenBoardStructureStatisticsRequested();
     void onPlayerGameBreakdownRequested(const QString &sourceGameId);
     void onBackToPuzzlesRequested();
     void onShowReplayVariationRequested();
