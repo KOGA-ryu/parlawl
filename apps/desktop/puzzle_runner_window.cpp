@@ -792,47 +792,92 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
     QString errorMessage;
     const bool explorer = QFileInfo(path).suffix().compare(
         QStringLiteral("sqlite3"), Qt::CaseInsensitive) == 0;
-    bool loaded = false;
     if (explorer) {
-        loaded = m_playerStatisticsPanel->loadExplorerDatabase(path, &errorMessage);
-    } else {
-        QByteArray raw;
-        loaded = readDirectRegularFile(
-                path,
-                64 * 1024 * 1024,
-                QStringLiteral("player-statistics snapshot"),
-                &raw,
-                &errorMessage)
-            && m_playerStatisticsPanel->loadSnapshot(raw, &errorMessage);
+        if (!openPlayerGameExplorer(path, QString(), QString(), &errorMessage)) {
+            QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
+        }
+        return;
     }
+
+    QByteArray raw;
+    const bool loaded = readDirectRegularFile(
+            path,
+            64 * 1024 * 1024,
+            QStringLiteral("player-statistics snapshot"),
+            &raw,
+            &errorMessage)
+        && m_playerStatisticsPanel->loadSnapshot(raw, &errorMessage);
     if (!loaded) {
         QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
         return;
     }
     m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
     appendLogMessage(timestamped(
-        explorer
-            ? QStringLiteral(
-                "opened a local read-only player-game explorer; ParlAWL ran no engine, network, or source replay")
-            : QStringLiteral(
-                "opened a local display-only player-statistics snapshot; ParlAWL did not authenticate or rebuild its source evidence")));
+        QStringLiteral(
+            "opened a local display-only player-statistics snapshot; ParlAWL did not authenticate or rebuild its source evidence")));
 }
 
-void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGameId)
+bool PuzzleRunnerWindow::openPlayerGameExplorer(
+    const QString &absoluteSqlitePath,
+    const QString &playerId,
+    const QString &sourceGameId,
+    QString *errorMessage)
 {
-    if (m_analysisInProgress) {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("game breakdown"),
-            QStringLiteral("Finish or cancel the active analysis before opening a game."));
-        return;
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    const auto fail = [errorMessage](const QString &message) {
+        if (errorMessage != nullptr) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (!sourceGameId.isEmpty() && playerId.isEmpty()) {
+        return fail(QStringLiteral("an exact player ID is required to open an exact game"));
+    }
+    if (!m_playerStatisticsPanel->loadExplorerDatabase(
+            absoluteSqlitePath,
+            errorMessage)) {
+        return false;
+    }
+    if (!playerId.isEmpty() && !m_playerStatisticsPanel->selectPlayer(playerId)) {
+        m_playerStatisticsPanel->clearSnapshot();
+        return fail(QStringLiteral("player explorer does not contain the exact requested player ID"));
     }
 
-    QString errorMessage;
-    const auto breakdown = m_playerStatisticsPanel->gameBreakdown(sourceGameId, &errorMessage);
+    m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
+    appendLogMessage(timestamped(
+        QStringLiteral(
+            "opened a local read-only player-game explorer; ParlAWL ran no engine, network, or source replay")));
+    if (!sourceGameId.isEmpty()
+        && !openPlayerGameBreakdown(sourceGameId, errorMessage)) {
+        return false;
+    }
+    return true;
+}
+
+bool PuzzleRunnerWindow::openPlayerGameBreakdown(
+    const QString &sourceGameId,
+    QString *errorMessage)
+{
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    const auto fail = [errorMessage](const QString &message) {
+        if (errorMessage != nullptr) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (m_analysisInProgress) {
+        return fail(QStringLiteral(
+            "Finish or cancel the active analysis before opening a game."));
+    }
+
+    QString details;
+    const auto breakdown = m_playerStatisticsPanel->gameBreakdown(sourceGameId, &details);
     if (!breakdown.has_value()) {
-        QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
-        return;
+        return fail(details);
     }
 
     MechanicalReplayGame mechanical;
@@ -909,19 +954,15 @@ void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGam
         mechanical.moves.append(move);
     }
 
-    const auto replay = AnnotatedReplayPack::fromMechanicalGame(mechanical, &errorMessage);
+    const auto replay = AnnotatedReplayPack::fromMechanicalGame(mechanical, &details);
     if (!replay.has_value()) {
-        QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
-        return;
+        return fail(details);
     }
     QString attemptError;
     if (!m_sessionController.finalizePuzzleAttemptForAnnotatedReplay(&attemptError)) {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("game breakdown"),
-            QStringLiteral("The game was not opened because the active solve attempt could not be preserved: %1")
+        return fail(QStringLiteral(
+            "The game was not opened because the active solve attempt could not be preserved: %1")
                 .arg(attemptError));
-        return;
     }
 
     m_annotatedReplayPack = *replay;
@@ -938,6 +979,15 @@ void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGam
         QStringLiteral("opened local read-only game breakdown %1; no engine or network process was started")
             .arg(sourceGameId)));
     refreshReplayUi();
+    return true;
+}
+
+void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGameId)
+{
+    QString errorMessage;
+    if (!openPlayerGameBreakdown(sourceGameId, &errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
+    }
 }
 
 void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()

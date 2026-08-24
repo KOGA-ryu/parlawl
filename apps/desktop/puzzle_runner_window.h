@@ -49,6 +49,11 @@ public:
     explicit PuzzleRunnerWindow(QWidget *parent = nullptr);
     ~PuzzleRunnerWindow() override;
     bool buildAnalysisInput(PuzzleRound *puzzleRound, SourceGame *sourceGame, QString *errorMessage) const;
+    bool openPlayerGameExplorer(
+        const QString &absoluteSqlitePath,
+        const QString &playerId = QString(),
+        const QString &sourceGameId = QString(),
+        QString *errorMessage = nullptr);
 
 signals:
     void analyzeCurrentPuzzleRequested();
@@ -109,6 +114,9 @@ private:
     void setAnnotatedReplayWorkspaceUi(bool enabled);
     bool loadAnnotatedReplayFile(const QString &path, QString *errorMessage = nullptr);
     bool loadValidatedPuzzlePackFile(const QString &path, QString *errorMessage = nullptr);
+    bool openPlayerGameBreakdown(
+        const QString &sourceGameId,
+        QString *errorMessage = nullptr);
     void clearSelectionIfInvalid();
     void maybeRefreshEngineReview(bool forceRefresh = false);
     void resetPuzzleScopedUiState(const QString &puzzleId);

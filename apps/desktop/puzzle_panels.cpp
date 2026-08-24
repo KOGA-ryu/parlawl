@@ -1,5 +1,7 @@
 #include "puzzle_panels.h"
 
+#include <algorithm>
+
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -209,6 +211,119 @@ QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pac
     return eco.isEmpty()
         ? QStringLiteral("Supplied opening annotation (not verified): %1").arg(name)
         : QStringLiteral("Supplied opening annotation (not verified): %1 %2").arg(eco, name);
+}
+
+QStringList mechanicalGameReportLines(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    if (!pack.persistedEngineEvidence().has_value() || pack.moves().isEmpty()) {
+        return {};
+    }
+
+    QVector<const parlawl::puzzle_runner::ReplayMove *> coveredMoves;
+    int severeCount = 0;
+    int mistakeCount = 0;
+    int inaccuracyCount = 0;
+    int missedWinCount = 0;
+    int missedMateCount = 0;
+    for (const auto &move : pack.moves()) {
+        if (!move.persistedEngineEvidence.has_value()) {
+            continue;
+        }
+        coveredMoves.append(&move);
+        const auto &engine = *move.persistedEngineEvidence;
+        if (engine.severity == QStringLiteral("severe")) {
+            ++severeCount;
+        } else if (engine.severity == QStringLiteral("mistake")) {
+            ++mistakeCount;
+        } else if (engine.severity == QStringLiteral("inaccuracy")) {
+            ++inaccuracyCount;
+        }
+        if (engine.missedWinningAdvantage) {
+            ++missedWinCount;
+        }
+        if (engine.missedForcedMate) {
+            ++missedMateCount;
+        }
+    }
+
+    const auto *firstCoveredMove = coveredMoves.first();
+    const auto *lastCoveredMove = coveredMoves.last();
+
+    std::sort(
+        coveredMoves.begin(),
+        coveredMoves.end(),
+        [](const auto *left, const auto *right) {
+            const int leftLoss = left->persistedEngineEvidence->wdlLossMillionths;
+            const int rightLoss = right->persistedEngineEvidence->wdlLossMillionths;
+            return leftLoss != rightLoss ? leftLoss > rightLoss : left->ply < right->ply;
+        });
+
+    QStringList lines;
+    lines << QStringLiteral("GAME REPORT V1 · RETROSPECTIVE MECHANICAL SUMMARY")
+          << QStringLiteral("Coverage: persisted fixed-node evidence for %1/%2 recorded moves.")
+                 .arg(coveredMoves.size())
+                 .arg(pack.moves().size())
+          << QStringLiteral("Threshold labels: Severe %1 · Mistake %2 · Inaccuracy %3")
+                 .arg(severeCount)
+                 .arg(mistakeCount)
+                 .arg(inaccuracyCount)
+          << QStringLiteral("Threshold events: lost winning advantage %1 · lost forced mate %2")
+                 .arg(missedWinCount)
+                 .arg(missedMateCount);
+
+    const auto &firstEngine = *firstCoveredMove->persistedEngineEvidence;
+    const auto &lastEngine = *lastCoveredMove->persistedEngineEvidence;
+    lines << QStringLiteral("Recorded evaluation span: %1 before the first move · %2 after the final recorded move.")
+                 .arg(
+                     engineScoreText(
+                         firstEngine.beforeScoreKind,
+                         firstEngine.beforeCentipawnsWhite,
+                         firstEngine.beforeMateForWhite),
+                     engineScoreText(
+                         lastEngine.afterScoreKind,
+                         lastEngine.afterCentipawnsWhite,
+                         lastEngine.afterMateForWhite))
+          << QStringLiteral("Largest recorded mover-expectation losses");
+
+    const qsizetype maximumMomentCount = std::min<qsizetype>(5, coveredMoves.size());
+    int emittedMomentCount = 0;
+    for (qsizetype index = 0; index < maximumMomentCount; ++index) {
+        const auto &move = *coveredMoves.at(index);
+        const auto &engine = *move.persistedEngineEvidence;
+        if (engine.wdlLossMillionths <= 0) {
+            break;
+        }
+        const QString mover = move.ply % 2 == 1
+            ? pack.whiteUsername() : pack.blackUsername();
+        const QString bestMove = engine.beforeBestMoveUci.value_or(
+            QStringLiteral("unavailable"));
+        lines << QStringLiteral(
+                     "%1. Ply %2 %3 — %4 — %5 — %6 mover expectation loss · %7 → %8 · %9 · best %10")
+                     .arg(++emittedMomentCount)
+                     .arg(move.ply)
+                     .arg(move.notation.san)
+                     .arg(mover)
+                     .arg(humanizedToken(engine.severity))
+                     .arg(percentageText(engine.wdlLossMillionths))
+                     .arg(engineScoreText(
+                         engine.beforeScoreKind,
+                         engine.beforeCentipawnsWhite,
+                         engine.beforeMateForWhite))
+                     .arg(engineScoreText(
+                         engine.afterScoreKind,
+                         engine.afterCentipawnsWhite,
+                         engine.afterMateForWhite))
+                     .arg(QStringLiteral("%1 · %2")
+                         .arg(humanizedToken(move.positionPhase), moveTimeText(move.elapsedMoveMs)))
+                     .arg(bestMove);
+    }
+    if (emittedMomentCount == 0) {
+        lines << QStringLiteral("No positive mover-expectation loss was recorded.");
+    }
+    lines << QStringLiteral(
+        "Ranking uses only the frozen mover WDL-loss measurement. These events do not prove cause, intent, or a unique best move.");
+    return lines;
 }
 
 QString mechanicalSummaryHtml(const QStringList &lines)
@@ -579,6 +694,8 @@ void ReplayEvidencePanel::setReplayState(
                                       engine.beforeCentipawnsWhite,
                                       engine.beforeMateForWhite),
                                   engineWdlText(engine.beforeWdlWhite));
+                lines << QString();
+                lines.append(mechanicalGameReportLines(pack));
             }
         } else {
             const auto &move = pack.moves().at(session.currentMainlinePly() - 1);

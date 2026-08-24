@@ -260,9 +260,18 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
     QVERIFY2(pack.has_value(), qPrintable(error));
     parlawl::puzzle_runner::ReplaySession session;
     session.load(*pack);
-    QVERIFY(session.seekMainlinePly(3));
 
     ReplayEvidencePanel evidence;
+    evidence.setReplayState(*pack, session, 0);
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("GAME REPORT V1")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Coverage: persisted fixed-node evidence for 4/4 recorded moves")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Threshold labels: Severe 1 · Mistake 0 · Inaccuracy 0")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("1. Ply 3 Nf3 — Alpha — Severe — 16.6% mover expectation loss")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("best d2d4")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("do not prove cause, intent, or a unique best move")));
+
+    QVERIFY(session.seekMainlinePly(3));
+
     evidence.setReplayState(*pack, session, 0);
     QVERIFY(evidence.summaryText().contains(QStringLiteral("PERSISTED FIXED-NODE REPORT")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Frozen threshold label: Severe")));
