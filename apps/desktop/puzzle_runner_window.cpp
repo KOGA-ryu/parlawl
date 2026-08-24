@@ -24,6 +24,7 @@
 #include <QSignalBlocker>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTextEdit>
 #include <QTextStream>
@@ -40,6 +41,7 @@
 #include "engine_validated_puzzle_pack.h"
 #include "lichess_client.h"
 #include "parlawl_config.h"
+#include "player_statistics_panel.h"
 #include "puzzle_supply_coordinator.h"
 #include "puzzle_info_summary_builder.h"
 #include "puzzle_attempt_repository.h"
@@ -509,7 +511,9 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_evaluationBarWidget(nullptr)
     , m_boardWidget(nullptr)
     , m_moveListPanel(nullptr)
+    , m_playerStatisticsPanel(nullptr)
     , m_replayEvidencePanel(nullptr)
+    , m_gameReviewPanel(nullptr)
     , m_rightTabs(nullptr)
     , m_infoTabs(nullptr)
     , m_settingsPage(nullptr)
@@ -775,6 +779,167 @@ void PuzzleRunnerWindow::onOpenAnnotatedReplayRequested()
     }
 }
 
+void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Open Player Statistics"),
+        QDir::homePath(),
+        QStringLiteral("Player explorer (*.sqlite3);;Legacy player snapshot (*.json);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QString errorMessage;
+    const bool explorer = QFileInfo(path).suffix().compare(
+        QStringLiteral("sqlite3"), Qt::CaseInsensitive) == 0;
+    bool loaded = false;
+    if (explorer) {
+        loaded = m_playerStatisticsPanel->loadExplorerDatabase(path, &errorMessage);
+    } else {
+        QByteArray raw;
+        loaded = readDirectRegularFile(
+                path,
+                64 * 1024 * 1024,
+                QStringLiteral("player-statistics snapshot"),
+                &raw,
+                &errorMessage)
+            && m_playerStatisticsPanel->loadSnapshot(raw, &errorMessage);
+    }
+    if (!loaded) {
+        QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
+        return;
+    }
+    m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
+    appendLogMessage(timestamped(
+        explorer
+            ? QStringLiteral(
+                "opened a local read-only player-game explorer; ParlAWL ran no engine, network, or source replay")
+            : QStringLiteral(
+                "opened a local display-only player-statistics snapshot; ParlAWL did not authenticate or rebuild its source evidence")));
+}
+
+void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGameId)
+{
+    if (m_analysisInProgress) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("game breakdown"),
+            QStringLiteral("Finish or cancel the active analysis before opening a game."));
+        return;
+    }
+
+    QString errorMessage;
+    const auto breakdown = m_playerStatisticsPanel->gameBreakdown(sourceGameId, &errorMessage);
+    if (!breakdown.has_value()) {
+        QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
+        return;
+    }
+
+    MechanicalReplayGame mechanical;
+    mechanical.sourceGameId = breakdown->sourceGameId;
+    mechanical.canonicalGameUrl = breakdown->canonicalGameUrl;
+    mechanical.eventStartUtc = breakdown->eventStartUtc;
+    mechanical.whiteUsername = breakdown->whitePlayerId;
+    mechanical.blackUsername = breakdown->blackPlayerId;
+    mechanical.whiteRating = breakdown->whiteRating;
+    mechanical.blackRating = breakdown->blackRating;
+    mechanical.result = breakdown->result;
+    mechanical.openingStatus = breakdown->openingStatus;
+    mechanical.openingEco = breakdown->openingEco;
+    mechanical.openingName = breakdown->openingName;
+    mechanical.openingLastBookPly = breakdown->openingLastBookPly;
+    mechanical.viewedPlayerColor = breakdown->viewedPlayerColor;
+    if (breakdown->engineEvidence.has_value()) {
+        const PlayerStatisticsEngineGameEvidence &source = *breakdown->engineEvidence;
+        PersistedEngineGameEvidence engine;
+        engine.evidenceId = source.evidenceId;
+        engine.representativeRunId = source.representativeRunId;
+        engine.analysisRecordedAtUtc = source.analysisRecordedAtUtc;
+        engine.lineageCount = source.lineageCount;
+        engine.engineConfigId = source.engineConfigId;
+        engine.engineName = source.engineName;
+        engine.engineAuthor = source.engineAuthor;
+        engine.engineBinarySha256 = source.engineBinarySha256;
+        engine.engineAdapterVersion = source.engineAdapterVersion;
+        engine.nodeLimit = source.nodeLimit;
+        engine.hashMebibytes = source.hashMebibytes;
+        engine.threads = source.threads;
+        engine.wdlLossThresholds = source.wdlLossThresholds;
+        engine.winningExpectationMillionths = source.winningExpectationMillionths;
+        mechanical.engineEvidence = engine;
+    }
+    mechanical.moves.reserve(breakdown->moves.size());
+    for (const PlayerStatisticsGameMove &source : breakdown->moves) {
+        MechanicalReplayMove move;
+        move.ply = source.ply;
+        move.san = source.san;
+        move.uci = source.uci;
+        move.positionPhase = source.phase;
+        move.forcednessStatus = source.forcedness;
+        move.legalMoveCount = source.legalMoveCount;
+        move.decisionStartClockMs = source.decisionStartClockMs;
+        move.clockRemainingAfterMoveMs = source.clockAfterMs;
+        move.elapsedMoveMs = source.elapsedMs;
+        move.elapsedStatus = source.elapsedStatus;
+        if (source.engineEvidence.has_value()) {
+            const PlayerStatisticsEngineMoveEvidence &sourceEngine = *source.engineEvidence;
+            PersistedEngineMoveEvidence engine;
+            engine.expectedBeforeMillionths = sourceEngine.expectedBeforeMillionths;
+            engine.expectedAfterMillionths = sourceEngine.expectedAfterMillionths;
+            engine.wdlLossMillionths = sourceEngine.wdlLossMillionths;
+            engine.centipawnLoss = sourceEngine.centipawnLoss;
+            engine.missedWinningAdvantage = sourceEngine.missedWinningAdvantage;
+            engine.missedForcedMate = sourceEngine.missedForcedMate;
+            engine.severity = sourceEngine.severity;
+            engine.beforeScoreKind = sourceEngine.beforeScoreKind;
+            engine.beforeCentipawnsWhite = sourceEngine.beforeCentipawnsWhite;
+            engine.beforeMateForWhite = sourceEngine.beforeMateForWhite;
+            engine.beforeWdlWhite = sourceEngine.beforeWdlWhite;
+            engine.beforeBestMoveUci = sourceEngine.beforeBestMoveUci;
+            engine.beforeDepth = sourceEngine.beforeDepth;
+            engine.beforeSelectiveDepth = sourceEngine.beforeSelectiveDepth;
+            engine.beforeNodes = sourceEngine.beforeNodes;
+            engine.beforePvUci = sourceEngine.beforePvUci;
+            engine.afterScoreKind = sourceEngine.afterScoreKind;
+            engine.afterCentipawnsWhite = sourceEngine.afterCentipawnsWhite;
+            engine.afterMateForWhite = sourceEngine.afterMateForWhite;
+            engine.afterWdlWhite = sourceEngine.afterWdlWhite;
+            move.engineEvidence = engine;
+        }
+        mechanical.moves.append(move);
+    }
+
+    const auto replay = AnnotatedReplayPack::fromMechanicalGame(mechanical, &errorMessage);
+    if (!replay.has_value()) {
+        QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
+        return;
+    }
+    QString attemptError;
+    if (!m_sessionController.finalizePuzzleAttemptForAnnotatedReplay(&attemptError)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("game breakdown"),
+            QStringLiteral("The game was not opened because the active solve attempt could not be preserved: %1")
+                .arg(attemptError));
+        return;
+    }
+
+    m_annotatedReplayPack = *replay;
+    m_replaySession.load(*m_annotatedReplayPack);
+    m_replayVariationAnchorPly = 0;
+    m_workspaceMode = WorkspaceMode::AnnotatedReplay;
+    m_lastReviewedFen.clear();
+    if (m_stockfishReviewController != nullptr) {
+        m_stockfishReviewController->resetCurrentReview(
+            QStringLiteral("engine browsing is disabled in game breakdown"));
+    }
+    setAnnotatedReplayWorkspaceUi(true);
+    appendLogMessage(timestamped(
+        QStringLiteral("opened local read-only game breakdown %1; no engine or network process was started")
+            .arg(sourceGameId)));
+    refreshReplayUi();
+}
+
 void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -852,6 +1017,8 @@ void PuzzleRunnerWindow::onBackToPuzzlesRequested()
     if (m_workspaceMode != WorkspaceMode::AnnotatedReplay) {
         return;
     }
+    const bool returnToPlayerStatistics = m_annotatedReplayPack.has_value()
+        && m_annotatedReplayPack->isMechanicalGameBreakdown();
     if (m_stockfishReviewController != nullptr) {
         m_stockfishReviewController->resetCurrentReview(
             QStringLiteral("review the current puzzle position"));
@@ -866,7 +1033,11 @@ void PuzzleRunnerWindow::onBackToPuzzlesRequested()
     m_sessionController.retryPuzzle();
     setAnnotatedReplayWorkspaceUi(false);
     m_replayEvidencePanel->setEmptyState();
+    m_gameReviewPanel->setEmptyState();
     refreshUi();
+    if (returnToPlayerStatistics) {
+        m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
+    }
 }
 
 void PuzzleRunnerWindow::onShowReplayVariationRequested()
@@ -2091,19 +2262,26 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
         m_preReplayInfoTabIndex = m_infoTabs->currentIndex();
     }
     m_replayWorkspaceUiActive = enabled;
+    const bool gameBreakdown = enabled && m_annotatedReplayPack.has_value()
+        && m_annotatedReplayPack->isMechanicalGameBreakdown();
 
     for (int index = 0; index < m_rightTabs->count(); ++index) {
         QWidget *page = m_rightTabs->widget(index);
-        const bool replayRelevant = page == m_moveListPanel || page == m_replayEvidencePanel;
+        const bool replayRelevant = gameBreakdown
+            ? page == m_gameReviewPanel
+            : page == m_moveListPanel || page == m_replayEvidencePanel;
         const bool available = !enabled || replayRelevant;
         m_rightTabs->setTabVisible(index, available);
         m_rightTabs->setTabEnabled(index, available);
     }
     if (enabled) {
-        m_rightTabs->setCurrentWidget(m_replayEvidencePanel);
+        m_rightTabs->setCurrentWidget(
+            gameBreakdown ? static_cast<QWidget *>(m_gameReviewPanel)
+                          : static_cast<QWidget *>(m_replayEvidencePanel));
     } else {
         m_rightTabs->setCurrentWidget(m_moveListPanel);
     }
+    m_rightTabs->tabBar()->setVisible(!gameBreakdown);
 
     for (int index = 0; index < m_infoTabs->count(); ++index) {
         const bool replayControls = m_infoTabs->widget(index) == m_settingsPage;
@@ -2121,6 +2299,9 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
     } else if (m_preReplayInfoTabIndex >= 0 && m_preReplayInfoTabIndex < m_infoTabs->count()) {
         m_infoTabs->setCurrentIndex(m_preReplayInfoTabIndex);
     }
+    m_infoTabs->tabBar()->setVisible(!enabled);
+    m_infoTabs->setMaximumHeight(enabled ? 112 : QWIDGETSIZE_MAX);
+    m_evaluationBarWidget->setVisible(!gameBreakdown);
 
     m_settingsCard->setVisible(!enabled);
     m_settingsCard->setEnabled(!enabled);
@@ -2170,6 +2351,7 @@ void PuzzleRunnerWindow::buildUi()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(8);
     m_moveListPanel = new MoveListPanel(rightColumn);
+    m_playerStatisticsPanel = new PlayerStatisticsPanel(rightColumn);
     m_rightTabs = new QTabWidget(rightColumn);
     m_rightTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
@@ -2231,8 +2413,11 @@ void PuzzleRunnerWindow::buildUi()
     recentRunsLayout->addWidget(m_recentRunsList);
 
     m_replayEvidencePanel = new ReplayEvidencePanel(m_rightTabs);
+    m_gameReviewPanel = new GameReviewPanel(m_rightTabs);
     m_rightTabs->addTab(m_moveListPanel, QStringLiteral("Move List"));
     m_rightTabs->addTab(m_replayEvidencePanel, QStringLiteral("Analysis Replay"));
+    m_rightTabs->addTab(m_gameReviewPanel, QStringLiteral("Game Review"));
+    m_rightTabs->addTab(m_playerStatisticsPanel, QStringLiteral("Player Stats"));
     m_rightTabs->addTab(reportPage, QStringLiteral("Report View"));
     m_rightTabs->addTab(logPage, QStringLiteral("Status / Log"));
     m_rightTabs->addTab(recentRunsPage, QStringLiteral("Recent Runs"));
@@ -2365,10 +2550,14 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_exportAssistantPacketButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onExportAssistantPacketRequested);
     connect(m_importAssistantInferenceButton, &QPushButton::clicked, this, &PuzzleRunnerWindow::onImportAssistantInferenceRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::openReplayRequested, this, &PuzzleRunnerWindow::onOpenAnnotatedReplayRequested);
+    connect(m_playerStatisticsPanel, &PlayerStatisticsPanel::openSnapshotRequested, this, &PuzzleRunnerWindow::onOpenPlayerStatisticsRequested);
+    connect(m_playerStatisticsPanel, &PlayerStatisticsPanel::gameBreakdownRequested, this, &PuzzleRunnerWindow::onPlayerGameBreakdownRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::backToPuzzlesRequested, this, &PuzzleRunnerWindow::onBackToPuzzlesRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::showEngineLineRequested, this, &PuzzleRunnerWindow::onShowReplayVariationRequested);
     connect(m_replayEvidencePanel, &ReplayEvidencePanel::returnToGameRequested, this, &PuzzleRunnerWindow::onReturnFromReplayVariationRequested);
     connect(m_moveListPanel, &MoveListPanel::replayPlyRequested, this, &PuzzleRunnerWindow::onReplayPlyRequested);
+    connect(m_gameReviewPanel, &GameReviewPanel::replayPlyRequested, this, &PuzzleRunnerWindow::onReplayPlyRequested);
+    connect(m_gameReviewPanel, &GameReviewPanel::backToPlayerStatisticsRequested, this, &PuzzleRunnerWindow::onBackToPuzzlesRequested);
     connect(m_transportControls, &TransportControls::previousRequested, this, [this]() {
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
             if (m_replaySession.stepBackward()) {
@@ -2559,9 +2748,12 @@ void PuzzleRunnerWindow::updateReplayBoard()
     if (parsedMove.has_value()) {
         lastMoveSquares = {parsedMove->from, parsedMove->to};
     }
+    const PieceColor viewColor = m_annotatedReplayPack->isMechanicalGameBreakdown()
+            && m_annotatedReplayPack->viewedPlayerColor() == QStringLiteral("black")
+        ? PieceColor::Black : PieceColor::White;
     m_boardWidget->setPosition(
         m_replaySession.currentPosition(),
-        PieceColor::White,
+        viewColor,
         -1,
         {},
         lastMoveSquares,
@@ -2576,15 +2768,23 @@ void PuzzleRunnerWindow::updateReplayPanels()
     if (!m_annotatedReplayPack.has_value() || !m_replaySession.hasReplay()) {
         return;
     }
-    m_moveListPanel->setAnnotatedReplay(
-        *m_annotatedReplayPack,
-        m_replaySession.currentMainlinePly(),
-        m_replaySession.inVariation(),
-        m_replayVariationAnchorPly);
-    m_replayEvidencePanel->setReplayState(
-        *m_annotatedReplayPack,
-        m_replaySession,
-        m_replayVariationAnchorPly);
+    const bool gameBreakdown = m_annotatedReplayPack->isMechanicalGameBreakdown();
+    if (gameBreakdown) {
+        m_gameReviewPanel->setReplayState(
+            *m_annotatedReplayPack,
+            m_replaySession,
+            m_replayVariationAnchorPly);
+    } else {
+        m_moveListPanel->setAnnotatedReplay(
+            *m_annotatedReplayPack,
+            m_replaySession.currentMainlinePly(),
+            m_replaySession.inVariation(),
+            m_replayVariationAnchorPly);
+        m_replayEvidencePanel->setReplayState(
+            *m_annotatedReplayPack,
+            m_replaySession,
+            m_replayVariationAnchorPly);
+    }
 
     bool canStepBackward = false;
     bool canStepForward = false;
@@ -2607,14 +2807,19 @@ void PuzzleRunnerWindow::updateReplayPanels()
     m_exportAssistantPacketButton->setEnabled(false);
     m_importAssistantInferenceButton->setEnabled(false);
     m_enginePanel->setReviewState(
-        QStringLiteral("disabled in annotated replay"),
-        QStringLiteral("Use the supplied-annotations panel; no fresh engine process is started."),
+        gameBreakdown ? QStringLiteral("not included in this game explorer")
+                      : QStringLiteral("disabled in annotated replay"),
+        gameBreakdown
+            ? QStringLiteral("Recorded moves and clocks are available. No engine process starts while browsing.")
+            : QStringLiteral("Use the supplied-annotations panel; no fresh engine process is started."),
         QString(),
         QString(),
         false,
         false,
         false);
-    m_statusStateLabel->setText(QStringLiteral("read-only replay"));
+    m_statusStateLabel->setText(
+        gameBreakdown ? QStringLiteral("read-only game breakdown")
+                      : QStringLiteral("read-only replay"));
     m_statusDetailLabel->setText(m_annotatedReplayPack->replayId());
 }
 

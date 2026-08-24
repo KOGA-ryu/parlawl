@@ -98,6 +98,14 @@ target_include_directories(test_unit_puzzle_panels PRIVATE ${CMAKE_BINARY_DIR}/g
 target_link_libraries(test_unit_puzzle_panels PRIVATE Qt6::Core Qt6::Widgets Qt6::Test puzzle_runner reporting)
 add_test(NAME test_unit_puzzle_panels COMMAND test_unit_puzzle_panels)
 
+add_executable(test_unit_player_statistics_panel
+    unit/test_unit_player_statistics_panel.cpp
+    ../apps/desktop/player_statistics_panel.cpp
+)
+target_include_directories(test_unit_player_statistics_panel PRIVATE ../apps/desktop)
+target_link_libraries(test_unit_player_statistics_panel PRIVATE Qt6::Core Qt6::Sql Qt6::Widgets Qt6::Test)
+add_test(NAME test_unit_player_statistics_panel COMMAND test_unit_player_statistics_panel)
+
 add_executable(test_unit_puzzle_supply_coordinator
     unit/test_unit_puzzle_supply_coordinator.cpp
 )

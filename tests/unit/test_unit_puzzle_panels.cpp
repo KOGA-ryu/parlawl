@@ -11,6 +11,96 @@ namespace parlawl::test_support {
 QByteArray syntheticAnnotatedReplayJson();
 }
 
+namespace {
+
+parlawl::puzzle_runner::MechanicalReplayGame mechanicalGameFixture()
+{
+    parlawl::puzzle_runner::MechanicalReplayGame game;
+    game.sourceGameId = QStringLiteral(
+        "chesscom-game-v1:1111111111111111111111111111111111111111111111111111111111111111");
+    game.canonicalGameUrl = QStringLiteral("https://www.chess.com/game/live/1");
+    game.eventStartUtc = QStringLiteral("2026-08-01T12:00:00Z");
+    game.whiteUsername = QStringLiteral("Alpha");
+    game.blackUsername = QStringLiteral("Beta");
+    game.whiteRating = 2100;
+    game.blackRating = 2050;
+    game.result = QStringLiteral("1-0");
+    game.openingStatus = QStringLiteral("classified");
+    game.openingEco = QStringLiteral("C20");
+    game.openingName = QStringLiteral("King's Pawn Game");
+    game.openingLastBookPly = 2;
+    game.viewedPlayerColor = QStringLiteral("white");
+    const auto addMove = [&game](int ply, const QString &san, const QString &uci, int legal, qint64 elapsed) {
+        parlawl::puzzle_runner::MechanicalReplayMove move;
+        move.ply = ply;
+        move.san = san;
+        move.uci = uci;
+        move.positionPhase = QStringLiteral("opening");
+        move.forcednessStatus = QStringLiteral("nonforced");
+        move.legalMoveCount = legal;
+        move.decisionStartClockMs = 180'000;
+        move.clockRemainingAfterMoveMs = 180'000 - elapsed;
+        move.elapsedMoveMs = elapsed;
+        move.elapsedStatus = QStringLiteral("derived_clock_difference");
+        game.moves.append(move);
+    };
+    addMove(1, QStringLiteral("e4"), QStringLiteral("e2e4"), 20, 1'000);
+    addMove(2, QStringLiteral("e5"), QStringLiteral("e7e5"), 20, 2'000);
+    addMove(3, QStringLiteral("Nf3"), QStringLiteral("g1f3"), 29, 3'000);
+    addMove(4, QStringLiteral("Nc6"), QStringLiteral("b8c6"), 29, 4'000);
+    return game;
+}
+
+parlawl::puzzle_runner::MechanicalReplayGame mechanicalGameWithEngineFixture()
+{
+    using namespace parlawl::puzzle_runner;
+    MechanicalReplayGame game = mechanicalGameFixture();
+    PersistedEngineGameEvidence engineGame;
+    engineGame.evidenceId = QStringLiteral("player-game-engine-view-v1:")
+        + QString(64, QLatin1Char('a'));
+    engineGame.representativeRunId = QStringLiteral("performance-analysis-run-v2:")
+        + QString(64, QLatin1Char('b'));
+    engineGame.analysisRecordedAtUtc = QStringLiteral("2026-08-03T12:00:00Z");
+    engineGame.lineageCount = 1;
+    engineGame.engineConfigId = QStringLiteral("performance-engine-config-v1:")
+        + QString(64, QLatin1Char('c'));
+    engineGame.engineName = QStringLiteral("Stockfish 18");
+    engineGame.engineAuthor = QStringLiteral("Stockfish developers");
+    engineGame.engineBinarySha256 = QString(64, QLatin1Char('d'));
+    engineGame.engineAdapterVersion = QStringLiteral("stockfish-complete-position-v1");
+    engineGame.nodeLimit = 1'000;
+    engineGame.hashMebibytes = 16;
+    engineGame.threads = 1;
+    engineGame.wdlLossThresholds = {25'000, 50'000, 100'000};
+    engineGame.winningExpectationMillionths = 750'000;
+    game.engineEvidence = engineGame;
+    for (int index = 0; index < game.moves.size(); ++index) {
+        PersistedEngineMoveEvidence move;
+        const bool severe = index == 2;
+        move.expectedBeforeMillionths = 750'000;
+        move.expectedAfterMillionths = severe ? 584'000 : 740'000;
+        move.wdlLossMillionths = severe ? 166'000 : 10'000;
+        move.centipawnLoss = severe ? 40 : 5;
+        move.missedWinningAdvantage = severe;
+        move.severity = severe ? QStringLiteral("severe") : QStringLiteral("none");
+        move.beforeScoreKind = QStringLiteral("cp");
+        move.beforeCentipawnsWhite = 100;
+        move.beforeWdlWhite = {500, 500, 0};
+        move.beforeBestMoveUci = QStringLiteral("d2d4");
+        move.beforeDepth = 7;
+        move.beforeSelectiveDepth = 9;
+        move.beforeNodes = 1'000;
+        move.beforePvUci = QStringLiteral("d2d4 d7d5");
+        move.afterScoreKind = QStringLiteral("cp");
+        move.afterCentipawnsWhite = severe ? 60 : 90;
+        move.afterWdlWhite = {450, 550, 0};
+        game.moves[index].engineEvidence = move;
+    }
+    return game;
+}
+
+} // namespace
+
 class TestUnitPuzzlePanels : public QObject
 {
     Q_OBJECT
@@ -22,6 +112,9 @@ private slots:
     void moveListPanelShowsAnnotatedReplaySeverity();
     void replayEvidencePanelShowsRecordedVariationBoundary();
     void replayEvidencePanelMarksForgedSuppliedTextUnverified();
+    void gameBreakdownShowsClockAndOpeningBoundaryWithoutEngineClaims();
+    void gameBreakdownShowsPersistedEngineEvidenceWithoutStartingEngine();
+    void gameReviewPanelKeepsMovesAndEvidenceTogether();
     void settingsCardShowsSupplyStatusText();
     void enginePanelTreatsDynamicMarkupAsPlainText();
     void settingsCardOffersValidatedPackAction();
@@ -129,6 +222,98 @@ void TestUnitPuzzlePanels::replayEvidencePanelMarksForgedSuppliedTextUnverified(
     for (const QLabel *label : panel.findChildren<QLabel *>()) {
         QCOMPARE(label->textFormat(), Qt::PlainText);
     }
+}
+
+void TestUnitPuzzlePanels::gameBreakdownShowsClockAndOpeningBoundaryWithoutEngineClaims()
+{
+    const auto game = mechanicalGameFixture();
+
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(game, &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+
+    ReplayEvidencePanel evidence;
+    evidence.setReplayState(*pack, session, 0);
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Longest server-recorded decision")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("No best-move, blunder")));
+    QVERIFY(!evidence.canShowEngineLine());
+    QVERIFY(session.seekMainlinePly(3));
+    evidence.setReplayState(*pack, session, 0);
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("first recorded departure")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Server-accounted move time: 3.0s")));
+
+    MoveListPanel moves;
+    moves.setAnnotatedReplay(*pack, 3, false, 0);
+    QVERIFY(moves.truthStatusText().contains(QStringLiteral("server-accounted clock evidence")));
+    const QTableWidget *table = moves.findChild<QTableWidget *>();
+    QVERIFY(table != nullptr);
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("first departure")));
+}
+
+void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStartingEngine()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        mechanicalGameWithEngineFixture(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(3));
+
+    ReplayEvidencePanel evidence;
+    evidence.setReplayState(*pack, session, 0);
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("PERSISTED FIXED-NODE REPORT")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Frozen threshold label: Severe")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Engine-reported best move before play: d2d4")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Reported PV, not played: d2d4 d7d5")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("not an objective verdict")));
+
+    MoveListPanel moves;
+    moves.setAnnotatedReplay(*pack, 3, false, 0);
+    QVERIFY(moves.truthStatusText().contains(QStringLiteral("starts no engine")));
+    const QTableWidget *table = moves.findChild<QTableWidget *>();
+    QVERIFY(table != nullptr);
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("severe")));
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("+0.60")));
+}
+
+void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        mechanicalGameFixture(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(3));
+
+    GameReviewPanel panel;
+    panel.resize(620, 760);
+    panel.setReplayState(*pack, session, 0);
+    panel.show();
+    QCoreApplication::processEvents();
+
+    auto *moves = panel.findChild<MoveListPanel *>(QStringLiteral("gameReviewMoveList"));
+    auto *evidence = panel.findChild<ReplayEvidencePanel *>(QStringLiteral("gameReviewInspector"));
+    QVERIFY(moves != nullptr);
+    QVERIFY(evidence != nullptr);
+    QVERIFY(moves->isVisible());
+    QVERIFY(evidence->isVisible());
+    QVERIFY(evidence->summaryText().contains(QStringLiteral("first recorded departure")));
+
+    QSignalSpy seekSpy(&panel, &GameReviewPanel::replayPlyRequested);
+    auto *table = moves->findChild<QTableWidget *>();
+    QVERIFY(table != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(
+        table,
+        "cellClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 1),
+        Q_ARG(int, 2)));
+    QCOMPARE(seekSpy.count(), 1);
+    QCOMPARE(seekSpy.at(0).at(0).toInt(), 4);
 }
 
 void TestUnitPuzzlePanels::settingsCardShowsSupplyStatusText()

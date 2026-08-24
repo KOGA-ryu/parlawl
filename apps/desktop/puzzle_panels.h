@@ -78,6 +78,27 @@ private:
     QPushButton *m_returnToGameButton;
 };
 
+class GameReviewPanel : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit GameReviewPanel(QWidget *parent = nullptr);
+    void setReplayState(
+        const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+        const parlawl::puzzle_runner::ReplaySession &session,
+        int variationAnchorPly);
+    void setEmptyState();
+
+signals:
+    void replayPlyRequested(int ply);
+    void backToPlayerStatisticsRequested();
+
+private:
+    MoveListPanel *m_moveListPanel;
+    ReplayEvidencePanel *m_evidencePanel;
+};
+
 class MetadataCard : public QGroupBox
 {
     Q_OBJECT

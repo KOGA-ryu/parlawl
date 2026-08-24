@@ -10,6 +10,7 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -107,8 +108,99 @@ QString percentageText(int millionths)
     return text + QLatin1Char('%');
 }
 
+QString engineScoreText(
+    const QString &kind,
+    const std::optional<qint64> &centipawnsWhite,
+    const std::optional<qint64> &mateForWhite)
+{
+    if (kind == QStringLiteral("cp") && centipawnsWhite.has_value()) {
+        const double pawns = static_cast<double>(*centipawnsWhite) / 100.0;
+        return QStringLiteral("%1%2 (White)")
+            .arg(pawns >= 0.0 ? QStringLiteral("+") : QString())
+            .arg(QString::number(pawns, 'f', 2));
+    }
+    if (kind == QStringLiteral("mate") && mateForWhite.has_value()) {
+        return QStringLiteral("mate %1%2 (White)")
+            .arg(*mateForWhite > 0 ? QStringLiteral("+") : QString())
+            .arg(*mateForWhite);
+    }
+    if (kind == QStringLiteral("terminal_mate")) {
+        return QStringLiteral("checkmate");
+    }
+    if (kind == QStringLiteral("terminal_draw")) {
+        return QStringLiteral("draw");
+    }
+    return QStringLiteral("N/A");
+}
+
+QString engineWdlText(const QVector<int> &wdlWhite)
+{
+    if (wdlWhite.size() != 3) {
+        return QStringLiteral("W/D/L unavailable");
+    }
+    return QStringLiteral("White W/D/L %1/%2/%3‰")
+        .arg(wdlWhite.at(0))
+        .arg(wdlWhite.at(1))
+        .arg(wdlWhite.at(2));
+}
+
+QString moveTimeText(const std::optional<qint64> &milliseconds)
+{
+    if (!milliseconds.has_value()) {
+        return QStringLiteral("time N/A");
+    }
+    return QStringLiteral("%1s").arg(
+        QString::number(static_cast<double>(*milliseconds) / 1000.0, 'f', 1));
+}
+
+QString clockText(const std::optional<qint64> &milliseconds)
+{
+    if (!milliseconds.has_value()) {
+        return QStringLiteral("N/A");
+    }
+    const qint64 minutes = *milliseconds / 60'000;
+    const double seconds = static_cast<double>(*milliseconds % 60'000) / 1000.0;
+    return QStringLiteral("%1:%2")
+        .arg(minutes)
+        .arg(seconds, 4, 'f', 1, QLatin1Char('0'));
+}
+
+QString humanizedToken(QString value)
+{
+    value.replace(QLatin1Char('_'), QLatin1Char(' '));
+    value.replace(QLatin1Char('-'), QLatin1Char(' '));
+    if (!value.isEmpty()) {
+        value[0] = value.at(0).toUpper();
+    }
+    return value;
+}
+
 QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
 {
+    if (pack.isMechanicalGameBreakdown()) {
+        QString label;
+        if (pack.openingStatus() == QStringLiteral("classified")) {
+            label = pack.openingEco().value_or(QString()) + QLatin1Char(' ')
+                + pack.openingName().value_or(QStringLiteral("unnamed opening"));
+        } else {
+            label = humanizedToken(pack.openingStatus());
+        }
+        label = label.trimmed();
+        if (!pack.openingLastBookPly().has_value()) {
+            return QStringLiteral("Pinned opening label: %1 · exact book boundary unavailable")
+                .arg(label);
+        }
+        const int bookPly = *pack.openingLastBookPly();
+        if (bookPly >= pack.moves().size()) {
+            return QStringLiteral("Pinned opening label: %1 · recorded game stayed on the known path through ply %2")
+                .arg(label)
+                .arg(bookPly);
+        }
+        return QStringLiteral("Pinned opening label: %1 · known path through ply %2 · first departure ply %3")
+            .arg(label)
+            .arg(bookPly)
+            .arg(bookPly + 1);
+    }
     if (pack.openingStatus() != QStringLiteral("classified")) {
         return QStringLiteral("Supplied opening annotation (not verified): %1").arg(pack.openingStatus());
     }
@@ -117,6 +209,39 @@ QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pac
     return eco.isEmpty()
         ? QStringLiteral("Supplied opening annotation (not verified): %1").arg(name)
         : QStringLiteral("Supplied opening annotation (not verified): %1 %2").arg(eco, name);
+}
+
+QString mechanicalSummaryHtml(const QStringList &lines)
+{
+    QString html = QStringLiteral(
+        "<html><body style='color: palette(text);'>");
+    for (const QString &line : lines) {
+        const QString safe = line.toHtmlEscaped();
+        if (line.isEmpty()) {
+            html += QStringLiteral("<div style='height: 8px'></div>");
+        } else if (line.startsWith(QStringLiteral("START POSITION"))
+                   || line.startsWith(QStringLiteral("PLY "))
+                   || line.startsWith(QStringLiteral("RECORDED FINISH"))) {
+            html += QStringLiteral(
+                        "<div style='font-size: 15px; font-weight: 700; margin: 3px 0 8px 0;'>%1</div>")
+                        .arg(safe);
+        } else if (line.startsWith(QStringLiteral("No best-move"))) {
+            html += QStringLiteral(
+                        "<div style='margin-top: 8px; padding: 8px; background: #342f24; color: #e8cf93;'>%1</div>")
+                        .arg(safe);
+        } else {
+            const qsizetype separator = line.indexOf(QStringLiteral(": "));
+            if (separator > 0) {
+                html += QStringLiteral("<div style='margin: 3px 0;'><b>%1:</b> %2</div>")
+                            .arg(line.left(separator).toHtmlEscaped(),
+                                 line.mid(separator + 2).toHtmlEscaped());
+            } else {
+                html += QStringLiteral("<div style='margin: 3px 0;'>%1</div>").arg(safe);
+            }
+        }
+    }
+    html += QStringLiteral("</body></html>");
+    return html;
 }
 
 } // namespace
@@ -129,9 +254,6 @@ MoveListPanel::MoveListPanel(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     m_truthStatusLabel->setTextFormat(Qt::PlainText);
     m_truthStatusLabel->setWordWrap(true);
-    QPalette hintPalette = m_truthStatusLabel->palette();
-    hintPalette.setColor(QPalette::WindowText, QColor(92, 92, 92));
-    m_truthStatusLabel->setPalette(hintPalette);
     layout->addWidget(m_truthStatusLabel);
     layout->addWidget(m_table);
     QFont listFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -255,9 +377,22 @@ void MoveListPanel::setAnnotatedReplay(
     const int rowCount = std::max(1, (m_replayMoveCount + 1) / 2);
     m_table->setRowCount(rowCount);
     m_truthStatusLabel->setText(
-        variationActive
+        pack.isMechanicalGameBreakdown()
+            ? pack.persistedEngineEvidence().has_value()
+                ? QStringLiteral("Recorded legal game replay with persisted fixed-node engine reports. ParlAWL starts no engine; labels are descriptive, not objective verdicts.")
+                : QStringLiteral("Recorded legal game replay. Times are server-accounted clock evidence, not direct thinking time. Engine analysis is not joined.")
+            : variationActive
             ? QStringLiteral("Supplied engine line active: moves are legally checked, but engine claims are not verified. It was not played; Return restores the real game.")
             : QStringLiteral("Legal move/FEN replay verified. Severity labels and derived annotations are supplied and not verified by ParlAWL."));
+
+    qint64 longestElapsed = -1;
+    if (pack.isMechanicalGameBreakdown()) {
+        for (const auto &move : pack.moves()) {
+            if (move.elapsedMoveMs.has_value()) {
+                longestElapsed = std::max(longestElapsed, *move.elapsedMoveMs);
+            }
+        }
+    }
 
     auto makeItem = [&](const QString &text, bool isCurrent, bool isVariationAnchor) {
         auto *item = new QTableWidgetItem(text);
@@ -279,12 +414,40 @@ void MoveListPanel::setAnnotatedReplay(
         const int row = (move.ply - 1) / 2;
         const int column = move.ply % 2 == 1 ? 1 : 2;
         QString text = move.notation.san;
-        if (move.severity != QStringLiteral("none")) {
+        if (pack.isMechanicalGameBreakdown()) {
+            text += QStringLiteral(" · %1").arg(moveTimeText(move.elapsedMoveMs));
+            if (pack.openingLastBookPly().has_value()) {
+                if (move.ply == *pack.openingLastBookPly()) {
+                    text += QStringLiteral(" · book end");
+                } else if (move.ply == *pack.openingLastBookPly() + 1) {
+                    text += QStringLiteral(" · first departure");
+                }
+            }
+            if (move.elapsedMoveMs.has_value() && *move.elapsedMoveMs == longestElapsed) {
+                text += QStringLiteral(" · longest");
+            }
+            if (move.persistedEngineEvidence.has_value()) {
+                const auto &engine = *move.persistedEngineEvidence;
+                text += QStringLiteral(" · %1 · %2")
+                    .arg(engine.severity,
+                         engineScoreText(
+                             engine.afterScoreKind,
+                             engine.afterCentipawnsWhite,
+                             engine.afterMateForWhite));
+            }
+        } else if (move.severity != QStringLiteral("none")) {
             text += QStringLiteral("  [%1]").arg(move.severity);
         }
         const bool current = !variationActive && currentMainlinePly == move.ply;
         const bool anchor = variationActive && variationAnchorPly == move.ply;
         m_table->setItem(row, column, makeItem(text, current, anchor));
+    }
+    if (!variationActive && currentMainlinePly > 0) {
+        const int row = (currentMainlinePly - 1) / 2;
+        const int column = currentMainlinePly % 2 == 1 ? 1 : 2;
+        if (QTableWidgetItem *item = m_table->item(row, column); item != nullptr) {
+            m_table->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+        }
     }
 }
 
@@ -329,14 +492,19 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
 
 void ReplayEvidencePanel::setEmptyState()
 {
+    setTitle(QStringLiteral("analysis replay"));
     m_gameLabel->setText(QStringLiteral("No annotated replay loaded."));
     m_openingLabel->clear();
     m_engineLabel->setText(QStringLiteral("Import is read-only and does not run Stockfish or use the network."));
     m_summaryView->setPlainText(
         QStringLiteral("Open an annotated-game-replay-v1 JSON file produced by the esports evidence pipeline."));
+    m_openButton->setVisible(true);
+    m_backButton->setText(QStringLiteral("Back to Puzzles"));
     m_backButton->setEnabled(false);
     m_showEngineLineButton->setEnabled(false);
     m_returnToGameButton->setEnabled(false);
+    m_showEngineLineButton->setVisible(true);
+    m_returnToGameButton->setVisible(true);
 }
 
 void ReplayEvidencePanel::setReplayState(
@@ -344,12 +512,181 @@ void ReplayEvidencePanel::setReplayState(
     const parlawl::puzzle_runner::ReplaySession &session,
     int variationAnchorPly)
 {
+    if (pack.isMechanicalGameBreakdown()) {
+        setTitle(QStringLiteral("game breakdown"));
+        m_openButton->setVisible(false);
+        m_backButton->setText(QStringLiteral("Back to Player Stats"));
+        m_gameLabel->setText(
+            QStringLiteral("%1 (%2) vs %3 (%4) — %5\n%6")
+                .arg(pack.whiteUsername())
+                .arg(pack.whiteRating())
+                .arg(pack.blackUsername())
+                .arg(pack.blackRating())
+                .arg(pack.result(), pack.eventStartUtc()));
+        m_openingLabel->setText(replayOpeningText(pack));
+        if (pack.persistedEngineEvidence().has_value()) {
+            const auto &engine = *pack.persistedEngineEvidence();
+            m_engineLabel->setText(
+                QStringLiteral("PERSISTED %1 · %2 NODES/POSITION · %3 LINEAGE%4 · NO PROCESS STARTED")
+                    .arg(engine.engineName.toUpper())
+                    .arg(engine.nodeLimit)
+                    .arg(engine.lineageCount)
+                    .arg(engine.lineageCount == 1 ? QString() : QStringLiteral("S")));
+        } else {
+            m_engineLabel->setText(
+                QStringLiteral("MECHANICAL REPLAY · ENGINE EVIDENCE NOT JOINED · NO PROCESS STARTED"));
+        }
+
+        QStringList lines;
+        const parlawl::puzzle_runner::ChessPosition &finalPosition = pack.mainlinePositions().last();
+        const bool noFinalMoves = finalPosition.legalMoves().isEmpty();
+        const bool finalCheck = finalPosition.isInCheck(finalPosition.sideToMove());
+        QString finish;
+        if (noFinalMoves && finalCheck) {
+            finish = QStringLiteral("The final recorded position is checkmate.");
+        } else if (noFinalMoves) {
+            finish = QStringLiteral("The final recorded position is stalemate.");
+        } else {
+            finish = QStringLiteral("The explorer records the result but does not distinguish resignation, timeout, or another non-board termination.");
+        }
+
+        const parlawl::puzzle_runner::ReplayMove *longest = nullptr;
+        for (const auto &move : pack.moves()) {
+            if (move.elapsedMoveMs.has_value()
+                && (longest == nullptr || *move.elapsedMoveMs > *longest->elapsedMoveMs)) {
+                longest = &move;
+            }
+        }
+        if (session.currentMainlinePly() == 0) {
+            lines << QStringLiteral("START POSITION")
+                  << QStringLiteral("%1 recorded plies. Board orientation follows the selected player (%2).")
+                         .arg(pack.moves().size())
+                         .arg(humanizedToken(pack.viewedPlayerColor()))
+                  << QStringLiteral("Retrospective result: %1. %2").arg(pack.result(), finish)
+                  << QStringLiteral("Use Next, the mouse wheel, or the move list to replay the game.");
+            if (longest != nullptr) {
+                lines << QStringLiteral("Longest server-recorded decision: ply %1, %2, %3.")
+                             .arg(longest->ply)
+                             .arg(longest->notation.san, moveTimeText(longest->elapsedMoveMs));
+            }
+            if (pack.persistedEngineEvidence().has_value()
+                && !pack.moves().isEmpty()
+                && pack.moves().first().persistedEngineEvidence.has_value()) {
+                const auto &engine = *pack.moves().first().persistedEngineEvidence;
+                lines << QStringLiteral("Persisted start evaluation: %1 · %2")
+                             .arg(engineScoreText(
+                                      engine.beforeScoreKind,
+                                      engine.beforeCentipawnsWhite,
+                                      engine.beforeMateForWhite),
+                                  engineWdlText(engine.beforeWdlWhite));
+            }
+        } else {
+            const auto &move = pack.moves().at(session.currentMainlinePly() - 1);
+            const QString mover = move.ply % 2 == 1
+                ? pack.whiteUsername() : pack.blackUsername();
+            lines << QStringLiteral("PLY %1 · %2").arg(move.ply).arg(move.notation.san)
+                  << QStringLiteral("%1 played %2 (%3).")
+                         .arg(mover, move.notation.san, move.notation.uci)
+                  << QStringLiteral("Phase: %1 · decision context: %2 legal move%3 · %4")
+                         .arg(humanizedToken(move.positionPhase))
+                         .arg(move.legalMoveCount)
+                         .arg(move.legalMoveCount == 1 ? QString() : QStringLiteral("s"))
+                         .arg(humanizedToken(move.forcednessStatus))
+                  << QStringLiteral("Server-accounted move time: %1 · clock before: %2 · clock after: %3")
+                         .arg(moveTimeText(move.elapsedMoveMs),
+                              clockText(move.decisionStartClockMs),
+                              clockText(move.clockRemainingAfterMoveMs))
+                  << QStringLiteral("Timing status: %1").arg(humanizedToken(move.elapsedStatus));
+            if (pack.openingLastBookPly().has_value()) {
+                if (move.ply <= *pack.openingLastBookPly()) {
+                    lines << QStringLiteral("Opening path: inside the pinned known line.");
+                } else if (move.ply == *pack.openingLastBookPly() + 1) {
+                    lines << QStringLiteral("Opening path: this is the first recorded departure from the pinned known line.");
+                } else {
+                    lines << QStringLiteral("Opening path: beyond the pinned known line.");
+                }
+            }
+            if (longest == &move) {
+                lines << QStringLiteral("This is the longest server-recorded decision in the game.");
+            }
+            if (move.persistedEngineEvidence.has_value()) {
+                const auto &engine = *move.persistedEngineEvidence;
+                lines << QStringLiteral("PERSISTED FIXED-NODE REPORT")
+                      << QStringLiteral("White evaluation: %1 before · %2 after")
+                             .arg(engineScoreText(
+                                      engine.beforeScoreKind,
+                                      engine.beforeCentipawnsWhite,
+                                      engine.beforeMateForWhite),
+                                  engineScoreText(
+                                      engine.afterScoreKind,
+                                      engine.afterCentipawnsWhite,
+                                      engine.afterMateForWhite))
+                      << QStringLiteral("Before: %1 · after: %2")
+                             .arg(engineWdlText(engine.beforeWdlWhite),
+                                  engineWdlText(engine.afterWdlWhite))
+                      << QStringLiteral("Mover expectation: %1 → %2 · loss %3")
+                             .arg(percentageText(engine.expectedBeforeMillionths),
+                                  percentageText(engine.expectedAfterMillionths),
+                                  percentageText(engine.wdlLossMillionths))
+                      << QStringLiteral("Frozen threshold label: %1%2")
+                             .arg(humanizedToken(engine.severity),
+                                  engine.centipawnLoss.has_value()
+                                      ? QStringLiteral(" · centipawn loss %1").arg(*engine.centipawnLoss)
+                                      : QStringLiteral(" · centipawn loss N/A"));
+                if (engine.beforeBestMoveUci.has_value()) {
+                    lines << QStringLiteral("Engine-reported best move before play: %1 · recorded move: %2")
+                                 .arg(*engine.beforeBestMoveUci, move.notation.uci);
+                } else {
+                    lines << QStringLiteral("Engine-reported best move before play: unavailable");
+                }
+                lines << QStringLiteral("Reported PV, not played: %1")
+                             .arg(engine.beforePvUci.isEmpty()
+                                      ? QStringLiteral("unavailable") : engine.beforePvUci)
+                      << QStringLiteral("Search: depth %1 · selective depth %2 · %3 nodes")
+                             .arg(engine.beforeDepth)
+                             .arg(engine.beforeSelectiveDepth)
+                             .arg(engine.beforeNodes);
+                if (engine.missedWinningAdvantage) {
+                    lines << QStringLiteral("Threshold event: winning advantage was lost under the frozen engine policy.");
+                }
+                if (engine.missedForcedMate) {
+                    lines << QStringLiteral("Threshold event: a forced mate was lost under the frozen engine policy.");
+                }
+            }
+            if (move.ply == pack.moves().size()) {
+                lines << QString() << QStringLiteral("RECORDED FINISH")
+                      << QStringLiteral("Result: %1. %2").arg(pack.result(), finish);
+            }
+        }
+        lines << QString();
+        if (pack.persistedEngineEvidence().has_value()) {
+            const auto &engine = *pack.persistedEngineEvidence();
+            lines << QStringLiteral("This is a persisted %1-node report recorded at %2. It is not an objective verdict, proof of a unique best move, causal explanation, or live analysis.")
+                         .arg(engine.nodeLimit)
+                         .arg(engine.analysisRecordedAtUtc);
+        } else {
+            lines << QStringLiteral("No best-move, blunder, missed-win, or causal claim is available without joined engine evidence.");
+        }
+        m_summaryView->setHtml(mechanicalSummaryHtml(lines));
+        m_backButton->setEnabled(true);
+        m_showEngineLineButton->setEnabled(false);
+        m_returnToGameButton->setEnabled(false);
+        m_showEngineLineButton->setVisible(false);
+        m_returnToGameButton->setVisible(false);
+        return;
+    }
+
+    setTitle(QStringLiteral("analysis replay"));
+    m_openButton->setVisible(true);
+    m_backButton->setText(QStringLiteral("Back to Puzzles"));
     m_gameLabel->setText(
         QStringLiteral("%1 vs %2 — %3").arg(pack.whiteUsername(), pack.blackUsername(), pack.result()));
     m_openingLabel->setText(replayOpeningText(pack));
     m_engineLabel->setText(
         QStringLiteral("Supplied engine metadata (not verified): %1 — %2 nodes — config %3")
             .arg(pack.sourceEngineName(), QString::number(pack.sourceEngineNodeLimit()), pack.sourceEngineConfigId()));
+    m_showEngineLineButton->setVisible(true);
+    m_returnToGameButton->setVisible(true);
 
     QStringList lines;
     if (session.inVariation()) {
@@ -421,6 +758,59 @@ bool ReplayEvidencePanel::canShowEngineLine() const
 bool ReplayEvidencePanel::canReturnToGame() const
 {
     return m_returnToGameButton->isEnabled();
+}
+
+GameReviewPanel::GameReviewPanel(QWidget *parent)
+    : QWidget(parent)
+    , m_moveListPanel(new MoveListPanel(this))
+    , m_evidencePanel(new ReplayEvidencePanel(this))
+{
+    setObjectName(QStringLiteral("gameReviewWorkspace"));
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto *splitter = new QSplitter(Qt::Vertical, this);
+    splitter->setObjectName(QStringLiteral("gameReviewSplitter"));
+    splitter->setChildrenCollapsible(false);
+    m_moveListPanel->setObjectName(QStringLiteral("gameReviewMoveList"));
+    m_moveListPanel->setTitle(QStringLiteral("recorded moves and events"));
+    m_evidencePanel->setObjectName(QStringLiteral("gameReviewInspector"));
+    splitter->addWidget(m_moveListPanel);
+    splitter->addWidget(m_evidencePanel);
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 4);
+    splitter->setSizes({320, 420});
+    layout->addWidget(splitter);
+
+    connect(
+        m_moveListPanel,
+        &MoveListPanel::replayPlyRequested,
+        this,
+        &GameReviewPanel::replayPlyRequested);
+    connect(
+        m_evidencePanel,
+        &ReplayEvidencePanel::backToPuzzlesRequested,
+        this,
+        &GameReviewPanel::backToPlayerStatisticsRequested);
+}
+
+void GameReviewPanel::setReplayState(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+    const parlawl::puzzle_runner::ReplaySession &session,
+    int variationAnchorPly)
+{
+    m_moveListPanel->setAnnotatedReplay(
+        pack,
+        session.currentMainlinePly(),
+        session.inVariation(),
+        variationAnchorPly);
+    m_evidencePanel->setReplayState(pack, session, variationAnchorPly);
+}
+
+void GameReviewPanel::setEmptyState()
+{
+    m_evidencePanel->setEmptyState();
 }
 
 MetadataCard::MetadataCard(QWidget *parent)

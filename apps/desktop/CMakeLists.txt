@@ -4,6 +4,8 @@ qt_add_executable(parlawl_desktop MACOSX_BUNDLE
     evaluation_bar_widget.cpp
     evaluation_bar_widget.h
     main.cpp
+    player_statistics_panel.cpp
+    player_statistics_panel.h
     puzzle_panels.cpp
     puzzle_panels.h
     puzzle_runner_window.cpp
@@ -21,6 +23,7 @@ target_include_directories(parlawl_desktop
 target_link_libraries(parlawl_desktop
     PRIVATE
         Qt6::Core
+        Qt6::Sql
         Qt6::Widgets
         domain
         lichess

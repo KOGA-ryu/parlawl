@@ -179,6 +179,7 @@ class AnnotatedReplayPackTest : public QObject
 
 private slots:
     void acceptsStrictLegalReplayAndPreservesEvidence();
+    void buildsMechanicalGameBreakdownFromLegalExplorerMoves();
     void rejectsTamperedMainlineAndPlyOrder();
     void rejectsBrokenVariationAndRestore();
     void rejectsDuplicateKeysAndOversizeInput();
@@ -200,6 +201,122 @@ void AnnotatedReplayPackTest::acceptsStrictLegalReplayAndPreservesEvidence()
     QCOMPARE(pack->sourceEngineNodeLimit(), 1000);
     QVERIFY(pack->legalMechanicsAreVerified());
     QVERIFY(!pack->suppliedAnnotationsAreVerified());
+}
+
+void AnnotatedReplayPackTest::buildsMechanicalGameBreakdownFromLegalExplorerMoves()
+{
+    MechanicalReplayGame game;
+    game.sourceGameId = QStringLiteral(
+        "chesscom-game-v1:1111111111111111111111111111111111111111111111111111111111111111");
+    game.canonicalGameUrl = QStringLiteral("https://www.chess.com/game/live/1");
+    game.eventStartUtc = QStringLiteral("2026-08-01T12:00:00Z");
+    game.whiteUsername = QStringLiteral("Alpha");
+    game.blackUsername = QStringLiteral("Beta");
+    game.whiteRating = 2100;
+    game.blackRating = 2050;
+    game.result = QStringLiteral("1-0");
+    game.openingStatus = QStringLiteral("classified");
+    game.openingEco = QStringLiteral("C20");
+    game.openingName = QStringLiteral("King's Pawn Game");
+    game.openingLastBookPly = 2;
+    game.viewedPlayerColor = QStringLiteral("black");
+    const auto addMove = [&game](
+                             int ply,
+                             const QString &san,
+                             const QString &uci,
+                             int legalMoves,
+                             qint64 before,
+                             qint64 after,
+                             qint64 elapsed) {
+        MechanicalReplayMove move;
+        move.ply = ply;
+        move.san = san;
+        move.uci = uci;
+        move.positionPhase = QStringLiteral("opening");
+        move.forcednessStatus = QStringLiteral("nonforced");
+        move.legalMoveCount = legalMoves;
+        move.decisionStartClockMs = before;
+        move.clockRemainingAfterMoveMs = after;
+        move.elapsedMoveMs = elapsed;
+        move.elapsedStatus = QStringLiteral("derived_clock_difference");
+        game.moves.append(move);
+    };
+    addMove(1, QStringLiteral("e4"), QStringLiteral("e2e4"), 20, 180'000, 179'000, 1'000);
+    addMove(2, QStringLiteral("e5"), QStringLiteral("e7e5"), 20, 180'000, 178'000, 2'000);
+    addMove(3, QStringLiteral("Nf3"), QStringLiteral("g1f3"), 29, 179'000, 176'000, 3'000);
+    addMove(4, QStringLiteral("Nc6"), QStringLiteral("b8c6"), 29, 178'000, 174'000, 4'000);
+
+    QString error;
+    const auto pack = AnnotatedReplayPack::fromMechanicalGame(game, &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    QVERIFY(pack->isMechanicalGameBreakdown());
+    QCOMPARE(pack->viewedPlayerColor(), QStringLiteral("black"));
+    QCOMPARE(pack->mainlinePositions().size(), 5);
+    QVERIFY(pack->openingLastBookPly().has_value());
+    QCOMPARE(*pack->openingLastBookPly(), 2);
+    QCOMPARE(pack->moves().at(3).elapsedMoveMs.value_or(-1), 4'000);
+    QVERIFY(pack->preferredVariation(4) == nullptr);
+
+    MechanicalReplayGame tampered = game;
+    tampered.moves[2].san = QStringLiteral("Nc3");
+    QVERIFY(!AnnotatedReplayPack::fromMechanicalGame(tampered, &error).has_value());
+    QVERIFY(error.contains(QStringLiteral("SAN")));
+
+    PersistedEngineGameEvidence engineGame;
+    engineGame.evidenceId = QStringLiteral("player-game-engine-view-v1:")
+        + QString(64, QLatin1Char('a'));
+    engineGame.representativeRunId = QStringLiteral("performance-analysis-run-v2:")
+        + QString(64, QLatin1Char('b'));
+    engineGame.analysisRecordedAtUtc = QStringLiteral("2026-08-03T12:00:00Z");
+    engineGame.lineageCount = 1;
+    engineGame.engineConfigId = QStringLiteral("performance-engine-config-v1:")
+        + QString(64, QLatin1Char('c'));
+    engineGame.engineName = QStringLiteral("Stockfish 18");
+    engineGame.engineAuthor = QStringLiteral("Stockfish developers");
+    engineGame.engineBinarySha256 = QString(64, QLatin1Char('d'));
+    engineGame.engineAdapterVersion = QStringLiteral("stockfish-complete-position-v1");
+    engineGame.nodeLimit = 1'000;
+    engineGame.hashMebibytes = 16;
+    engineGame.threads = 1;
+    engineGame.wdlLossThresholds = {25'000, 50'000, 100'000};
+    engineGame.winningExpectationMillionths = 750'000;
+    game.engineEvidence = engineGame;
+    for (int index = 0; index < game.moves.size(); ++index) {
+        PersistedEngineMoveEvidence engineMove;
+        const bool severe = index == 2;
+        engineMove.expectedBeforeMillionths = 750'000;
+        engineMove.expectedAfterMillionths = severe ? 584'000 : 740'000;
+        engineMove.wdlLossMillionths = severe ? 166'000 : 10'000;
+        engineMove.centipawnLoss = severe ? 40 : 5;
+        engineMove.missedWinningAdvantage = severe;
+        engineMove.severity = severe ? QStringLiteral("severe") : QStringLiteral("none");
+        engineMove.beforeScoreKind = QStringLiteral("cp");
+        engineMove.beforeCentipawnsWhite = 100;
+        engineMove.beforeWdlWhite = {500, 500, 0};
+        engineMove.beforeBestMoveUci = QStringLiteral("d2d4");
+        engineMove.beforeDepth = 7;
+        engineMove.beforeSelectiveDepth = 9;
+        engineMove.beforeNodes = 1'000;
+        engineMove.beforePvUci = QStringLiteral("d2d4 d7d5");
+        engineMove.afterScoreKind = QStringLiteral("cp");
+        engineMove.afterCentipawnsWhite = severe ? 60 : 90;
+        engineMove.afterWdlWhite = {450, 550, 0};
+        game.moves[index].engineEvidence = engineMove;
+    }
+    const auto enginePack = AnnotatedReplayPack::fromMechanicalGame(game, &error);
+    QVERIFY2(enginePack.has_value(), qPrintable(error));
+    QVERIFY(enginePack->persistedEngineEvidence().has_value());
+    QCOMPARE(enginePack->sourceEngineName(), QStringLiteral("Stockfish 18"));
+    QCOMPARE(enginePack->moves().at(2).severity, QStringLiteral("severe"));
+    QVERIFY(enginePack->moves().at(2).persistedEngineEvidence.has_value());
+    QCOMPARE(
+        enginePack->moves().at(2).persistedEngineEvidence->beforePvUci,
+        QStringLiteral("d2d4 d7d5"));
+    QVERIFY(enginePack->replayId() != pack->replayId());
+
+    game.moves[1].engineEvidence.reset();
+    QVERIFY(!AnnotatedReplayPack::fromMechanicalGame(game, &error).has_value());
+    QVERIFY(error.contains(QStringLiteral("complete per game")));
 }
 
 void AnnotatedReplayPackTest::rejectsTamperedMainlineAndPlyOrder()

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -10,10 +11,13 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QHash>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStringDecoder>
 #include <QStringList>
+#include <QUrl>
 
 namespace parlawl::puzzle_runner {
 
@@ -1431,6 +1435,397 @@ bool validateVariation(
 }
 
 } // namespace
+
+std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
+    const MechanicalReplayGame &game,
+    QString *errorMessage)
+{
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    const auto plainText = [](const QString &value, qsizetype maximumBytes) {
+        if (value.isEmpty() || value != value.trimmed()
+            || value.toUtf8().size() > maximumBytes || value.contains(QChar::Null)) {
+            return false;
+        }
+        return std::none_of(value.cbegin(), value.cend(), [](QChar character) {
+            return character.unicode() < 32 || character.unicode() == 127;
+        });
+    };
+    const QUrl gameUrl(game.canonicalGameUrl);
+    const QDateTime eventStart = QDateTime::fromString(game.eventStartUtc, Qt::ISODate);
+    const bool classified = game.openingStatus == QStringLiteral("classified");
+    if (!semanticId(game.sourceGameId)
+        || !plainText(game.canonicalGameUrl, 1'024)
+        || !gameUrl.isValid() || gameUrl.scheme() != QStringLiteral("https")
+        || !plainText(game.eventStartUtc, 64) || !eventStart.isValid()
+        || eventStart.offsetFromUtc() != 0
+        || !plainText(game.whiteUsername, 128)
+        || !plainText(game.blackUsername, 128)
+        || game.whiteUsername.compare(game.blackUsername, Qt::CaseInsensitive) == 0
+        || game.whiteRating < 100 || game.whiteRating > 5'000
+        || game.blackRating < 100 || game.blackRating > 5'000
+        || (game.result != QStringLiteral("1-0")
+            && game.result != QStringLiteral("0-1")
+            && game.result != QStringLiteral("1/2-1/2"))
+        || (game.openingStatus != QStringLiteral("classified")
+            && game.openingStatus != QStringLiteral("ambiguous")
+            && game.openingStatus != QStringLiteral("unknown"))
+        || (classified
+            && (!game.openingEco.has_value() || !game.openingName.has_value()
+                || !QRegularExpression(QStringLiteral("^[A-E][0-9]{2}$"))
+                        .match(*game.openingEco).hasMatch()
+                || !plainText(*game.openingName, 160)))
+        || (!classified && (game.openingEco.has_value() || game.openingName.has_value()))
+        || (game.viewedPlayerColor != QStringLiteral("white")
+            && game.viewedPlayerColor != QStringLiteral("black"))
+        || game.moves.size() < 2 || game.moves.size() > kMaximumReplayPlies
+        || (game.openingLastBookPly.has_value()
+            && (*game.openingLastBookPly < 0
+                || *game.openingLastBookPly > game.moves.size()))) {
+        setError(errorMessage, QStringLiteral("mechanical game metadata is invalid"));
+        return std::nullopt;
+    }
+    if (game.engineEvidence.has_value()) {
+        const PersistedEngineGameEvidence &engine = *game.engineEvidence;
+        bool thresholdsValid = engine.wdlLossThresholds.size() == 3;
+        int previousThreshold = 0;
+        for (const int threshold : engine.wdlLossThresholds) {
+            thresholdsValid = thresholdsValid
+                && threshold > previousThreshold && threshold <= 1'000'000;
+            previousThreshold = threshold;
+        }
+        const QDateTime recordedAt = QDateTime::fromString(
+            engine.analysisRecordedAtUtc, Qt::ISODate);
+        if (!semanticId(engine.evidenceId)
+            || !semanticId(engine.representativeRunId)
+            || !semanticId(engine.engineConfigId)
+            || !plainText(engine.analysisRecordedAtUtc, 64)
+            || !recordedAt.isValid() || recordedAt.offsetFromUtc() != 0
+            || engine.lineageCount < 1 || engine.lineageCount > 20'000
+            || !plainText(engine.engineName, 256)
+            || !plainText(engine.engineAuthor, 256)
+            || !QRegularExpression(QStringLiteral("^[0-9a-f]{64}$"))
+                    .match(engine.engineBinarySha256).hasMatch()
+            || !plainText(engine.engineAdapterVersion, 128)
+            || engine.nodeLimit < 1'000 || engine.nodeLimit > 1'000'000
+            || engine.hashMebibytes < 1 || engine.hashMebibytes > 1'024
+            || engine.threads != 1 || !thresholdsValid
+            || engine.winningExpectationMillionths < 500'000
+            || engine.winningExpectationMillionths > 1'000'000) {
+            setError(errorMessage, QStringLiteral("persisted engine game metadata is invalid"));
+            return std::nullopt;
+        }
+    }
+    const bool allMovesCarryEngine = std::all_of(
+        game.moves.cbegin(), game.moves.cend(), [](const MechanicalReplayMove &move) {
+            return move.engineEvidence.has_value();
+        });
+    const bool noMovesCarryEngine = std::none_of(
+        game.moves.cbegin(), game.moves.cend(), [](const MechanicalReplayMove &move) {
+            return move.engineEvidence.has_value();
+        });
+    if ((game.engineEvidence.has_value() && !allMovesCarryEngine)
+        || (!game.engineEvidence.has_value() && !noMovesCarryEngine)) {
+        setError(errorMessage, QStringLiteral("persisted engine coverage must be complete per game"));
+        return std::nullopt;
+    }
+
+    QString fenError;
+    auto current = exactPositionFromFen(kStandardInitialFen, &fenError);
+    if (!current.has_value()) {
+        setError(errorMessage, QStringLiteral("standard starting position is unavailable: ") + fenError);
+        return std::nullopt;
+    }
+
+    AnnotatedReplayPack pack;
+    pack.m_sourceGameId = game.sourceGameId;
+    pack.m_whiteUsername = game.whiteUsername;
+    pack.m_blackUsername = game.blackUsername;
+    pack.m_whiteRating = game.whiteRating;
+    pack.m_blackRating = game.blackRating;
+    pack.m_result = game.result;
+    pack.m_openingStatus = game.openingStatus;
+    pack.m_openingEco = game.openingEco;
+    pack.m_openingName = game.openingName;
+    pack.m_openingLastBookPly = game.openingLastBookPly;
+    pack.m_canonicalGameUrl = game.canonicalGameUrl;
+    pack.m_eventStartUtc = game.eventStartUtc;
+    pack.m_viewedPlayerColor = game.viewedPlayerColor;
+    pack.m_mechanicalGameBreakdown = true;
+    pack.m_persistedEngineEvidence = game.engineEvidence;
+    if (game.engineEvidence.has_value()) {
+        pack.m_sourceRunId = game.engineEvidence->representativeRunId;
+        pack.m_sourceEngineConfigId = game.engineEvidence->engineConfigId;
+        pack.m_sourceEngineName = game.engineEvidence->engineName;
+        pack.m_sourceEngineAuthor = game.engineEvidence->engineAuthor;
+        pack.m_sourceEngineBinarySha256 = game.engineEvidence->engineBinarySha256;
+        pack.m_sourceEngineNodeLimit = game.engineEvidence->nodeLimit;
+    }
+    pack.m_mainlinePositions.reserve(game.moves.size() + 1);
+    pack.m_mainlinePositions.append(*current);
+    pack.m_moves.reserve(game.moves.size());
+
+    QCryptographicHash replayHash(QCryptographicHash::Sha256);
+    const auto addHashField = [&replayHash](const QByteArray &field) {
+        replayHash.addData(QByteArray::number(field.size()));
+        replayHash.addData(QByteArrayLiteral(":"));
+        replayHash.addData(field);
+        replayHash.addData(QByteArrayLiteral("|"));
+    };
+    const auto addOptionalInteger = [&addHashField](const std::optional<qint64> &value) {
+        addHashField(value.has_value() ? QByteArray::number(*value) : QByteArrayLiteral("null"));
+    };
+    for (const QString &value : {
+             game.sourceGameId, game.canonicalGameUrl, game.eventStartUtc,
+             game.whiteUsername, game.blackUsername, game.result,
+             game.openingStatus, game.openingEco.value_or(QString()),
+             game.openingName.value_or(QString()), game.viewedPlayerColor,
+         }) {
+        addHashField(value.toUtf8());
+    }
+    addHashField(QByteArray::number(game.whiteRating));
+    addHashField(QByteArray::number(game.blackRating));
+    addHashField(game.openingLastBookPly.has_value()
+            ? QByteArray::number(*game.openingLastBookPly) : QByteArrayLiteral("null"));
+    addHashField(game.engineEvidence.has_value() ? QByteArrayLiteral("engine") : QByteArrayLiteral("no-engine"));
+    if (game.engineEvidence.has_value()) {
+        const PersistedEngineGameEvidence &engine = *game.engineEvidence;
+        for (const QString &value : {
+                 engine.evidenceId, engine.representativeRunId,
+                 engine.analysisRecordedAtUtc, engine.engineConfigId,
+                 engine.engineName, engine.engineAuthor,
+                 engine.engineBinarySha256, engine.engineAdapterVersion,
+             }) {
+            addHashField(value.toUtf8());
+        }
+        for (const int value : engine.wdlLossThresholds) {
+            addHashField(QByteArray::number(value));
+        }
+        for (const int value : {
+                 engine.lineageCount, engine.nodeLimit, engine.hashMebibytes,
+                 engine.threads, engine.winningExpectationMillionths,
+             }) {
+            addHashField(QByteArray::number(value));
+        }
+    }
+
+    const QSet<QString> phases {
+        QStringLiteral("opening"), QStringLiteral("middlegame"),
+        QStringLiteral("endgame")};
+    const QSet<QString> elapsedStatuses {
+        QStringLiteral("observed_emt"),
+        QStringLiteral("derived_clock_difference"),
+        QStringLiteral("derived_clock_difference_rounded_zero"),
+        QStringLiteral("missing_clock_annotation"),
+        QStringLiteral("missing_prior_clock"),
+        QStringLiteral("missing_time_control"),
+        QStringLiteral("missing_time_control_stage"),
+        QStringLiteral("not_applicable_untimed"),
+        QStringLiteral("unsupported_hourglass"),
+        QStringLiteral("clock_increase_unreconciled"),
+    };
+    const auto validClock = [](const std::optional<qint64> &value) {
+        return !value.has_value() || (*value >= 0 && *value <= 86'400'000);
+    };
+    const auto validWdl = [](const QVector<int> &values) {
+        return values.size() == 3
+            && std::all_of(values.cbegin(), values.cend(), [](int value) {
+                return value >= 0 && value <= 1'000;
+            })
+            && std::accumulate(values.cbegin(), values.cend(), 0) == 1'000;
+    };
+    const auto validScore = [](const QString &kind,
+                                const std::optional<qint64> &centipawns,
+                                const std::optional<qint64> &mate,
+                                bool allowTerminal) {
+        if (kind == QStringLiteral("cp")) {
+            return centipawns.has_value() && !mate.has_value()
+                && std::abs(*centipawns) <= 1'000'000;
+        }
+        if (kind == QStringLiteral("mate")) {
+            return !centipawns.has_value() && mate.has_value()
+                && *mate != 0 && std::abs(*mate) <= 1'000'000;
+        }
+        if (allowTerminal && kind == QStringLiteral("terminal_mate")) {
+            return !centipawns.has_value() && mate.value_or(-1) == 0;
+        }
+        return allowTerminal && kind == QStringLiteral("terminal_draw")
+            && centipawns.value_or(-1) == 0 && !mate.has_value();
+    };
+
+    for (int index = 0; index < game.moves.size(); ++index) {
+        const MechanicalReplayMove &source = game.moves.at(index);
+        const int expectedPly = index + 1;
+        const QString expectedForcedness = source.legalMoveCount == 1
+            ? QStringLiteral("forced-single-legal-move") : QStringLiteral("nonforced");
+        const bool elapsedObserved = source.elapsedMoveMs.has_value();
+        const bool statusObserved = source.elapsedStatus == QStringLiteral("observed_emt")
+            || source.elapsedStatus == QStringLiteral("derived_clock_difference")
+            || source.elapsedStatus == QStringLiteral("derived_clock_difference_rounded_zero");
+        const auto move = Move::fromUci(source.uci);
+        const QVector<Move> legalMoves = current->legalMoves();
+        if (source.ply != expectedPly
+            || !plainText(source.san, 20)
+            || !kUciPattern.match(source.uci).hasMatch()
+            || !phases.contains(source.positionPhase)
+            || source.legalMoveCount != legalMoves.size()
+            || source.forcednessStatus != expectedForcedness
+            || !elapsedStatuses.contains(source.elapsedStatus)
+            || elapsedObserved != statusObserved
+            || !validClock(source.decisionStartClockMs)
+            || !validClock(source.clockRemainingAfterMoveMs)
+            || !validClock(source.elapsedMoveMs)
+            || !move.has_value() || !current->isLegalMove(*move)
+            || current->pieceAt(move->to).type == PieceType::King) {
+            setError(errorMessage, QStringLiteral("mechanical move %1 is malformed or illegal").arg(expectedPly));
+            return std::nullopt;
+        }
+        if (source.engineEvidence.has_value()) {
+            const PersistedEngineMoveEvidence &engine = *source.engineEvidence;
+            const QVector<int> &thresholds = game.engineEvidence->wdlLossThresholds;
+            const QString expectedSeverity = engine.wdlLossMillionths >= thresholds.at(2)
+                ? QStringLiteral("severe")
+                : engine.wdlLossMillionths >= thresholds.at(1)
+                    ? QStringLiteral("mistake")
+                    : engine.wdlLossMillionths >= thresholds.at(0)
+                        ? QStringLiteral("inaccuracy") : QStringLiteral("none");
+            if (engine.expectedBeforeMillionths < 0
+                || engine.expectedBeforeMillionths > 1'000'000
+                || engine.expectedAfterMillionths < 0
+                || engine.expectedAfterMillionths > 1'000'000
+                || engine.wdlLossMillionths
+                    != std::max(0, engine.expectedBeforeMillionths - engine.expectedAfterMillionths)
+                || engine.centipawnLoss.value_or(0) < 0
+                || engine.severity != expectedSeverity
+                || !validScore(engine.beforeScoreKind,
+                    engine.beforeCentipawnsWhite, engine.beforeMateForWhite, false)
+                || !validScore(engine.afterScoreKind,
+                    engine.afterCentipawnsWhite, engine.afterMateForWhite, true)
+                || !validWdl(engine.beforeWdlWhite) || !validWdl(engine.afterWdlWhite)
+                || (engine.beforeBestMoveUci.has_value()
+                    && !kUciPattern.match(*engine.beforeBestMoveUci).hasMatch())
+                || engine.beforeDepth < 1 || engine.beforeSelectiveDepth < 0
+                || engine.beforeNodes < 1 || engine.beforePvUci.toUtf8().size() > 16'384) {
+                setError(errorMessage, QStringLiteral("persisted engine move %1 is invalid").arg(expectedPly));
+                return std::nullopt;
+            }
+        }
+
+        const Piece moving = current->pieceAt(move->from);
+        ChessPosition after = *current;
+        if (!after.applyMove(*move)) {
+            setError(errorMessage, QStringLiteral("mechanical move %1 could not be applied").arg(expectedPly));
+            return std::nullopt;
+        }
+        const QString calculatedSan = sanForMove(*current, *move, after);
+        if (calculatedSan != source.san) {
+            setError(errorMessage, QStringLiteral("mechanical move %1 SAN differs from legal replay").arg(expectedPly));
+            return std::nullopt;
+        }
+
+        ReplayMove output;
+        output.ply = expectedPly;
+        output.severity = QStringLiteral("none");
+        output.alternativeStatus = QStringLiteral("unavailable");
+        output.positionPhase = source.positionPhase;
+        output.forcednessStatus = source.forcednessStatus;
+        output.legalMoveCount = source.legalMoveCount;
+        output.decisionStartClockMs = source.decisionStartClockMs;
+        output.clockRemainingAfterMoveMs = source.clockRemainingAfterMoveMs;
+        output.elapsedMoveMs = source.elapsedMoveMs;
+        output.elapsedStatus = source.elapsedStatus;
+        output.persistedEngineEvidence = source.engineEvidence;
+        if (source.engineEvidence.has_value()) {
+            output.severity = source.engineEvidence->severity;
+            output.expectedBeforeMillionths = source.engineEvidence->expectedBeforeMillionths;
+            output.expectedAfterMillionths = source.engineEvidence->expectedAfterMillionths;
+            output.wdlLossMillionths = source.engineEvidence->wdlLossMillionths;
+            output.centipawnLoss = source.engineEvidence->centipawnLoss;
+            output.missedWinningAdvantage = source.engineEvidence->missedWinningAdvantage;
+            output.missedForcedMate = source.engineEvidence->missedForcedMate;
+        }
+        output.notation.ply = expectedPly;
+        output.notation.moveNumber = (expectedPly + 1) / 2;
+        output.notation.matchId = game.sourceGameId;
+        output.notation.mover = expectedPly % 2 == 1
+            ? QStringLiteral("white") : QStringLiteral("black");
+        output.notation.uci = source.uci;
+        output.notation.san = source.san;
+        output.notation.piece = pieceName(moving.type);
+        output.notation.origin = ChessPosition::squareName(move->from);
+        output.notation.target = ChessPosition::squareName(move->to);
+        output.notation.capturedPiece = capturedPieceForMove(*current, *move);
+        output.notation.capture = output.notation.capturedPiece.has_value();
+        output.notation.enPassant = moving.type == PieceType::Pawn
+            && current->pieceAt(move->to).isEmpty()
+            && ChessPosition::fileOf(move->from) != ChessPosition::fileOf(move->to);
+        output.notation.check = after.isInCheck(after.sideToMove());
+        output.notation.checkmate = output.notation.check && after.legalMoves().isEmpty();
+        if (moving.type == PieceType::King
+            && std::abs(ChessPosition::fileOf(move->from) - ChessPosition::fileOf(move->to)) == 2) {
+            output.notation.castling = ChessPosition::fileOf(move->to) == 6
+                ? QStringLiteral("kingside") : QStringLiteral("queenside");
+        }
+        if (move->promotion != PieceType::None) {
+            output.notation.promotionPiece = pieceName(move->promotion);
+        }
+        output.notation.beforeFen = canonicalFen(*current);
+        output.notation.afterFen = canonicalFenAfterMove(*current, *move, after);
+        pack.m_moves.append(output);
+        pack.m_mainlinePositions.append(after);
+        current = after;
+
+        for (const QString &value : {
+                 source.san, source.uci, source.positionPhase,
+                 source.forcednessStatus, source.elapsedStatus,
+             }) {
+            addHashField(value.toUtf8());
+        }
+        addHashField(QByteArray::number(source.ply));
+        addHashField(QByteArray::number(source.legalMoveCount));
+        addOptionalInteger(source.decisionStartClockMs);
+        addOptionalInteger(source.clockRemainingAfterMoveMs);
+        addOptionalInteger(source.elapsedMoveMs);
+        addHashField(source.engineEvidence.has_value()
+                ? QByteArrayLiteral("engine") : QByteArrayLiteral("no-engine"));
+        if (source.engineEvidence.has_value()) {
+            const PersistedEngineMoveEvidence &engine = *source.engineEvidence;
+            for (const int value : {
+                     engine.expectedBeforeMillionths, engine.expectedAfterMillionths,
+                     engine.wdlLossMillionths, engine.beforeDepth,
+                     engine.beforeSelectiveDepth, engine.beforeNodes,
+                 }) {
+                addHashField(QByteArray::number(value));
+            }
+            addOptionalInteger(engine.centipawnLoss);
+            addOptionalInteger(engine.beforeCentipawnsWhite);
+            addOptionalInteger(engine.beforeMateForWhite);
+            addOptionalInteger(engine.afterCentipawnsWhite);
+            addOptionalInteger(engine.afterMateForWhite);
+            addHashField(engine.missedWinningAdvantage
+                    ? QByteArrayLiteral("true") : QByteArrayLiteral("false"));
+            addHashField(engine.missedForcedMate
+                    ? QByteArrayLiteral("true") : QByteArrayLiteral("false"));
+            for (const QString &value : {
+                     engine.severity, engine.beforeScoreKind,
+                     engine.beforeBestMoveUci.value_or(QString()),
+                     engine.beforePvUci, engine.afterScoreKind,
+                 }) {
+                addHashField(value.toUtf8());
+            }
+            for (const int value : engine.beforeWdlWhite) {
+                addHashField(QByteArray::number(value));
+            }
+            for (const int value : engine.afterWdlWhite) {
+                addHashField(QByteArray::number(value));
+            }
+        }
+    }
+    pack.m_replayId = QStringLiteral("chess-mechanical-game-replay-v1:")
+        + QString::fromLatin1(replayHash.result().toHex());
+    return pack;
+}
 
 std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromJson(
     const QByteArray &rawJson,
