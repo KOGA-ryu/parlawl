@@ -121,6 +121,7 @@ private:
     void togglePlayback(const QString &sourceGameId);
     void closeGameAt(int tabIndex);
     void activateBoardForCurrentTab();
+    void updateWindowTitleForCurrentTab();
 
     QTabWidget *m_gameTabs;
     QHash<QString, OpenGame *> m_games;

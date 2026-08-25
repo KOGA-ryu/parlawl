@@ -764,10 +764,17 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
 
     QVERIFY(hub.activateGame(first->sourceGameId()));
     QCOMPARE(hub.activeGameId(), first->sourceGameId());
+    QVERIFY(hub.windowTitle().contains(QStringLiteral("Alpha 2100")));
+    QVERIFY(hub.windowTitle().contains(QStringLiteral("Beta 2050")));
+    QVERIFY(!hub.windowTitle().contains(QStringLiteral("Review Hub")));
     auto *firstBoard = hub.boardWindowForGame(first->sourceGameId());
     auto *gameTabs = hub.findChild<QTabWidget *>(QStringLiteral("reviewHubGameTabs"));
     QVERIFY(firstBoard != nullptr);
     QVERIFY(gameTabs != nullptr);
+    const auto *boardIdentity = firstBoard->findChild<QLabel *>(
+        QStringLiteral("boardGameIdentity"));
+    QVERIFY(boardIdentity != nullptr);
+    QCOMPARE(boardIdentity->text(), QStringLiteral("Game A"));
     firstBoard->close();
     QVERIFY(!firstBoard->isVisible());
     QTest::mouseClick(
@@ -860,12 +867,16 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     const auto *title = coach->findChild<QLabel *>(QStringLiteral("coachReviewTitle"));
     const auto *summary = coach->findChild<QLabel *>(QStringLiteral("coachReviewSummary"));
     const auto *context = coach->findChild<QLabel *>(QStringLiteral("coachReviewContext"));
+    const auto *timing = coach->findChild<QLabel *>(QStringLiteral("coachTimingChip"));
     QVERIFY(title != nullptr);
     QVERIFY(summary != nullptr);
     QVERIFY(context != nullptr);
+    QVERIFY(timing != nullptr);
     QCOMPARE(title->text(), QStringLiteral("Small engine difference"));
     QCOMPARE(summary->text(), review.criticalMoments.at(1).summary);
-    QVERIFY(context->text().contains(QStringLiteral("server-accounted, not cognitive")));
+    QCOMPARE(context->text(), QStringLiteral("Beta · opening"));
+    QVERIFY(timing->text().contains(QStringLiteral("server-accounted")));
+    QVERIFY(timing->toolTip().contains(QStringLiteral("not a measure of cognitive time")));
     const auto *card = coach->findChild<QFrame *>(QStringLiteral("coachReviewCard"));
     QVERIFY(card != nullptr);
     QVERIFY(card->styleSheet().contains(QStringLiteral("#4a6a88")));
@@ -894,7 +905,8 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     QVERIFY(details->toPlainText().contains(
         QStringLiteral("Status      confirmed_severe_error")));
     QVERIFY(details->toPlainText().contains(
-        QStringLiteral("Retained best line, not a complete search tree")));
+        QStringLiteral("Best, not a complete search tree")));
+    QVERIFY(details->toPlainText().contains(QString::fromUtf8("♘  2. Nf3")));
 
     QSignalSpy lineSpy(coach, &CoachReviewPanel::linePreviewRequested);
     auto *bestLine = coach->findChild<QPushButton *>(

@@ -26,6 +26,7 @@
 #include "board_widget.h"
 #include "chess_position.h"
 #include "puzzle_panels.h"
+#include "review_ui_style.h"
 
 using namespace parlawl::puzzle_runner;
 
@@ -120,6 +121,7 @@ GameBoardWindow::GameBoardWindow(
     setObjectName(QStringLiteral("floatingGameBoardWindow"));
     setAttribute(Qt::WA_DeleteOnClose, false);
     setWindowTitle(QStringLiteral("%1 · %2").arg(m_identityLabel, gameTitle(pack)));
+    setStyleSheet(parlawl::review_ui::studyWindowStyleSheet());
     resize(700, 790);
 
     m_tabs->setObjectName(QStringLiteral("boardWorkspaceTabs"));
@@ -130,8 +132,10 @@ GameBoardWindow::GameBoardWindow(
 
     auto *identityRow = new QHBoxLayout();
     auto *identity = new QLabel(
-        QStringLiteral("%1 · %2").arg(m_identityLabel, tabTitle(pack)), boardPage);
+        QStringLiteral("Game %1").arg(m_identityLabel), boardPage);
     identity->setObjectName(QStringLiteral("boardGameIdentity"));
+    identity->setToolTip(gameTitle(pack));
+    identity->setAccessibleDescription(gameTitle(pack));
     QFont identityFont = identity->font();
     identityFont.setBold(true);
     identity->setFont(identityFont);
@@ -160,8 +164,9 @@ GameBoardWindow::GameBoardWindow(
     m_positionLabel->setObjectName(QStringLiteral("floatingBoardPositionLabel"));
     m_transportControls = new TransportControls(boardPage);
     m_transportControls->setReplayMode(true);
-    auto *showReview = new QPushButton(QStringLiteral("Show Review"), boardPage);
+    auto *showReview = new QPushButton(QStringLiteral("Review"), boardPage);
     showReview->setObjectName(QStringLiteral("showReviewHubButton"));
+    showReview->setToolTip(QStringLiteral("Show this game's notation tab"));
     transportRow->addWidget(m_positionLabel, 1);
     transportRow->addWidget(m_transportControls);
     transportRow->addWidget(showReview);
@@ -172,7 +177,7 @@ GameBoardWindow::GameBoardWindow(
     notesLayout->setContentsMargins(10, 10, 10, 10);
     notesLayout->setSpacing(8);
     auto *notesBoundary = new QLabel(
-        QStringLiteral("Your study notes · editable local text · not retained game evidence"),
+        QStringLiteral("Local notes · separate from retained game evidence"),
         notesPage);
     notesBoundary->setObjectName(QStringLiteral("notesBoundaryLabel"));
     notesLayout->addWidget(notesBoundary);
@@ -411,7 +416,8 @@ GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
 {
     setObjectName(QStringLiteral("gameReviewHubWindow"));
     setAttribute(Qt::WA_DeleteOnClose, false);
-    setWindowTitle(QStringLiteral("ParlAWL · Review Hub"));
+    setWindowTitle(QStringLiteral("Game Review"));
+    setStyleSheet(parlawl::review_ui::studyWindowStyleSheet());
     resize(660, 860);
     if (QScreen *screen = QGuiApplication::primaryScreen(); screen != nullptr) {
         const QRect available = screen->availableGeometry();
@@ -424,6 +430,7 @@ GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
     setCentralWidget(m_gameTabs);
 
     connect(m_gameTabs, &QTabWidget::currentChanged, this, [this](int) {
+        updateWindowTitleForCurrentTab();
         activateBoardForCurrentTab();
     });
     connect(m_gameTabs->tabBar(), &QTabBar::tabBarClicked, this, [this](int tabIndex) {
@@ -593,6 +600,7 @@ bool GameReviewHubWindow::activateGame(const QString &sourceGameId)
     if (m_gameTabs->currentIndex() != index) {
         m_gameTabs->setCurrentIndex(index);
     }
+    updateWindowTitleForCurrentTab();
     return true;
 }
 
@@ -760,4 +768,12 @@ void GameReviewHubWindow::activateBoardForCurrentTab()
     openGame->boardWindow->showNormal();
     openGame->boardWindow->raise();
     openGame->boardWindow->activateWindow();
+}
+
+void GameReviewHubWindow::updateWindowTitleForCurrentTab()
+{
+    const OpenGame *openGame = currentGame();
+    setWindowTitle(openGame == nullptr
+        ? QStringLiteral("Game Review")
+        : gameTitle(openGame->pack));
 }

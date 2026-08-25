@@ -14,6 +14,7 @@ qt_add_executable(parlawl_desktop MACOSX_BUNDLE
     puzzle_panels.h
     puzzle_runner_window.cpp
     puzzle_runner_window.h
+    review_ui_style.h
     resources.qrc
     stockfish_review_controller.cpp
     stockfish_review_controller.h

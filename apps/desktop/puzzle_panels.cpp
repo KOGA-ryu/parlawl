@@ -32,6 +32,7 @@
 
 #include "review_engine_adapter.h"
 #include "pgn_utils.h"
+#include "review_ui_style.h"
 
 namespace {
 
@@ -633,6 +634,28 @@ QString movePieceIcon(const parlawl::puzzle_runner::ReplayNotation &notation)
         return QString::fromUtf8("♘");
     }
     return QString::fromUtf8("♙");
+}
+
+QString reviewPieceIcon(const QString &pieceName, const QString &mover)
+{
+    const bool black = mover == QStringLiteral("black");
+    const QString piece = pieceName.trimmed().toLower();
+    if (piece == QStringLiteral("king")) {
+        return black ? QString::fromUtf8("♚") : QString::fromUtf8("♔");
+    }
+    if (piece == QStringLiteral("queen")) {
+        return black ? QString::fromUtf8("♛") : QString::fromUtf8("♕");
+    }
+    if (piece == QStringLiteral("rook")) {
+        return black ? QString::fromUtf8("♜") : QString::fromUtf8("♖");
+    }
+    if (piece == QStringLiteral("bishop")) {
+        return black ? QString::fromUtf8("♝") : QString::fromUtf8("♗");
+    }
+    if (piece == QStringLiteral("knight")) {
+        return black ? QString::fromUtf8("♞") : QString::fromUtf8("♘");
+    }
+    return black ? QString::fromUtf8("♟") : QString::fromUtf8("♙");
 }
 
 QString detailedMoveEvidenceText(
@@ -1554,8 +1577,8 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
 {
     setObjectName(QStringLiteral("reviewEvidencePanel"));
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(8, 6, 8, 6);
-    layout->setSpacing(6);
+    layout->setContentsMargins(8, 5, 8, 5);
+    layout->setSpacing(4);
     auto *actions = new QHBoxLayout();
     actions->addWidget(m_openButton);
     actions->addWidget(m_gameLabel, 1);
@@ -1579,11 +1602,16 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     metaPalette.setColor(QPalette::WindowText, QColor(156, 165, 178));
     m_openingLabel->setPalette(metaPalette);
     m_engineLabel->setPalette(metaPalette);
+    const QString contextChipStyle = QStringLiteral(
+        "QLabel { color: #b4bdc9; background: #232930; border: 0; border-radius: 6px; padding: 4px 7px; }");
+    m_openingLabel->setStyleSheet(contextChipStyle);
+    m_engineLabel->setStyleSheet(contextChipStyle);
     auto *metaRow = new QHBoxLayout();
     metaRow->setContentsMargins(0, 0, 0, 0);
-    metaRow->setSpacing(10);
-    metaRow->addWidget(m_openingLabel, 1);
+    metaRow->setSpacing(6);
+    metaRow->addWidget(m_openingLabel);
     metaRow->addWidget(m_engineLabel);
+    metaRow->addStretch(1);
     metaRow->addWidget(m_backButton);
     layout->addLayout(metaRow);
 
@@ -1727,9 +1755,13 @@ void ReplayEvidencePanel::setInlineCoachMode(bool enabled)
 {
     m_inlineCoachMode = enabled;
     if (m_inlineCoachMode) {
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+        setMaximumHeight(56);
         m_coachCard->setVisible(false);
         m_summaryView->setVisible(false);
         setFocusReadVisible(false);
+    } else {
+        setMaximumHeight(QWIDGETSIZE_MAX);
     }
 }
 
@@ -1778,7 +1810,8 @@ void ReplayEvidencePanel::setReplayState(
             "QGroupBox { border: 0; margin: 0; padding: 0; }"));
         m_openButton->setVisible(false);
         m_gameLabel->setVisible(false);
-        m_backButton->setText(QStringLiteral("Back"));
+        m_backButton->setText(QStringLiteral("Explorer"));
+        m_backButton->setToolTip(QStringLiteral("Return to the player explorer"));
         m_backButton->setEnabled(true);
         m_gameLabel->setText(
             QStringLiteral("%1 %2  ·  %3  ·  %4 %5\n%6")
@@ -2133,10 +2166,9 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     layout->setSpacing(10);
 
     m_unavailableLabel->setObjectName(QStringLiteral("coachReviewUnavailable"));
-    m_unavailableLabel->setAlignment(Qt::AlignCenter);
-    m_unavailableLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: #a8b0ba; background: #1b1f24; border: 1px solid #303640; border-radius: 12px; padding: 28px; }"));
-    layout->addWidget(m_unavailableLabel, 1);
+    m_unavailableLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_unavailableLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+    layout->addWidget(m_unavailableLabel, 0, Qt::AlignTop);
 
     m_card->setObjectName(QStringLiteral("coachReviewCard"));
     m_card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
@@ -2147,11 +2179,13 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
 
     auto *chips = new QHBoxLayout();
     chips->setSpacing(6);
+    m_openingChip->setObjectName(QStringLiteral("coachOpeningChip"));
+    m_timingChip->setObjectName(QStringLiteral("coachTimingChip"));
+    m_counterChip->setObjectName(QStringLiteral("coachMomentCounterChip"));
     for (QLabel *chip : {m_openingChip, m_timingChip, m_counterChip}) {
         chip->setTextFormat(Qt::PlainText);
         chip->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-        chip->setStyleSheet(QStringLiteral(
-            "QLabel { color: #b8c1cc; background: #252b33; border: 1px solid #343d48; border-radius: 8px; padding: 4px 7px; }"));
+        chip->setProperty("uiRole", QStringLiteral("chip"));
         chips->addWidget(chip);
     }
     chips->addStretch(1);
@@ -2174,11 +2208,7 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
         label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     }
-    m_summaryLabel->setStyleSheet(QStringLiteral("QLabel { color: #e1e6ec; font-size: 15px; }"));
-    m_comparisonLabel->setStyleSheet(QStringLiteral("QLabel { color: #d5dce5; font-weight: 600; }"));
     m_scoreLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    m_scoreLabel->setStyleSheet(QStringLiteral("QLabel { color: #aab8c8; }"));
-    m_contextLabel->setStyleSheet(QStringLiteral("QLabel { color: #929daa; }"));
     cardLayout->addWidget(m_titleLabel);
     cardLayout->addWidget(m_summaryLabel);
     cardLayout->addWidget(m_comparisonLabel);
@@ -2188,6 +2218,7 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     auto *momentControls = new QHBoxLayout();
     m_previousMomentButton->setObjectName(QStringLiteral("previousCriticalMomentButton"));
     m_nextMomentButton->setObjectName(QStringLiteral("nextCriticalMomentButton"));
+    m_nextMomentButton->setProperty("uiRole", QStringLiteral("primary"));
     momentControls->addWidget(m_previousMomentButton);
     momentControls->addWidget(m_nextMomentButton);
     momentControls->addStretch(1);
@@ -2203,23 +2234,19 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     lineControls->addStretch(1);
     cardLayout->addLayout(lineControls);
     m_linePreviewLabel->setObjectName(QStringLiteral("retainedLinePreview"));
-    m_linePreviewLabel->setStyleSheet(QStringLiteral(
-        "QLabel { color: #9faab8; background: #171a1f; border-radius: 8px; padding: 8px; font-family: monospace; }"));
     cardLayout->addWidget(m_linePreviewLabel);
 
     auto *readingActions = new QHBoxLayout();
     m_detailsButton->setObjectName(QStringLiteral("coachDetailedEvidenceButton"));
     m_focusReadButton->setObjectName(QStringLiteral("coachFocusReadButton"));
+    m_detailsButton->setProperty("uiRole", QStringLiteral("quiet"));
+    m_focusReadButton->setProperty("uiRole", QStringLiteral("quiet"));
     readingActions->addWidget(m_detailsButton);
     readingActions->addWidget(m_focusReadButton);
     readingActions->addStretch(1);
     cardLayout->addLayout(readingActions);
 
     m_focusReadFrame->setObjectName(QStringLiteral("coachFocusReadFrame"));
-    m_focusReadFrame->setStyleSheet(QStringLiteral(
-        "QFrame#coachFocusReadFrame { background: #111419; border: 1px solid #343e49; border-radius: 12px; }"
-        "QLabel#coachFocusAnchor { background: #edf1f5; color: #20252b; border-radius: 8px; padding: 7px 9px; font-weight: 600; }"
-        "QLabel#coachFocusContext { color: #8f9aa7; }"));
     auto *focusLayout = new QVBoxLayout(m_focusReadFrame);
     focusLayout->setContentsMargins(9, 9, 9, 8);
     auto *tape = new QHBoxLayout();
@@ -2255,13 +2282,33 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     m_detailsView->setReadOnly(true);
     m_detailsView->setLineWrapMode(QTextEdit::WidgetWidth);
     m_detailsView->setMinimumHeight(185);
-    m_detailsView->setStyleSheet(QStringLiteral(
-        "QTextEdit { color: #cbd3dc; background: #14171b; border: 0; border-radius: 8px; padding: 9px; font-size: 13px; }"));
     m_detailsView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_detailsView->hide();
     cardLayout->addWidget(m_detailsView, 1);
     layout->addWidget(m_card, 0, Qt::AlignTop);
     layout->addStretch(1);
+
+    setStyleSheet(QStringLiteral(
+        "QWidget#coachReviewPanel { background: #181b20; }"
+        "QLabel#coachReviewUnavailable { color: #98a3af; background: #20252b; border: 0; border-radius: 8px; padding: 14px; }"
+        "QLabel[uiRole=\"chip\"] { color: #b8c1cc; background: #252b33; border: 0; border-radius: 6px; padding: 4px 7px; }"
+        "QLabel#coachReviewTitle { color: #f0f3f6; }"
+        "QLabel#coachReviewSummary { color: #dfe5eb; font-size: 15px; }"
+        "QLabel#coachReviewMoveComparison { color: #d5dce5; font-weight: 600; }"
+        "QLabel#coachReviewScoreComparison { color: #aeb9c7; font-size: 12px; }"
+        "QLabel#coachReviewContext { color: #929daa; }"
+        "QLabel#retainedLinePreview { color: #aeb8c5; background: #15181c; border: 0; border-radius: 6px; padding: 8px; font-family: monospace; }"
+        "QWidget#coachReviewPanel QPushButton { background: #2a2f37; color: #dce2e9; border: 0; border-radius: 6px; padding: 6px 10px; }"
+        "QWidget#coachReviewPanel QPushButton:hover { background: #353c46; color: #f5f7fa; }"
+        "QWidget#coachReviewPanel QPushButton:disabled { background: #20242a; color: #626b76; }"
+        "QWidget#coachReviewPanel QPushButton:checked { background: #344a62; color: #f1f6fb; }"
+        "QWidget#coachReviewPanel QPushButton[uiRole=\"primary\"] { background: #31455b; color: #f0f5fb; }"
+        "QWidget#coachReviewPanel QPushButton[uiRole=\"quiet\"] { background: transparent; color: #aeb8c5; padding-left: 2px; padding-right: 8px; }"
+        "QWidget#coachReviewPanel QPushButton[uiRole=\"quiet\"]:hover { background: #252b33; color: #f0f4f8; }"
+        "QFrame#coachFocusReadFrame { background: #111419; border: 0; border-radius: 8px; }"
+        "QLabel#coachFocusAnchor { background: #edf1f5; color: #20252b; border: 0; border-radius: 7px; padding: 7px 9px; font-weight: 600; }"
+        "QLabel#coachFocusContext { color: #8f9aa7; }"
+        "QTextEdit#coachDetailedEvidenceView { color: #cbd3dc; background: #14171b; border: 0; border-radius: 8px; padding: 9px; font-size: 13px; }"));
 
     m_focusTimer->setInterval(520);
     connect(m_focusTimer, &QTimer::timeout, this, [this]() {
@@ -2286,6 +2333,7 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
         if (checked) {
             m_linePreviewLabel->setText(
                 QStringLiteral("Retained best line · %1").arg(moment.bestLineUci.join(QLatin1Char(' '))));
+            m_linePreviewLabel->show();
             emit linePreviewRequested(move.beforeFen, moment.bestMoveUci,
                 QStringLiteral("Best retained line · %1")
                     .arg(moment.bestMoveSan.value_or(moment.bestMoveUci)));
@@ -2303,6 +2351,7 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
         if (checked) {
             m_linePreviewLabel->setText(
                 QStringLiteral("Retained played line · %1").arg(moment.playedLineUci.join(QLatin1Char(' '))));
+            m_linePreviewLabel->show();
             emit linePreviewRequested(move.beforeFen, moment.playedUci,
                 QStringLiteral("Played retained line · %1").arg(moment.playedSan));
         } else {
@@ -2423,6 +2472,8 @@ void CoachReviewPanel::refreshCard()
         ? QStringLiteral("%1s server-accounted · %2")
               .arg(QString::number(*moment.elapsedMoveMs / 1000.0, 'f', 1), moment.phase)
         : QStringLiteral("server-accounted time unavailable · %1").arg(moment.phase));
+    m_timingChip->setToolTip(QStringLiteral(
+        "Server-accounted clock difference; not a measure of cognitive time."));
     m_counterChip->setText(QStringLiteral("Moment %1 of %2")
         .arg(moment.reviewIndex).arg(m_review->criticalMoments.size()));
     m_titleLabel->setText(moment.title);
@@ -2435,20 +2486,22 @@ void CoachReviewPanel::refreshCard()
     const QString playedScore = moment.playedCentipawnsMover.has_value()
         ? QString::number(*moment.playedCentipawnsMover / 100.0, 'f', 2) : QStringLiteral("—");
     const QString expectation = moment.expectationLossMillionths.has_value()
-        ? QStringLiteral("%1 pp").arg(
+        ? QStringLiteral("−%1 pp").arg(
               QString::number(*moment.expectationLossMillionths / 10000.0, 'f', 2))
         : QStringLiteral("—");
-    m_scoreLabel->setText(QStringLiteral("Mover score  %1 → %2    expectation loss  %3")
+    m_scoreLabel->setText(QStringLiteral("Eval  %1 → %2    ◒ %3")
         .arg(bestScore, playedScore, expectation));
-    m_contextLabel->setText(QStringLiteral("%1 · %2 · timing is server-accounted, not cognitive time")
+    m_scoreLabel->setToolTip(QStringLiteral(
+        "Mover-perspective engine scores and retained expectation loss."));
+    m_contextLabel->setText(QStringLiteral("%1 · %2")
         .arg(moment.playerUsername, moment.phase));
     m_previousMomentButton->setEnabled(m_currentMomentVectorIndex > 0);
     m_nextMomentButton->setEnabled(
         m_currentMomentVectorIndex + 1 < m_review->criticalMoments.size());
     m_bestLineButton->setChecked(false);
     m_playedLineButton->setChecked(false);
-    m_linePreviewLabel->setText(
-        QStringLiteral("Retained engine lines · choose best or played to preview on the board"));
+    m_linePreviewLabel->clear();
+    m_linePreviewLabel->hide();
     m_detailsView->setPlainText(detailedEvidenceText());
     m_focusWords = (moment.title + QStringLiteral(". ") + moment.summary)
         .split(QLatin1Char(' '), Qt::SkipEmptyParts);
@@ -2457,8 +2510,8 @@ void CoachReviewPanel::refreshCard()
     const bool neutral = moment.status == QStringLiteral("ambiguous_engine_instability")
         || moment.status == QStringLiteral("below_confirmation_threshold");
     m_card->setStyleSheet(neutral
-        ? QStringLiteral("QFrame#coachReviewCard { background: #1c2229; border: 1px solid #4a6a88; border-radius: 12px; }")
-        : QStringLiteral("QFrame#coachReviewCard { background: #1e2024; border: 1px solid #594c43; border-radius: 12px; }"));
+        ? QStringLiteral("QFrame#coachReviewCard { background: #1c2229; border: 0; border-left: 3px solid #4a6a88; }")
+        : QStringLiteral("QFrame#coachReviewCard { background: #1e2024; border: 0; border-left: 3px solid #8a6a4f; }"));
 }
 
 QString CoachReviewPanel::detailedEvidenceText() const
@@ -2476,13 +2529,16 @@ QString CoachReviewPanel::detailedEvidenceText() const
         moment.title,
         moment.summary,
         QString(),
-        QStringLiteral("Move"),
-        QStringLiteral("  %1 · ply %2 · %3").arg(moveLabel).arg(moment.ply).arg(moment.playerUsername),
+        QStringLiteral("MOVE"),
+        QStringLiteral("  %1  %2 · ply %3 · %4")
+            .arg(reviewPieceIcon(move.piece, moment.mover), moveLabel)
+            .arg(moment.ply)
+            .arg(moment.playerUsername),
         QStringLiteral("  Played SAN/UCI  %1 / %2").arg(moment.playedSan, moment.playedUci),
         QStringLiteral("  Best SAN/UCI    %1 / %2")
             .arg(moment.bestMoveSan.value_or(QStringLiteral("unavailable")), moment.bestMoveUci),
         QString(),
-        QStringLiteral("Frozen backend evidence"),
+        QStringLiteral("ENGINE EVIDENCE"),
         QStringLiteral("  Status      %1").arg(moment.status),
         QStringLiteral("  Severity    %1").arg(moment.severity.value_or(QStringLiteral("unavailable"))),
         QStringLiteral("  Confidence  %1").arg(moment.confidence),
@@ -2491,18 +2547,19 @@ QString CoachReviewPanel::detailedEvidenceText() const
         QStringLiteral("  Played mover centipawns %1").arg(optionalNumber(moment.playedCentipawnsMover)),
         QStringLiteral("  Expectation loss millionths  %1").arg(optionalNumber(moment.expectationLossMillionths)),
         QString(),
-        QStringLiteral("Context"),
+        QStringLiteral("TIMING & POSITION"),
         QStringLiteral("  Phase  %1").arg(moment.phase),
         QStringLiteral("  Server-accounted elapsed time  %1 ms").arg(optionalNumber(moment.elapsedMoveMs)),
         QStringLiteral("  Elapsed status  %1").arg(move.elapsedStatus),
         QStringLiteral("  Before FEN  %1").arg(move.beforeFen),
         QString(),
-        QStringLiteral("Retained best line, not a complete search tree"),
-        QStringLiteral("  %1").arg(moment.bestLineUci.join(QLatin1Char(' '))),
-        QStringLiteral("Retained played line, not a complete search tree"),
-        QStringLiteral("  %1").arg(moment.playedLineUci.join(QLatin1Char(' '))),
+        QStringLiteral("RETAINED LINES"),
+        QStringLiteral("  Best, not a complete search tree"),
+        QStringLiteral("    %1").arg(moment.bestLineUci.join(QLatin1Char(' '))),
+        QStringLiteral("  Played, not a complete search tree"),
+        QStringLiteral("    %1").arg(moment.playedLineUci.join(QLatin1Char(' '))),
         QString(),
-        QStringLiteral("Source boundary"),
+        QStringLiteral("SOURCE"),
         QStringLiteral("  Display schema  %1").arg(m_review->displaySchema),
         QStringLiteral("  Source report   %1").arg(m_review->sourceReportId),
         QStringLiteral("  Backend display projection only; no complete-game error coverage or safety claim."),
@@ -2585,6 +2642,7 @@ GameReviewPanel::GameReviewPanel(QWidget *parent)
 
     m_reviewModes->setObjectName(QStringLiteral("gameReviewModes"));
     m_reviewModes->setDocumentMode(true);
+    m_reviewModes->setStyleSheet(parlawl::review_ui::calmTabStyleSheet());
     auto *visualPage = new QWidget(m_reviewModes);
     auto *visualLayout = new QVBoxLayout(visualPage);
     visualLayout->setContentsMargins(0, 0, 0, 0);
@@ -2592,7 +2650,7 @@ GameReviewPanel::GameReviewPanel(QWidget *parent)
 
     m_splitter->setObjectName(QStringLiteral("gameReviewSplitter"));
     m_splitter->setChildrenCollapsible(false);
-    m_splitter->setHandleWidth(1);
+    m_splitter->setHandleWidth(0);
     m_moveListPanel->setObjectName(QStringLiteral("gameReviewMoveList"));
     m_moveListPanel->setTitle(QString());
     m_moveListPanel->setStyleSheet(QStringLiteral(
@@ -2601,16 +2659,16 @@ GameReviewPanel::GameReviewPanel(QWidget *parent)
     m_evidencePanel->setInlineCoachMode(true);
     m_splitter->addWidget(m_evidencePanel);
     m_splitter->addWidget(m_moveListPanel);
-    m_splitter->setStretchFactor(0, 2);
-    m_splitter->setStretchFactor(1, 5);
-    m_splitter->setSizes({220, 540});
+    m_splitter->setStretchFactor(0, 0);
+    m_splitter->setStretchFactor(1, 1);
+    m_splitter->setSizes({52, 708});
     visualLayout->addWidget(m_splitter);
 
     m_detailedEvidenceView->setObjectName(QStringLiteral("detailedEvidenceView"));
     m_detailedEvidenceView->setReadOnly(true);
     m_detailedEvidenceView->setLineWrapMode(QTextEdit::WidgetWidth);
     m_detailedEvidenceView->setStyleSheet(QStringLiteral(
-        "QTextEdit { background: #171a1f; border: 0; padding: 14px; font-size: 14px; }"));
+        "QTextEdit { color: #d4dbe4; background: #171a1f; border: 0; padding: 16px; font-size: 14px; }"));
     m_detailedEvidenceView->setFont(
         QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_reviewModes->addTab(visualPage, QStringLiteral("Visual Map"));
@@ -2650,10 +2708,7 @@ void GameReviewPanel::setReplayState(
     m_evidencePanel->setReplayState(pack, session, variationAnchorPly);
     m_detailedEvidenceView->setPlainText(
         detailedMoveEvidenceText(pack, session));
-    m_splitter->setSizes(
-        m_evidencePanel->primaryCoachVisible()
-            ? QList<int> {280, 480}
-            : QList<int> {58, 702});
+    m_splitter->setSizes({52, 708});
 }
 
 void GameReviewPanel::setGameReviewDisplay(
