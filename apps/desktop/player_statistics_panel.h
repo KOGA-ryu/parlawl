@@ -7,6 +7,7 @@
 #include <QVector>
 
 #include <optional>
+#include <memory>
 
 class QByteArray;
 class QComboBox;
@@ -20,6 +21,7 @@ class QSpinBox;
 class QTableWidget;
 class QTabWidget;
 class QWidget;
+class PlayerAnalysisCatalog;
 
 struct PlayerStatisticsEngineMoveEvidence {
     int expectedBeforeMillionths = 0;
@@ -146,6 +148,13 @@ private:
     void rebuildView();
     void rebuildBoardStructureView();
     void refreshBoardStructureComparisonPlayers();
+    QJsonObject catalogBoardStructureView(
+        const QString &playerId,
+        QString *errorMessage);
+    void clearBoardStructureDrilldown();
+    void showBoardStructureDrilldown(
+        const QString &playerId,
+        const QString &metricCode);
     void populatePhaseTable(const QJsonArray &groups);
     void populateDecisionContextTable(
         const QJsonArray &colors,
@@ -184,6 +193,8 @@ private:
     QComboBox *m_structureComparisonCategoryCombo;
     QLabel *m_structureComparisonSummaryLabel;
     QTableWidget *m_structureComparisonTable;
+    QLabel *m_structureDrilldownLabel;
+    QTableWidget *m_structureDrilldownTable;
     QLabel *m_structureHeadToHeadLabel;
     QWidget *m_structureHeadToHeadFilterPanel;
     QLineEdit *m_structureOpponentSearch;
@@ -203,6 +214,10 @@ private:
     QJsonObject m_structureSnapshot;
     QHash<QString, QJsonObject> m_structurePlayersById;
     QString m_structureComparisonSourcePlayerId;
+    std::unique_ptr<PlayerAnalysisCatalog> m_analysisCatalog;
+    QStringList m_catalogStructurePlayerIds;
+    QJsonObject m_catalogGlobalStructureView;
+    QHash<QString, QJsonObject> m_catalogStructureViewsByPlayer;
     QHash<QString, QString> m_explorerMetadata;
     QString m_explorerConnectionName;
     bool m_updatingExplorerFilters;

@@ -476,7 +476,10 @@ QByteArray structureSnapshotBytes()
     return QJsonDocument(root).toJson(QJsonDocument::Compact) + '\n';
 }
 
-QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = false)
+QString createExplorerDatabase(
+    QTemporaryDir *directory,
+    bool includeEngine = false,
+    bool includeAnalysisCatalog = false)
 {
     const QString path = directory->filePath(QStringLiteral("player-explorer.sqlite3"));
     const QString connectionName = QStringLiteral("player-explorer-test-")
@@ -488,7 +491,7 @@ QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = fa
             return QString();
         }
         QSqlQuery query(database);
-        const QStringList statements {
+        QStringList statements {
             QStringLiteral("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
             QStringLiteral(
                 "CREATE TABLE games(source_game_id TEXT PRIMARY KEY, canonical_game_url TEXT, "
@@ -509,13 +512,36 @@ QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = fa
                 "decision_start_clock_ms INTEGER, clock_remaining_after_move_ms INTEGER, "
                 "elapsed_move_ms INTEGER, elapsed_status TEXT, PRIMARY KEY(source_game_id, ply))"),
         };
+        if (includeAnalysisCatalog) {
+            statements.append({
+                QStringLiteral(
+                    "CREATE TABLE board_structure_metric_definitions("
+                    "metric_code TEXT PRIMARY KEY, ordinal INTEGER, definition_id TEXT, "
+                    "category TEXT, phase TEXT, value_semantics TEXT, opportunity_unit TEXT)"),
+                QStringLiteral(
+                    "CREATE TABLE board_structure_player_games("
+                    "structural_player_game_id TEXT PRIMARY KEY, vector_id TEXT, "
+                    "source_game_id TEXT, player_id TEXT, opponent_id TEXT, player_color TEXT, "
+                    "player_manifest_tracked INTEGER, opponent_manifest_tracked INTEGER, "
+                    "unordered_pair_id TEXT, utc_day TEXT, normalized_control_id TEXT, "
+                    "event_start_utc TEXT, retrospective_available_after_utc TEXT, "
+                    "source_available_at_utc TEXT, history_eligibility_status TEXT, "
+                    "history_eligibility_reason_code TEXT, metric_registry_id TEXT)"),
+                QStringLiteral(
+                    "CREATE TABLE board_structure_measurements("
+                    "structural_player_game_id TEXT, metric_code TEXT, measurement_id TEXT, "
+                    "definition_id TEXT, upstream_receipt_id TEXT, status TEXT, reason_code TEXT, "
+                    "numerator INTEGER, denominator INTEGER, value_ppm INTEGER, "
+                    "PRIMARY KEY(structural_player_game_id, metric_code))"),
+            });
+        }
         for (const QString &statement : statements) {
             if (!query.exec(statement)) {
                 database.close();
                 return QString();
             }
         }
-        const QMap<QString, QString> metadata {
+        QMap<QString, QString> metadata {
             {QStringLiteral("clock_semantics"), QStringLiteral("server-accounted-not-cognitive-time")},
             {QStringLiteral("decision_count"), QStringLiteral("8")},
             {QStringLiteral("distinct_player_count"), QStringLiteral("2")},
@@ -533,6 +559,32 @@ QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = fa
             {QStringLiteral("target_lineage_occurrence_count"), QStringLiteral("2")},
             {QStringLiteral("unordered_pair_count"), QStringLiteral("1")},
         };
+        if (includeAnalysisCatalog) {
+            metadata.insert(QStringLiteral("board_structure_game_count"), QStringLiteral("2"));
+            metadata.insert(
+                QStringLiteral("board_structure_measurement_count"),
+                QString::number(4 * structureMetricCodes().size()));
+            metadata.insert(
+                QStringLiteral("board_structure_player_game_count"),
+                QStringLiteral("4"));
+            metadata.insert(
+                QStringLiteral("board_structure_postgame_descriptive_only"),
+                QStringLiteral("true"));
+            metadata.insert(
+                QStringLiteral("catalog_authenticates_source_replay"),
+                QStringLiteral("false"));
+            metadata.insert(
+                QStringLiteral("catalog_schema_version"),
+                QStringLiteral("chess-player-analysis-catalog-sqlite-v1"));
+            metadata.insert(
+                QStringLiteral("descriptive_metric_registry_id"),
+                QStringLiteral(
+                    "chess-board-structure-descriptive-metric-registry-v1:")
+                    + QString(64, QLatin1Char('f')));
+            metadata.insert(
+                QStringLiteral("same_game_vectors_are_pregame_features"),
+                QStringLiteral("false"));
+        }
         query.prepare(QStringLiteral("INSERT INTO metadata VALUES (?, ?)"));
         for (auto item = metadata.cbegin(); item != metadata.cend(); ++item) {
             query.addBindValue(item.key());
@@ -571,6 +623,143 @@ QString createExplorerDatabase(QTemporaryDir *directory, bool includeEngine = fa
         if (!query.exec(QStringLiteral("INSERT INTO moves VALUES ") + moveRows.join(QLatin1Char(',')))) {
             database.close();
             return QString();
+        }
+        if (includeAnalysisCatalog) {
+            const QString registryId = QStringLiteral(
+                "chess-board-structure-descriptive-metric-registry-v1:")
+                + QString(64, QLatin1Char('f'));
+            query.prepare(QStringLiteral(
+                "INSERT INTO board_structure_metric_definitions VALUES (?,?,?,?,?,?,?)"));
+            const QStringList metricCodes = structureMetricCodes();
+            for (qsizetype ordinal = 0; ordinal < metricCodes.size(); ++ordinal) {
+                const QString code = metricCodes.at(ordinal);
+                QString category = QStringLiteral("material");
+                if (code.startsWith(QStringLiteral("binary.own_passed"))
+                    || code.startsWith(QStringLiteral("binary.own_isolated"))
+                    || code.startsWith(QStringLiteral("binary.own_doubled"))) {
+                    category = QStringLiteral("pawns");
+                } else if (code.startsWith(QStringLiteral("binary."))) {
+                    category = QStringLiteral("position");
+                } else if (code.startsWith(QStringLiteral("focal_castling."))) {
+                    category = QStringLiteral("castling");
+                }
+                const QStringList parts = code.split(QLatin1Char('.'));
+                const QString phase = code.startsWith(QStringLiteral("focal_castling."))
+                    ? QStringLiteral("game")
+                    : (code.startsWith(QStringLiteral("material_delta_mean."))
+                        ? parts.at(1) : parts.at(2));
+                const QVariantList values {
+                    code,
+                    ordinal,
+                    QStringLiteral("definition-%1").arg(ordinal),
+                    category,
+                    phase,
+                    code.startsWith(QStringLiteral("material_delta_mean."))
+                        ? QStringLiteral("signed_mean_ppm")
+                        : QStringLiteral("proportion_ppm"),
+                    QStringLiteral("fixture-opportunity"),
+                };
+                for (int index = 0; index < values.size(); ++index) {
+                    query.bindValue(index, values.at(index));
+                }
+                if (!query.exec()) {
+                    database.close();
+                    return QString();
+                }
+            }
+
+            const QString firstGame = QStringLiteral(
+                "chesscom-game-v1:1111111111111111111111111111111111111111111111111111111111111111");
+            const QString secondGame = QStringLiteral(
+                "chesscom-game-v1:2222222222222222222222222222222222222222222222222222222222222222");
+            struct StructuralRow {
+                QString structuralId;
+                QString gameId;
+                QString playerId;
+                QString opponentId;
+                QString color;
+                QString day;
+                QString eventStart;
+            };
+            const QVector<StructuralRow> structuralRows {
+                {QStringLiteral("s1"), firstGame, QStringLiteral("alpha"),
+                 QStringLiteral("beta"), QStringLiteral("white"),
+                 QStringLiteral("2026-08-01"), QStringLiteral("2026-08-01T12:00:00Z")},
+                {QStringLiteral("s2"), firstGame, QStringLiteral("beta"),
+                 QStringLiteral("alpha"), QStringLiteral("black"),
+                 QStringLiteral("2026-08-01"), QStringLiteral("2026-08-01T12:00:00Z")},
+                {QStringLiteral("s3"), secondGame, QStringLiteral("beta"),
+                 QStringLiteral("alpha"), QStringLiteral("white"),
+                 QStringLiteral("2026-08-02"), QStringLiteral("2026-08-02T12:00:00Z")},
+                {QStringLiteral("s4"), secondGame, QStringLiteral("alpha"),
+                 QStringLiteral("beta"), QStringLiteral("black"),
+                 QStringLiteral("2026-08-02"), QStringLiteral("2026-08-02T12:00:00Z")},
+            };
+            query.prepare(QStringLiteral(
+                "INSERT INTO board_structure_player_games VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
+            for (const StructuralRow &row : structuralRows) {
+                const QVariantList values {
+                    row.structuralId,
+                    QStringLiteral("vector-") + row.structuralId,
+                    row.gameId,
+                    row.playerId,
+                    row.opponentId,
+                    row.color,
+                    1,
+                    1,
+                    structurePairId(QLatin1Char('d')),
+                    row.day,
+                    QStringLiteral("blitz:180"),
+                    row.eventStart,
+                    row.eventStart,
+                    row.eventStart,
+                    QStringLiteral("descriptive-only"),
+                    QStringLiteral("not-pregame"),
+                    registryId,
+                };
+                for (int index = 0; index < values.size(); ++index) {
+                    query.bindValue(index, values.at(index));
+                }
+                if (!query.exec()) {
+                    database.close();
+                    return QString();
+                }
+            }
+
+            query.prepare(QStringLiteral(
+                "INSERT INTO board_structure_measurements VALUES (?,?,?,?,?,?,?,?,?,?)"));
+            for (const StructuralRow &row : structuralRows) {
+                for (qsizetype ordinal = 0; ordinal < metricCodes.size(); ++ordinal) {
+                    const QString code = metricCodes.at(ordinal);
+                    const bool notApplicable = code
+                        == QStringLiteral("binary.both_queens_absent.endgame.share");
+                    const qint64 numerator = structurePlayerNumerator(
+                        code, row.playerId == QStringLiteral("alpha"));
+                    const QVariantList values {
+                        row.structuralId,
+                        code,
+                        QStringLiteral("measurement-%1-%2")
+                            .arg(row.structuralId).arg(ordinal),
+                        QStringLiteral("definition-%1").arg(ordinal),
+                        QStringLiteral("upstream-%1-%2")
+                            .arg(row.structuralId).arg(ordinal),
+                        notApplicable ? QStringLiteral("not_applicable")
+                                      : QStringLiteral("observed"),
+                        notApplicable ? QVariant(QStringLiteral("no-opportunity"))
+                                      : QVariant(),
+                        notApplicable ? QVariant() : QVariant(numerator),
+                        notApplicable ? 0 : 1,
+                        notApplicable ? QVariant() : QVariant(numerator * 1'000'000),
+                    };
+                    for (int index = 0; index < values.size(); ++index) {
+                        query.bindValue(index, values.at(index));
+                    }
+                    if (!query.exec()) {
+                        database.close();
+                        return QString();
+                    }
+                }
+            }
         }
         if (includeEngine) {
             const QStringList engineStatements {
@@ -809,7 +998,7 @@ void TestUnitPlayerStatisticsPanel::loadsExplorerAndAppliesSharedFilters()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    const QString path = createExplorerDatabase(&directory);
+    const QString path = createExplorerDatabase(&directory, false, true);
     QVERIFY(!path.isEmpty());
     PlayerStatisticsPanel panel;
     QString error;
@@ -841,6 +1030,71 @@ void TestUnitPlayerStatisticsPanel::loadsExplorerAndAppliesSharedFilters()
     colorFilter->setCurrentIndex(colorFilter->findData(QStringLiteral("black")));
     QCOMPARE(panel.gameRowCount(), 1);
     QVERIFY(panel.summaryText().contains(QStringLiteral("alpha · 0-1-0")));
+
+    QVERIFY(panel.hasBoardStructureSnapshot());
+    QCOMPARE(panel.boardStructureMetricRowCount(), 9);
+    QCOMPARE(panel.boardStructureCastlingRowCount(), 3);
+    const QLabel *structureStatus = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsStructureStatus"));
+    QTableWidget *structureMetrics = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureTable"));
+    QComboBox *comparisonPlayer = panel.findChild<QComboBox *>(
+        QStringLiteral("playerStatisticsBoardStructureComparePlayer"));
+    QTableWidget *comparisonTable = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureComparisonTable"));
+    QLabel *drilldownLabel = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsBoardStructureDrilldownLabel"));
+    QTableWidget *drilldownTable = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureDrilldownTable"));
+    QVERIFY(structureStatus != nullptr);
+    QVERIFY(structureMetrics != nullptr);
+    QVERIFY(comparisonPlayer != nullptr);
+    QVERIFY(comparisonTable != nullptr);
+    QVERIFY(drilldownLabel != nullptr);
+    QVERIFY(drilldownTable != nullptr);
+    QVERIFY(structureStatus->text().contains(QStringLiteral("Read-only analysis catalog")));
+    QVERIFY(structureMetrics->item(0, 1)->text().contains(QStringLiteral("100.0%")));
+    QTabWidget *tabs = panel.findChild<QTabWidget *>(
+        QStringLiteral("playerStatisticsDetailTabs"));
+    QWidget *explorerFilters = panel.findChild<QWidget *>(
+        QStringLiteral("playerStatisticsExplorerFilters"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(explorerFilters != nullptr);
+    tabs->setCurrentIndex(tabs->count() - 1);
+    QVERIFY(explorerFilters->isHidden());
+
+    const int betaIndex = comparisonPlayer->findData(QStringLiteral("beta"));
+    QVERIFY(betaIndex > 0);
+    comparisonPlayer->setCurrentIndex(betaIndex);
+    QCOMPARE(comparisonTable->rowCount(), 39);
+    int queensOverallRow = -1;
+    for (int row = 0; row < comparisonTable->rowCount(); ++row) {
+        if (comparisonTable->item(row, 0)->text()
+            == QStringLiteral("Queens off · Overall")) {
+            queensOverallRow = row;
+            break;
+        }
+    }
+    QVERIFY(queensOverallRow >= 0);
+    QVERIFY(QMetaObject::invokeMethod(
+        comparisonTable,
+        "cellDoubleClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, queensOverallRow),
+        Q_ARG(int, 1)));
+    QCOMPARE(drilldownTable->rowCount(), 2);
+    QVERIFY(drilldownLabel->text().contains(QStringLiteral("alpha")));
+    QVERIFY(drilldownLabel->text().contains(QStringLiteral("2 rows (2 observed / 0 N/A)")));
+    QCOMPARE(drilldownTable->item(0, 1)->text(), QStringLiteral("beta"));
+    QCOMPARE(drilldownTable->item(0, 3)->text(), QStringLiteral("Win"));
+    QSignalSpy breakdownSpy(&panel, &PlayerStatisticsPanel::gameBreakdownRequested);
+    QVERIFY(QMetaObject::invokeMethod(
+        drilldownTable,
+        "cellDoubleClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 0),
+        Q_ARG(int, 0)));
+    QCOMPARE(breakdownSpy.count(), 1);
 }
 
 void TestUnitPlayerStatisticsPanel::exposesExactGameBreakdownAndActivation()
@@ -1191,15 +1445,72 @@ void TestUnitPlayerStatisticsPanel::rejectsBrokenBoardStructureWithoutReplacingS
 
 void TestUnitPlayerStatisticsPanel::loadsRealSnapshotWhenProvided()
 {
+    const QString catalogPath = qEnvironmentVariable(
+        "PARLAWL_REAL_PLAYER_ANALYSIS_CATALOG");
     const QString playerPath = qEnvironmentVariable(
         "PARLAWL_REAL_PLAYER_STATISTICS_SNAPSHOT");
     const QString structurePath = qEnvironmentVariable(
         "PARLAWL_REAL_BOARD_STRUCTURE_STATISTICS_SNAPSHOT");
-    if (playerPath.isEmpty() && structurePath.isEmpty()) {
+    if (catalogPath.isEmpty() && playerPath.isEmpty() && structurePath.isEmpty()) {
         QSKIP("real player-statistics snapshots were not requested");
     }
     PlayerStatisticsPanel panel;
     QString error;
+    if (!catalogPath.isEmpty()) {
+        QVERIFY2(panel.loadExplorerDatabase(catalogPath, &error), qPrintable(error));
+        QCOMPARE(panel.playerIds().size(), 701);
+        QVERIFY(panel.hasBoardStructureSnapshot());
+        QVERIFY(panel.selectPlayer(QStringLiteral("caesar")));
+        const QLabel *summary = panel.findChild<QLabel *>(
+            QStringLiteral("playerStatisticsStructureSummary"));
+        QTableWidget *headToHead = panel.findChild<QTableWidget *>(
+            QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
+        QComboBox *comparisonPlayer = panel.findChild<QComboBox *>(
+            QStringLiteral("playerStatisticsBoardStructureComparePlayer"));
+        QTableWidget *comparisonTable = panel.findChild<QTableWidget *>(
+            QStringLiteral("playerStatisticsBoardStructureComparisonTable"));
+        QTableWidget *drilldownTable = panel.findChild<QTableWidget *>(
+            QStringLiteral("playerStatisticsBoardStructureDrilldownTable"));
+        QVERIFY(summary != nullptr);
+        QVERIFY(headToHead != nullptr);
+        QVERIFY(comparisonPlayer != nullptr);
+        QVERIFY(comparisonTable != nullptr);
+        QVERIFY(drilldownTable != nullptr);
+        QVERIFY(summary->text().contains(QStringLiteral("caesar · 588 games")));
+        QCOMPARE(headToHead->rowCount(), 164);
+        const int turboplombirIndex = comparisonPlayer->findData(
+            QStringLiteral("turboplombir"));
+        QVERIFY(turboplombirIndex > 0);
+        comparisonPlayer->setCurrentIndex(turboplombirIndex);
+        int castlingRow = -1;
+        for (int row = 0; row < comparisonTable->rowCount(); ++row) {
+            if (comparisonTable->item(row, 0)->text()
+                == QStringLiteral("Any castle")) {
+                castlingRow = row;
+                break;
+            }
+        }
+        QVERIFY(castlingRow >= 0);
+        QVERIFY(QMetaObject::invokeMethod(
+            comparisonTable,
+            "cellDoubleClicked",
+            Qt::DirectConnection,
+            Q_ARG(int, castlingRow),
+            Q_ARG(int, 1)));
+        QCOMPARE(drilldownTable->rowCount(), 588);
+        const QString screenshotPath = qEnvironmentVariable(
+            "PARLAWL_REAL_PLAYER_ANALYSIS_SCREENSHOT");
+        if (!screenshotPath.isEmpty()) {
+            QTabWidget *tabs = panel.findChild<QTabWidget *>(
+                QStringLiteral("playerStatisticsDetailTabs"));
+            QVERIFY(tabs != nullptr);
+            tabs->setCurrentIndex(tabs->count() - 1);
+            panel.resize(1'500, 1'100);
+            panel.show();
+            QTest::qWait(50);
+            QVERIFY2(panel.grab().save(screenshotPath), qPrintable(screenshotPath));
+        }
+    }
     if (!playerPath.isEmpty()) {
         QFile file(playerPath);
         QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));

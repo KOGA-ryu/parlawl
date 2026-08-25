@@ -23,11 +23,11 @@ bool createCatalog(const QString &path, bool validSchema)
         QSqlQuery query(database);
         const QStringList statements {
             QStringLiteral("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
-            QStringLiteral("CREATE TABLE games(source_game_id TEXT PRIMARY KEY, event_start_utc TEXT, utc_day TEXT, opening_status TEXT, opening_eco TEXT, opening_name TEXT)"),
+            QStringLiteral("CREATE TABLE games(source_game_id TEXT PRIMARY KEY, event_start_utc TEXT, utc_day TEXT, result TEXT, opening_status TEXT, opening_eco TEXT, opening_name TEXT)"),
             QStringLiteral("CREATE TABLE player_games(source_game_id TEXT, player_id TEXT, opponent_id TEXT, player_color TEXT, outcome TEXT, PRIMARY KEY(source_game_id, player_id))"),
             QStringLiteral("CREATE TABLE moves(source_game_id TEXT, ply INTEGER)"),
             QStringLiteral("CREATE TABLE board_structure_metric_definitions(metric_code TEXT PRIMARY KEY, ordinal INTEGER, definition_id TEXT, category TEXT, phase TEXT, value_semantics TEXT, opportunity_unit TEXT)"),
-            QStringLiteral("CREATE TABLE board_structure_player_games(structural_player_game_id TEXT PRIMARY KEY, source_game_id TEXT, player_id TEXT, opponent_id TEXT, player_color TEXT)"),
+            QStringLiteral("CREATE TABLE board_structure_player_games(structural_player_game_id TEXT PRIMARY KEY, source_game_id TEXT, player_id TEXT, opponent_id TEXT, player_color TEXT, unordered_pair_id TEXT)"),
             QStringLiteral("CREATE TABLE board_structure_measurements(structural_player_game_id TEXT, metric_code TEXT, status TEXT, numerator INTEGER, denominator INTEGER, value_ppm INTEGER)"),
         };
         for (const QString &statement : statements) {
@@ -52,8 +52,8 @@ bool createCatalog(const QString &path, bool validSchema)
         }
         ok = ok && query.exec(QStringLiteral(
             "INSERT INTO games VALUES "
-            "('g1','2026-08-01T12:00:00Z','2026-08-01','classified','C20','King Pawn'),"
-            "('g2','2026-08-02T12:00:00Z','2026-08-02','unknown',NULL,NULL)"));
+            "('g1','2026-08-01T12:00:00Z','2026-08-01','1-0','classified','C20','King Pawn'),"
+            "('g2','2026-08-02T12:00:00Z','2026-08-02','1/2-1/2','unknown',NULL,NULL)"));
         ok = ok && query.exec(QStringLiteral(
             "INSERT INTO player_games VALUES "
             "('g1','alpha','beta','white','win'),"
@@ -66,10 +66,10 @@ bool createCatalog(const QString &path, bool validSchema)
             "('binary.both_queens_absent.all.share',1,'d2','position','all','proportion_ppm','legal_decision')"));
         ok = ok && query.exec(QStringLiteral(
             "INSERT INTO board_structure_player_games VALUES "
-            "('s1','g1','alpha','beta','white'),"
-            "('s2','g1','beta','alpha','black'),"
-            "('s3','g2','beta','alpha','white'),"
-            "('s4','g2','alpha','beta','black')"));
+            "('s1','g1','alpha','beta','white','pair-1'),"
+            "('s2','g1','beta','alpha','black','pair-1'),"
+            "('s3','g2','beta','alpha','white','pair-1'),"
+            "('s4','g2','alpha','beta','black','pair-1')"));
         ok = ok && query.exec(QStringLiteral(
             "INSERT INTO board_structure_measurements VALUES "
             "('s1','focal_castling.any','observed',1,1,1000000),"
@@ -120,6 +120,35 @@ void TestUnitPlayerAnalysisCatalog::opensReadOnlyAndQueriesExactRows()
             alpha->lossCount, alpha->scoreRatePpm,
             alpha->distinctOpponentCount, alpha->distinctUtcDayCount}),
         QList<qint64>({2, 1, 1, 1, 1, 0, 750'000, 1, 2}));
+
+    const auto global = catalog.globalSummary(&error);
+    QVERIFY2(global.has_value(), qPrintable(error));
+    QCOMPARE(global->gameCount, 2);
+    QCOMPARE(global->playerGameCount, 4);
+    QCOMPARE(global->distinctPlayerCount, 2);
+    QCOMPARE(global->unorderedPairCount, 1);
+    QCOMPARE(global->largestPlayerId, QStringLiteral("alpha"));
+    QCOMPARE(global->playerExposureHhiPpm, 500'000);
+    QCOMPARE(global->pairHhiPpm, 1'000'000);
+
+    const auto headToHead = catalog.headToHead(QStringLiteral("alpha"), &error);
+    QCOMPARE(headToHead.size(), 1);
+    QCOMPARE(headToHead[0].opponentId, QStringLiteral("beta"));
+    QCOMPARE(headToHead[0].gameCount, 2);
+    QCOMPARE(headToHead[0].scoreRatePpm, 750'000);
+
+    const auto aggregates = catalog.metricAggregates(
+        QStringLiteral("alpha"), QString(), &error);
+    QCOMPARE(aggregates.size(), 2);
+    QCOMPARE(aggregates[0].metricCode, QStringLiteral("focal_castling.any"));
+    QCOMPARE(aggregates[0].aggregate.aggregateValuePpm,
+        std::optional<qint64>(500'000));
+    QCOMPARE(aggregates[0].aggregate.pairedPlayerGameCount, 2);
+    QCOMPARE(aggregates[0].aggregate.meanPlayerMinusOpponentPpm,
+        std::optional<qint64>(0));
+    QCOMPARE(aggregates[1].aggregate.pairedPlayerGameCount, 1);
+    QCOMPARE(aggregates[1].aggregate.meanPlayerMinusOpponentPpm,
+        std::optional<qint64>(-250'000));
 
     const auto comparisons = catalog.compareMetrics(
         QStringLiteral("alpha"), QStringLiteral("beta"),

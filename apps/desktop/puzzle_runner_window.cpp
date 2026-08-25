@@ -785,7 +785,7 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
         this,
         QStringLiteral("Open Player Statistics"),
         QDir::homePath(),
-        QStringLiteral("Player explorer (*.sqlite3);;Legacy player snapshot (*.json);;All files (*)"));
+        QStringLiteral("Player analysis catalog or explorer (*.sqlite3);;Legacy player snapshot (*.json);;All files (*)"));
     if (path.isEmpty()) {
         return;
     }
@@ -877,7 +877,7 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
     appendLogMessage(timestamped(
         QStringLiteral(
-            "opened a local read-only player-game explorer; ParlAWL ran no engine, network, or source replay")));
+            "opened local read-only player analysis data; ParlAWL ran no engine, network, or source replay")));
     if (!sourceGameId.isEmpty()
         && !openPlayerGameBreakdown(sourceGameId, errorMessage)) {
         return false;

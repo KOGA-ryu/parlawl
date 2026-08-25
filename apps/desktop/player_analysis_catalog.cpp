@@ -37,6 +37,16 @@ std::optional<qint64> roundedRatioPpm(qint64 numerator, qint64 denominator)
     return numerator < 0 ? -magnitude : magnitude;
 }
 
+std::optional<qint64> roundedSignedRatio(qint64 numerator, qint64 denominator)
+{
+    if (denominator <= 0) {
+        return std::nullopt;
+    }
+    const qint64 magnitude =
+        (std::abs(numerator) + denominator / 2) / denominator;
+    return numerator < 0 ? -magnitude : magnitude;
+}
+
 QSqlDatabase catalogDatabase(const QString &connectionName)
 {
     return QSqlDatabase::database(connectionName, false);
@@ -216,6 +226,110 @@ QStringList PlayerAnalysisCatalog::playerIds(QString *errorMessage) const
     return output;
 }
 
+std::optional<PlayerAnalysisCatalogGlobalSummary>
+PlayerAnalysisCatalog::globalSummary(QString *errorMessage) const
+{
+    if (!isOpen()) {
+        setError(errorMessage, QStringLiteral("analysis catalog is not open"));
+        return std::nullopt;
+    }
+    QSqlDatabase database = catalogDatabase(m_connectionName);
+    QSqlQuery counts(database);
+    if (!counts.exec(QStringLiteral(
+            "SELECT COUNT(*), COUNT(DISTINCT utc_day), "
+            "SUM(result = '1-0'), SUM(result = '1/2-1/2'), "
+            "SUM(result = '0-1') FROM games"))
+        || !counts.next()) {
+        setError(errorMessage, QStringLiteral("analysis catalog global game summary failed"));
+        return std::nullopt;
+    }
+    PlayerAnalysisCatalogGlobalSummary output;
+    output.gameCount = counts.value(0).toLongLong();
+    output.distinctUtcDayCount = counts.value(1).toLongLong();
+    output.whiteWinGameCount = counts.value(2).toLongLong();
+    output.drawGameCount = counts.value(3).toLongLong();
+    output.blackWinGameCount = counts.value(4).toLongLong();
+    if (output.gameCount < 1) {
+        setError(errorMessage, QStringLiteral("analysis catalog has no games"));
+        return std::nullopt;
+    }
+
+    QSqlQuery playerCounts(database);
+    if (!playerCounts.exec(QStringLiteral(
+            "SELECT player_id, COUNT(*), "
+            "SUM(player_color = 'white'), SUM(player_color = 'black'), "
+            "SUM(outcome = 'win'), SUM(outcome = 'draw'), "
+            "SUM(outcome = 'loss') FROM player_games "
+            "GROUP BY player_id ORDER BY COUNT(*) DESC, player_id"))) {
+        setError(errorMessage, QStringLiteral("analysis catalog player concentration failed"));
+        return std::nullopt;
+    }
+    qint64 squaredPlayerExposures = 0;
+    while (playerCounts.next()) {
+        const qint64 games = playerCounts.value(1).toLongLong();
+        if (output.distinctPlayerCount == 0) {
+            output.largestPlayerId = playerCounts.value(0).toString();
+            output.largestPlayerGameCount = games;
+        }
+        ++output.distinctPlayerCount;
+        output.playerGameCount += games;
+        output.whitePlayerGameCount += playerCounts.value(2).toLongLong();
+        output.blackPlayerGameCount += playerCounts.value(3).toLongLong();
+        output.playerGameWinCount += playerCounts.value(4).toLongLong();
+        output.playerGameDrawCount += playerCounts.value(5).toLongLong();
+        output.playerGameLossCount += playerCounts.value(6).toLongLong();
+        squaredPlayerExposures += games * games;
+    }
+    if (output.playerGameCount != 2 * output.gameCount) {
+        setError(errorMessage, QStringLiteral("analysis catalog player exposures do not conserve"));
+        return std::nullopt;
+    }
+    output.largestPlayerGameSharePpm = roundedRatioPpm(
+        output.largestPlayerGameCount, output.gameCount).value_or(0);
+    output.largestPlayerExposureSharePpm = roundedRatioPpm(
+        output.largestPlayerGameCount, output.playerGameCount).value_or(0);
+    output.playerExposureHhiPpm = roundedRatioPpm(
+        squaredPlayerExposures,
+        output.playerGameCount * output.playerGameCount).value_or(0);
+
+    QSqlQuery pairCounts(database);
+    if (!pairCounts.exec(QStringLiteral(
+            "SELECT unordered_pair_id, MIN(player_id), MAX(player_id), "
+            "COUNT(DISTINCT source_game_id) "
+            "FROM board_structure_player_games GROUP BY unordered_pair_id "
+            "ORDER BY COUNT(DISTINCT source_game_id) DESC, "
+            "MIN(player_id), MAX(player_id), unordered_pair_id"))) {
+        setError(errorMessage, QStringLiteral("analysis catalog pair concentration failed"));
+        return std::nullopt;
+    }
+    qint64 squaredPairGames = 0;
+    qint64 pairGameTotal = 0;
+    while (pairCounts.next()) {
+        const qint64 games = pairCounts.value(3).toLongLong();
+        if (output.unorderedPairCount == 0) {
+            output.largestUnorderedPairId = pairCounts.value(0).toString();
+            output.largestPairFirstPlayerId = pairCounts.value(1).toString();
+            output.largestPairSecondPlayerId = pairCounts.value(2).toString();
+            output.largestPairGameCount = games;
+        }
+        ++output.unorderedPairCount;
+        pairGameTotal += games;
+        squaredPairGames += games * games;
+    }
+    if (pairGameTotal != output.gameCount) {
+        setError(errorMessage, QStringLiteral("analysis catalog pair games do not conserve"));
+        return std::nullopt;
+    }
+    output.largestPairGameSharePpm = roundedRatioPpm(
+        output.largestPairGameCount, output.gameCount).value_or(0);
+    output.pairHhiPpm = roundedRatioPpm(
+        squaredPairGames, output.gameCount * output.gameCount).value_or(0);
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return output;
+}
+
 std::optional<PlayerAnalysisCatalogPlayerSummary>
 PlayerAnalysisCatalog::playerSummary(
     const QString &playerId,
@@ -263,6 +377,141 @@ PlayerAnalysisCatalog::playerSummary(
         errorMessage->clear();
     }
     return result;
+}
+
+QVector<PlayerAnalysisCatalogHeadToHead>
+PlayerAnalysisCatalog::headToHead(
+    const QString &playerId,
+    QString *errorMessage) const
+{
+    QVector<PlayerAnalysisCatalogHeadToHead> output;
+    if (!isOpen() || playerId.trimmed().isEmpty()) {
+        setError(errorMessage, QStringLiteral("analysis catalog head-to-head query is invalid"));
+        return output;
+    }
+    QSqlQuery query(catalogDatabase(m_connectionName));
+    query.prepare(QStringLiteral(
+        "SELECT pg.opponent_id, bs.unordered_pair_id, COUNT(*), "
+        "SUM(pg.player_color = 'white'), SUM(pg.player_color = 'black'), "
+        "SUM(pg.outcome = 'win'), SUM(pg.outcome = 'draw'), "
+        "SUM(pg.outcome = 'loss') "
+        "FROM player_games pg JOIN board_structure_player_games bs "
+        "ON bs.source_game_id = pg.source_game_id AND bs.player_id = pg.player_id "
+        "WHERE pg.player_id = ? GROUP BY pg.opponent_id, bs.unordered_pair_id "
+        "ORDER BY pg.opponent_id, bs.unordered_pair_id"));
+    query.addBindValue(playerId);
+    if (!query.exec()) {
+        setError(errorMessage, QStringLiteral("analysis catalog head-to-head query failed"));
+        return {};
+    }
+    while (query.next()) {
+        PlayerAnalysisCatalogHeadToHead row;
+        row.playerId = playerId;
+        row.opponentId = query.value(0).toString();
+        row.unorderedPairId = query.value(1).toString();
+        row.gameCount = query.value(2).toLongLong();
+        row.whiteGameCount = query.value(3).toLongLong();
+        row.blackGameCount = query.value(4).toLongLong();
+        row.winCount = query.value(5).toLongLong();
+        row.drawCount = query.value(6).toLongLong();
+        row.lossCount = query.value(7).toLongLong();
+        row.scoreRatePpm = roundedRatioPpm(
+            2 * row.winCount + row.drawCount,
+            2 * row.gameCount).value_or(0);
+        output.append(row);
+    }
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return output;
+}
+
+QVector<PlayerAnalysisCatalogMetricAggregate>
+PlayerAnalysisCatalog::metricAggregates(
+    const QString &playerId,
+    const QString &category,
+    QString *errorMessage) const
+{
+    QVector<PlayerAnalysisCatalogMetricAggregate> output;
+    if (!isOpen()) {
+        setError(errorMessage, QStringLiteral("analysis catalog is not open"));
+        return output;
+    }
+    const QString playerFilter = playerId.isNull() ? QStringLiteral("") : playerId;
+    const QString categoryFilter = category.isNull() ? QStringLiteral("") : category;
+    QSqlDatabase database = catalogDatabase(m_connectionName);
+    QHash<QString, PlayerAnalysisCatalogMetricSide> aggregates;
+    QSqlQuery values(database);
+    values.prepare(QStringLiteral(
+        "SELECT m.metric_code, SUM(m.status = 'observed'), "
+        "SUM(m.status = 'not_applicable'), "
+        "SUM(CASE WHEN m.status = 'observed' THEN m.numerator ELSE 0 END), "
+        "SUM(m.denominator), "
+        "SUM(m.status = 'observed' AND opponent.status = 'observed'), "
+        "SUM(CASE WHEN m.status = 'observed' AND opponent.status = 'observed' "
+        "THEN m.value_ppm - opponent.value_ppm ELSE 0 END) "
+        "FROM board_structure_measurements m "
+        "JOIN board_structure_player_games pg "
+        "ON pg.structural_player_game_id = m.structural_player_game_id "
+        "JOIN board_structure_player_games opponent_pg "
+        "ON opponent_pg.source_game_id = pg.source_game_id "
+        "AND opponent_pg.player_id = pg.opponent_id "
+        "JOIN board_structure_measurements opponent "
+        "ON opponent.structural_player_game_id = opponent_pg.structural_player_game_id "
+        "AND opponent.metric_code = m.metric_code "
+        "JOIN board_structure_metric_definitions d ON d.metric_code = m.metric_code "
+        "WHERE (? = '' OR pg.player_id = ?) AND (? = '' OR d.category = ?) "
+        "GROUP BY m.metric_code"));
+    values.addBindValue(playerFilter);
+    values.addBindValue(playerFilter);
+    values.addBindValue(categoryFilter);
+    values.addBindValue(categoryFilter);
+    if (!values.exec()) {
+        setError(errorMessage, QStringLiteral("analysis catalog metric aggregate query failed"));
+        return {};
+    }
+    while (values.next()) {
+        PlayerAnalysisCatalogMetricSide side;
+        side.observedPlayerGameCount = values.value(1).toLongLong();
+        side.notApplicablePlayerGameCount = values.value(2).toLongLong();
+        side.denominatorSum = values.value(4).toLongLong();
+        if (side.denominatorSum > 0) {
+            side.numeratorSum = values.value(3).toLongLong();
+            side.aggregateValuePpm = roundedRatioPpm(
+                *side.numeratorSum, side.denominatorSum);
+        }
+        side.pairedPlayerGameCount = values.value(5).toLongLong();
+        if (side.pairedPlayerGameCount > 0) {
+            side.meanPlayerMinusOpponentPpm = roundedSignedRatio(
+                values.value(6).toLongLong(), side.pairedPlayerGameCount);
+        }
+        aggregates.insert(values.value(0).toString(), side);
+    }
+
+    QSqlQuery definitions(database);
+    definitions.prepare(QStringLiteral(
+        "SELECT metric_code, category, phase, value_semantics "
+        "FROM board_structure_metric_definitions "
+        "WHERE (? = '' OR category = ?) ORDER BY ordinal"));
+    definitions.addBindValue(categoryFilter);
+    definitions.addBindValue(categoryFilter);
+    if (!definitions.exec()) {
+        setError(errorMessage, QStringLiteral("analysis catalog metric definitions failed"));
+        return {};
+    }
+    while (definitions.next()) {
+        PlayerAnalysisCatalogMetricAggregate row;
+        row.metricCode = definitions.value(0).toString();
+        row.category = definitions.value(1).toString();
+        row.phase = definitions.value(2).toString();
+        row.valueSemantics = definitions.value(3).toString();
+        row.aggregate = aggregates.value(row.metricCode);
+        output.append(row);
+    }
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return output;
 }
 
 QVector<PlayerAnalysisCatalogMetricComparison>

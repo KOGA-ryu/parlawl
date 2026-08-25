@@ -100,6 +100,7 @@ add_test(NAME test_unit_puzzle_panels COMMAND test_unit_puzzle_panels)
 
 add_executable(test_unit_player_statistics_panel
     unit/test_unit_player_statistics_panel.cpp
+    ../apps/desktop/player_analysis_catalog.cpp
     ../apps/desktop/player_statistics_panel.cpp
 )
 target_include_directories(test_unit_player_statistics_panel PRIVATE ../apps/desktop)

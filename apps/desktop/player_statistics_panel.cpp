@@ -1,4 +1,5 @@
 #include "player_statistics_panel.h"
+#include "player_analysis_catalog.h"
 
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -44,6 +45,9 @@ constexpr qint64 kMaximumDecisions = 1'000'000;
 constexpr qint64 kMaximumMilliseconds = 86'400'000;
 constexpr qint64 kPpm = 1'000'000;
 constexpr qint64 kMaximumExplorerBytes = 512LL * 1024 * 1024;
+constexpr int kBoardStructureMetricCodeRole = Qt::UserRole + 20;
+constexpr int kBoardStructurePlayerIdRole = Qt::UserRole + 21;
+constexpr int kBoardStructureSourceGameIdRole = Qt::UserRole + 22;
 
 struct ExplorerGameRow {
     QString sourceGameId;
@@ -1230,6 +1234,38 @@ QString compactSourcePlan(const QString &value)
     return digest.left(8) + QChar(0x2026) + digest.right(4);
 }
 
+QJsonValue optionalIntegerValue(const std::optional<qint64> &value)
+{
+    return value.has_value()
+        ? QJsonValue(*value)
+        : QJsonValue(QJsonValue::Null);
+}
+
+QJsonObject catalogMetricMapping(
+    const PlayerAnalysisCatalogMetricAggregate &metric)
+{
+    return QJsonObject {
+        {QStringLiteral("aggregate_status"),
+         metric.aggregate.denominatorSum > 0
+             ? QStringLiteral("observed")
+             : QStringLiteral("not_applicable")},
+        {QStringLiteral("aggregate_value_ppm"),
+         optionalIntegerValue(metric.aggregate.aggregateValuePpm)},
+        {QStringLiteral("denominator_sum"), metric.aggregate.denominatorSum},
+        {QStringLiteral("mean_player_minus_opponent_ppm"),
+         optionalIntegerValue(metric.aggregate.meanPlayerMinusOpponentPpm)},
+        {QStringLiteral("metric_code"), metric.metricCode},
+        {QStringLiteral("not_applicable_player_game_count"),
+         metric.aggregate.notApplicablePlayerGameCount},
+        {QStringLiteral("numerator_sum"),
+         optionalIntegerValue(metric.aggregate.numeratorSum)},
+        {QStringLiteral("observed_player_game_count"),
+         metric.aggregate.observedPlayerGameCount},
+        {QStringLiteral("paired_player_game_count"),
+         metric.aggregate.pairedPlayerGameCount},
+    };
+}
+
 qint64 pressureCount(const QJsonObject &aggregate, qint64 threshold)
 {
     for (const QJsonValue &value : aggregate.value(QStringLiteral("pressure_counts")).toArray()) {
@@ -1501,6 +1537,8 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_structureComparisonCategoryCombo(new QComboBox(m_structureComparisonPanel))
     , m_structureComparisonSummaryLabel(new QLabel(this))
     , m_structureComparisonTable(new QTableWidget(this))
+    , m_structureDrilldownLabel(new QLabel(this))
+    , m_structureDrilldownTable(new QTableWidget(this))
     , m_structureHeadToHeadLabel(new QLabel(QStringLiteral("Head-to-head results"), this))
     , m_structureHeadToHeadFilterPanel(new QWidget(this))
     , m_structureOpponentSearch(new QLineEdit(m_structureHeadToHeadFilterPanel))
@@ -1533,6 +1571,8 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     m_playerCombo->completer()->setFilterMode(Qt::MatchContains);
 
     auto *filterLayout = new QGridLayout(m_explorerFilterPanel);
+    m_explorerFilterPanel->setObjectName(
+        QStringLiteral("playerStatisticsExplorerFilters"));
     filterLayout->setContentsMargins(0, 0, 0, 0);
     filterLayout->setHorizontalSpacing(6);
     filterLayout->setVerticalSpacing(4);
@@ -1760,9 +1800,10 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     auto *structureHint = new QLabel(
         QStringLiteral(
             "Display-only mechanical postgame descriptions labeled for the complete target corpus; "
-            "ParlAWL does not authenticate the snapshot. Explorer filters do not alter this tab. "
+            "ParlAWL does not authenticate the catalog or snapshot. Explorer filters do not alter this tab. "
             "Opponent controls only narrow the head-to-head rows; summaries and metrics remain complete. "
-            "Hover a cell for its numerator, denominator, observability, and same-game paired comparison."),
+            "Hover a cell for its numerator, denominator, observability, and same-game paired comparison. "
+            "With an analysis catalog open, double-click a metric to inspect its exact supporting games."),
         structurePage);
     structureHint->setTextFormat(Qt::PlainText);
     structureHint->setWordWrap(true);
@@ -1816,6 +1857,7 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         m_structureComparisonTable->horizontalHeader()->setSectionResizeMode(
             column, QHeaderView::ResizeToContents);
     }
+    m_structureComparisonTable->horizontalHeader()->setStretchLastSection(false);
     m_structureComparisonTable->setVisible(false);
     structureLayout->addWidget(m_structureComparisonTable, 1);
     m_structureMetricTable->setObjectName(
@@ -1834,6 +1876,30 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         0, QHeaderView::ResizeToContents);
     m_structureCastlingTable->setMaximumHeight(145);
     structureLayout->addWidget(m_structureCastlingTable);
+    m_structureDrilldownLabel->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureDrilldownLabel"));
+    m_structureDrilldownLabel->setTextFormat(Qt::PlainText);
+    m_structureDrilldownLabel->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    m_structureDrilldownLabel->setWordWrap(true);
+    m_structureDrilldownLabel->setVisible(false);
+    structureLayout->addWidget(m_structureDrilldownLabel);
+    configureTable(
+        m_structureDrilldownTable,
+        {QStringLiteral("UTC"), QStringLiteral("Opponent"),
+         QStringLiteral("Color"), QStringLiteral("Result"),
+         QStringLiteral("Opening"), QStringLiteral("Value"),
+         QStringLiteral("Numerator / denominator"), QStringLiteral("Status"),
+         QStringLiteral("Source game ID")});
+    m_structureDrilldownTable->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureDrilldownTable"));
+    m_structureDrilldownTable->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+    m_structureDrilldownTable->horizontalHeader()->setSectionResizeMode(
+        4, QHeaderView::Stretch);
+    m_structureDrilldownTable->setMaximumHeight(260);
+    m_structureDrilldownTable->setVisible(false);
+    structureLayout->addWidget(m_structureDrilldownTable);
     QFont structureHeadingFont = m_structureHeadToHeadLabel->font();
     structureHeadingFont.setBold(true);
     m_structureHeadToHeadLabel->setFont(structureHeadingFont);
@@ -1907,6 +1973,57 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         &QComboBox::currentIndexChanged,
         this,
         [this](int) { rebuildBoardStructureView(); });
+    connect(m_detailTabs, &QTabWidget::currentChanged, this, [this](int index) {
+        if (!m_explorerConnectionName.isEmpty()) {
+            m_explorerFilterPanel->setVisible(
+                index != m_detailTabs->count() - 1);
+        }
+    });
+    const auto showMetricDrilldown = [this](QTableWidget *table, int row, int column) {
+        const QTableWidgetItem *item = table->item(row, column);
+        if (item == nullptr) {
+            return;
+        }
+        showBoardStructureDrilldown(
+            item->data(kBoardStructurePlayerIdRole).toString(),
+            item->data(kBoardStructureMetricCodeRole).toString());
+    };
+    connect(
+        m_structureMetricTable,
+        &QTableWidget::cellDoubleClicked,
+        this,
+        [showMetricDrilldown, this](int row, int column) {
+            showMetricDrilldown(m_structureMetricTable, row, column);
+        });
+    connect(
+        m_structureCastlingTable,
+        &QTableWidget::cellDoubleClicked,
+        this,
+        [showMetricDrilldown, this](int row, int column) {
+            showMetricDrilldown(m_structureCastlingTable, row, column);
+        });
+    connect(
+        m_structureComparisonTable,
+        &QTableWidget::cellDoubleClicked,
+        this,
+        [showMetricDrilldown, this](int row, int column) {
+            showMetricDrilldown(m_structureComparisonTable, row, column);
+        });
+    connect(
+        m_structureDrilldownTable,
+        &QTableWidget::cellDoubleClicked,
+        this,
+        [this](int row, int) {
+            const QTableWidgetItem *item = m_structureDrilldownTable->item(row, 0);
+            if (item == nullptr) {
+                return;
+            }
+            const QString sourceGameId = item->data(
+                kBoardStructureSourceGameIdRole).toString();
+            if (!sourceGameId.isEmpty()) {
+                emit gameBreakdownRequested(sourceGameId);
+            }
+        });
     connect(m_gameTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
         const QTableWidgetItem *item = m_gameTable->item(row, 0);
         if (item == nullptr) {
@@ -1968,7 +2085,12 @@ PlayerStatisticsPanel::~PlayerStatisticsPanel()
 
 void PlayerStatisticsPanel::closeExplorerDatabase()
 {
+    m_analysisCatalog.reset();
+    m_catalogStructurePlayerIds.clear();
+    m_catalogGlobalStructureView = {};
+    m_catalogStructureViewsByPlayer.clear();
     if (m_explorerConnectionName.isEmpty()) {
+        m_explorerMetadata.clear();
         return;
     }
     const QString connectionName = m_explorerConnectionName;
@@ -2063,6 +2185,9 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
     const QString schemaVersion = metadata.value(QStringLiteral("schema_version"));
     const bool engineExplorer = schemaVersion
         == QStringLiteral("chess-player-game-engine-explorer-sqlite-v2");
+    const bool analysisCatalog = metadata.value(
+        QStringLiteral("catalog_schema_version"))
+        == QStringLiteral("chess-player-analysis-catalog-sqlite-v1");
     const QStringList engineMetadata {
         QStringLiteral("engine_adapter_version"),
         QStringLiteral("engine_analyzed_game_count"),
@@ -2084,8 +2209,19 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
         QStringLiteral("engine_winning_expectation_millionths"),
         QStringLiteral("viewer_runs_engine_process"),
     };
+    const QStringList catalogMetadata {
+        QStringLiteral("board_structure_game_count"),
+        QStringLiteral("board_structure_measurement_count"),
+        QStringLiteral("board_structure_player_game_count"),
+        QStringLiteral("board_structure_postgame_descriptive_only"),
+        QStringLiteral("catalog_authenticates_source_replay"),
+        QStringLiteral("catalog_schema_version"),
+        QStringLiteral("descriptive_metric_registry_id"),
+        QStringLiteral("same_game_vectors_are_pregame_features"),
+    };
     const int expectedMetadataCount = commonMetadata.size()
-        + (engineExplorer ? engineMetadata.size() : 0);
+        + (engineExplorer ? engineMetadata.size() : 0)
+        + (analysisCatalog ? catalogMetadata.size() : 0);
     bool metadataKeysMatch = metadata.size() == expectedMetadataCount;
     for (const QString &key : commonMetadata) {
         metadataKeysMatch = metadataKeysMatch && metadata.contains(key);
@@ -2095,12 +2231,18 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
             metadataKeysMatch = metadataKeysMatch && metadata.contains(key);
         }
     }
+    if (analysisCatalog) {
+        for (const QString &key : catalogMetadata) {
+            metadataKeysMatch = metadataKeysMatch && metadata.contains(key);
+        }
+    }
     const bool sourceExplorer = schemaVersion
         == QStringLiteral("chess-player-game-explorer-sqlite-v1");
     const QString engineAvailability = metadata.value(QStringLiteral("engine_evidence_present"));
     if (
         !metadataKeysMatch
         || (!sourceExplorer && !engineExplorer)
+        || (analysisCatalog && !sourceExplorer)
         || metadata.value(QStringLiteral("clock_semantics"))
             != QStringLiteral("server-accounted-not-cognitive-time")
         || (sourceExplorer && engineAvailability != QStringLiteral("false"))
@@ -2115,6 +2257,16 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
                 != QStringLiteral("false"))
         || metadata.value(QStringLiteral("game_outcomes_are_retrospective")) != QStringLiteral("true")
         || metadata.value(QStringLiteral("mapping_authenticates_source_replay")) != QStringLiteral("false")
+        || (analysisCatalog
+            && (metadata.value(QStringLiteral("board_structure_postgame_descriptive_only"))
+                    != QStringLiteral("true")
+                || metadata.value(QStringLiteral("catalog_authenticates_source_replay"))
+                    != QStringLiteral("false")
+                || metadata.value(QStringLiteral("same_game_vectors_are_pregame_features"))
+                    != QStringLiteral("false")
+                || !metadata.value(QStringLiteral("descriptive_metric_registry_id"))
+                    .startsWith(QStringLiteral(
+                        "chess-board-structure-descriptive-metric-registry-v1:"))))
         || !metadata.value(QStringLiteral("source_plan_v2_id")).startsWith(
             QStringLiteral("chess-cohort-source-chunk-plan-v2:"))
     ) {
@@ -2142,6 +2294,22 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
     qint64 expectedEngineMoves = 0;
     qint64 expectedEngineLineages = 0;
     qint64 expectedEngineCoveragePpm = 0;
+    qint64 expectedBoardStructurePlayerGames = 0;
+    qint64 expectedBoardStructureMeasurements = 0;
+    if (analysisCatalog) {
+        const qint64 boardGames = metadataInteger(
+            QStringLiteral("board_structure_game_count"), &currentOk);
+        numbersValid = numbersValid && currentOk && boardGames == expectedGames;
+        expectedBoardStructurePlayerGames = metadataInteger(
+            QStringLiteral("board_structure_player_game_count"), &currentOk);
+        numbersValid = numbersValid && currentOk
+            && expectedBoardStructurePlayerGames == expectedPlayerGames;
+        expectedBoardStructureMeasurements = metadataInteger(
+            QStringLiteral("board_structure_measurement_count"), &currentOk);
+        numbersValid = numbersValid && currentOk
+            && expectedBoardStructureMeasurements
+                == 39 * expectedBoardStructurePlayerGames;
+    }
     if (engineExplorer) {
         expectedEngineGames = metadataInteger(QStringLiteral("engine_analyzed_game_count"), &currentOk);
         numbersValid = numbersValid && currentOk;
@@ -2209,6 +2377,10 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
     qint64 brokenEngineMoveCoverage = 0;
     qint64 brokenEngineMoveBindings = 0;
     qint64 brokenEngineLineageCounts = 0;
+    qint64 actualBoardStructureDefinitions = 0;
+    qint64 actualBoardStructurePlayerGames = 0;
+    qint64 actualBoardStructureMeasurements = 0;
+    qint64 brokenBoardStructureCardinality = 0;
     if (
         !numbersValid
         || expectedGames < 1
@@ -2244,9 +2416,34 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
         || plyTotal != actualMoves
         || brokenReciprocity != 0
         || prohibitedSchemaObjects != 0
-        || userTableCount != (engineExplorer ? 7 : 4)
+        || userTableCount != ((engineExplorer || analysisCatalog) ? 7 : 4)
     ) {
         setError(errorMessage, QStringLiteral("player explorer table counts do not conserve"));
+        query = QSqlQuery();
+        discard();
+        return false;
+    }
+    if (analysisCatalog
+        && (!scalar(QStringLiteral(
+                "SELECT COUNT(*) FROM board_structure_metric_definitions"),
+                &actualBoardStructureDefinitions)
+            || !scalar(QStringLiteral(
+                "SELECT COUNT(*) FROM board_structure_player_games"),
+                &actualBoardStructurePlayerGames)
+            || !scalar(QStringLiteral(
+                "SELECT COUNT(*) FROM board_structure_measurements"),
+                &actualBoardStructureMeasurements)
+            || !scalar(QStringLiteral(
+                "SELECT COUNT(*) FROM board_structure_player_games pg "
+                "WHERE (SELECT COUNT(*) FROM board_structure_measurements m "
+                "WHERE m.structural_player_game_id = pg.structural_player_game_id) <> 39"),
+                &brokenBoardStructureCardinality)
+            || actualBoardStructureDefinitions != 39
+            || actualBoardStructurePlayerGames != expectedBoardStructurePlayerGames
+            || actualBoardStructureMeasurements != expectedBoardStructureMeasurements
+            || brokenBoardStructureCardinality != 0)) {
+        setError(errorMessage, QStringLiteral(
+            "player analysis catalog BoardStructure coverage does not conserve"));
         query = QSqlQuery();
         discard();
         return false;
@@ -2299,21 +2496,59 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
         return false;
     }
 
+    std::unique_ptr<PlayerAnalysisCatalog> candidateCatalog;
+    QStringList catalogPlayerIds;
+    if (analysisCatalog) {
+        candidateCatalog = std::make_unique<PlayerAnalysisCatalog>();
+        QString catalogError;
+        if (!candidateCatalog->open(fileInfo.absoluteFilePath(), &catalogError)) {
+            setError(errorMessage, catalogError);
+            query = QSqlQuery();
+            discard();
+            return false;
+        }
+        catalogPlayerIds = candidateCatalog->playerIds(&catalogError);
+        if (!catalogError.isEmpty()
+            || catalogPlayerIds.size() != expectedPlayers) {
+            setError(errorMessage, QStringLiteral(
+                "player analysis catalog player identities do not conserve"));
+            query = QSqlQuery();
+            discard();
+            return false;
+        }
+    }
+
     QString preferredPlayer = selectedPlayerId();
     closeExplorerDatabase();
     m_snapshot = {};
     m_playersById.clear();
+    if (analysisCatalog) {
+        m_structureSnapshot = {};
+        m_structurePlayersById.clear();
+        m_structureComparisonSourcePlayerId.clear();
+    }
     m_explorerConnectionName = connectionName;
     m_explorerMetadata = metadata;
+    m_analysisCatalog = std::move(candidateCatalog);
+    m_catalogStructurePlayerIds = catalogPlayerIds;
     database = QSqlDatabase();
-    m_explorerFilterPanel->setVisible(true);
+    m_explorerFilterPanel->setVisible(
+        m_detailTabs->currentIndex() != m_detailTabs->count() - 1);
     for (int index = 0; index < 5; ++index) {
         m_detailTabs->setTabEnabled(index, true);
     }
+    m_detailTabs->setTabEnabled(
+        m_detailTabs->count() - 1,
+        analysisCatalog || !m_structureSnapshot.isEmpty());
     populateExplorerPlayers(preferredPlayer);
     resetExplorerFilters();
     populateExplorerDependentFilters();
     m_openButton->setText(QStringLiteral("Replace Player Data"));
+    m_openStructureButton->setText(analysisCatalog
+            ? QStringLiteral("Load Legacy Structure JSON")
+            : (!m_structureSnapshot.isEmpty()
+                ? QStringLiteral("Replace Structure Stats")
+                : QStringLiteral("Open Structure Stats")));
     rebuildExplorerView();
     return true;
 }
@@ -2480,6 +2715,7 @@ void PlayerStatisticsPanel::clearSnapshot()
     m_structureComparisonSummaryLabel->clear();
     m_structureComparisonSummaryLabel->setVisible(false);
     m_structureComparisonTable->setVisible(false);
+    clearBoardStructureDrilldown();
     m_structureHeadToHeadTable->setRowCount(0);
     m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
     m_structureHeadToHeadLabel->setVisible(false);
@@ -2792,6 +3028,8 @@ void PlayerStatisticsPanel::rebuildExplorerView()
     const bool hasPersistedEngine = m_explorerMetadata.value(
         QStringLiteral("schema_version"))
         == QStringLiteral("chess-player-game-engine-explorer-sqlite-v2");
+    const bool hasAnalysisCatalog = m_analysisCatalog != nullptr
+        && m_analysisCatalog->isOpen();
     if (hasPersistedEngine) {
         m_statusLabel->setText(
             QStringLiteral("Read-only game explorer · source %1 · persisted fixed-node engine coverage %2/%3 games · no engine process")
@@ -2801,6 +3039,14 @@ void PlayerStatisticsPanel::rebuildExplorerView()
         m_statusLabel->setToolTip(
             sourcePlan + QLatin1Char('\n')
             + m_explorerMetadata.value(QStringLiteral("engine_config_id")));
+    } else if (hasAnalysisCatalog) {
+        m_statusLabel->setText(
+            QStringLiteral("Read-only analysis catalog · source %1 · games, moves, openings, outcomes, and BoardStructure rows · no engine evidence")
+                .arg(compactSourcePlan(sourcePlan)));
+        m_statusLabel->setToolTip(
+            sourcePlan + QLatin1Char('\n')
+            + m_explorerMetadata.value(
+                QStringLiteral("descriptive_metric_registry_id")));
     } else {
         m_statusLabel->setText(
             QStringLiteral("Read-only game explorer · source %1 · retrospective results/openings · no engine evidence")
@@ -2991,7 +3237,8 @@ bool PlayerStatisticsPanel::hasSnapshot() const
 
 bool PlayerStatisticsPanel::hasBoardStructureSnapshot() const
 {
-    return !m_structureSnapshot.isEmpty();
+    return !m_structureSnapshot.isEmpty()
+        || (m_analysisCatalog != nullptr && m_analysisCatalog->isOpen());
 }
 
 QString PlayerStatisticsPanel::selectedPlayerId() const
@@ -3394,6 +3641,254 @@ std::optional<PlayerStatisticsGameBreakdown> PlayerStatisticsPanel::gameBreakdow
     return output;
 }
 
+QJsonObject PlayerStatisticsPanel::catalogBoardStructureView(
+    const QString &playerId,
+    QString *errorMessage)
+{
+    if (m_analysisCatalog == nullptr || !m_analysisCatalog->isOpen()) {
+        setError(errorMessage, QStringLiteral("player analysis catalog is not open"));
+        return {};
+    }
+    if (playerId.isEmpty() && !m_catalogGlobalStructureView.isEmpty()) {
+        if (errorMessage != nullptr) {
+            errorMessage->clear();
+        }
+        return m_catalogGlobalStructureView;
+    }
+    if (!playerId.isEmpty()
+        && m_catalogStructureViewsByPlayer.contains(playerId)) {
+        if (errorMessage != nullptr) {
+            errorMessage->clear();
+        }
+        return m_catalogStructureViewsByPlayer.value(playerId);
+    }
+
+    QString queryError;
+    const QVector<PlayerAnalysisCatalogMetricAggregate> metricRows =
+        m_analysisCatalog->metricAggregates(playerId, QString(), &queryError);
+    if (!queryError.isEmpty() || metricRows.size() != 39) {
+        setError(errorMessage, queryError.isEmpty()
+                ? QStringLiteral("analysis catalog metric registry is incomplete")
+                : queryError);
+        return {};
+    }
+    QJsonArray metrics;
+    for (const PlayerAnalysisCatalogMetricAggregate &metric : metricRows) {
+        metrics.append(catalogMetricMapping(metric));
+    }
+
+    if (playerId.isEmpty()) {
+        const auto summary = m_analysisCatalog->globalSummary(&queryError);
+        if (!summary.has_value()) {
+            setError(errorMessage, queryError);
+            return {};
+        }
+        m_catalogGlobalStructureView = QJsonObject {
+            {QStringLiteral("black_player_game_count"), summary->blackPlayerGameCount},
+            {QStringLiteral("black_win_game_count"), summary->blackWinGameCount},
+            {QStringLiteral("distinct_opponent_count"), summary->distinctPlayerCount},
+            {QStringLiteral("distinct_player_count"), summary->distinctPlayerCount},
+            {QStringLiteral("draw_game_count"), summary->drawGameCount},
+            {QStringLiteral("game_count"), summary->gameCount},
+            {QStringLiteral("largest_pair_game_count"), summary->largestPairGameCount},
+            {QStringLiteral("largest_pair_game_share_ppm"),
+             summary->largestPairGameSharePpm},
+            {QStringLiteral("largest_pair_player_ids"), QJsonArray {
+                 summary->largestPairFirstPlayerId,
+                 summary->largestPairSecondPlayerId}},
+            {QStringLiteral("largest_player_exposure_share_ppm"),
+             summary->largestPlayerExposureSharePpm},
+            {QStringLiteral("largest_player_game_count"), summary->largestPlayerGameCount},
+            {QStringLiteral("largest_player_game_share_ppm"),
+             summary->largestPlayerGameSharePpm},
+            {QStringLiteral("largest_player_id"), summary->largestPlayerId},
+            {QStringLiteral("largest_unordered_pair_id"),
+             summary->largestUnorderedPairId},
+            {QStringLiteral("metrics"), metrics},
+            {QStringLiteral("pair_hhi_ppm"), summary->pairHhiPpm},
+            {QStringLiteral("player_exposure_hhi_ppm"),
+             summary->playerExposureHhiPpm},
+            {QStringLiteral("player_game_count"), summary->playerGameCount},
+            {QStringLiteral("player_game_draw_count"), summary->playerGameDrawCount},
+            {QStringLiteral("player_game_loss_count"), summary->playerGameLossCount},
+            {QStringLiteral("player_game_win_count"), summary->playerGameWinCount},
+            {QStringLiteral("unordered_pair_count"), summary->unorderedPairCount},
+            {QStringLiteral("utc_day_count"), summary->distinctUtcDayCount},
+            {QStringLiteral("white_player_game_count"), summary->whitePlayerGameCount},
+            {QStringLiteral("white_win_game_count"), summary->whiteWinGameCount},
+        };
+        if (errorMessage != nullptr) {
+            errorMessage->clear();
+        }
+        return m_catalogGlobalStructureView;
+    }
+
+    const auto summary = m_analysisCatalog->playerSummary(playerId, &queryError);
+    if (!summary.has_value()) {
+        setError(errorMessage, queryError.isEmpty()
+                ? QStringLiteral("analysis catalog player is unavailable")
+                : queryError);
+        return {};
+    }
+    const QVector<PlayerAnalysisCatalogHeadToHead> records =
+        m_analysisCatalog->headToHead(playerId, &queryError);
+    if (!queryError.isEmpty() || records.isEmpty()) {
+        setError(errorMessage, queryError.isEmpty()
+                ? QStringLiteral("analysis catalog player has no opponents")
+                : queryError);
+        return {};
+    }
+    QJsonArray headToHead;
+    QString largestOpponentId;
+    qint64 largestOpponentGameCount = -1;
+    qint64 squaredOpponentGames = 0;
+    for (const PlayerAnalysisCatalogHeadToHead &record : records) {
+        headToHead.append(QJsonObject {
+            {QStringLiteral("black_game_count"), record.blackGameCount},
+            {QStringLiteral("draw_count"), record.drawCount},
+            {QStringLiteral("game_count"), record.gameCount},
+            {QStringLiteral("loss_count"), record.lossCount},
+            {QStringLiteral("opponent_id"), record.opponentId},
+            {QStringLiteral("player_id"), record.playerId},
+            {QStringLiteral("score_rate_ppm"), record.scoreRatePpm},
+            {QStringLiteral("unordered_pair_id"), record.unorderedPairId},
+            {QStringLiteral("white_game_count"), record.whiteGameCount},
+            {QStringLiteral("win_count"), record.winCount},
+        });
+        squaredOpponentGames += record.gameCount * record.gameCount;
+        if (record.gameCount > largestOpponentGameCount
+            || (record.gameCount == largestOpponentGameCount
+                && record.opponentId < largestOpponentId)) {
+            largestOpponentId = record.opponentId;
+            largestOpponentGameCount = record.gameCount;
+        }
+    }
+    const qint64 opponentShare =
+        (largestOpponentGameCount * kPpm + summary->gameCount / 2)
+        / summary->gameCount;
+    const qint64 opponentHhi =
+        (squaredOpponentGames * kPpm
+            + summary->gameCount * summary->gameCount / 2)
+        / (summary->gameCount * summary->gameCount);
+    const QJsonObject view {
+        {QStringLiteral("black_game_count"), summary->blackGameCount},
+        {QStringLiteral("distinct_opponent_count"), summary->distinctOpponentCount},
+        {QStringLiteral("distinct_utc_day_count"), summary->distinctUtcDayCount},
+        {QStringLiteral("draw_count"), summary->drawCount},
+        {QStringLiteral("game_count"), summary->gameCount},
+        {QStringLiteral("head_to_head"), headToHead},
+        {QStringLiteral("largest_opponent_game_count"), largestOpponentGameCount},
+        {QStringLiteral("largest_opponent_game_share_ppm"), opponentShare},
+        {QStringLiteral("largest_opponent_id"), largestOpponentId},
+        {QStringLiteral("loss_count"), summary->lossCount},
+        {QStringLiteral("metrics"), metrics},
+        {QStringLiteral("opponent_hhi_ppm"), opponentHhi},
+        {QStringLiteral("player_id"), playerId},
+        {QStringLiteral("score_rate_ppm"), summary->scoreRatePpm},
+        {QStringLiteral("white_game_count"), summary->whiteGameCount},
+        {QStringLiteral("win_count"), summary->winCount},
+    };
+    m_catalogStructureViewsByPlayer.insert(playerId, view);
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return view;
+}
+
+void PlayerStatisticsPanel::clearBoardStructureDrilldown()
+{
+    m_structureDrilldownLabel->clear();
+    m_structureDrilldownLabel->setVisible(false);
+    m_structureDrilldownTable->clearContents();
+    m_structureDrilldownTable->setRowCount(0);
+    m_structureDrilldownTable->setVisible(false);
+}
+
+void PlayerStatisticsPanel::showBoardStructureDrilldown(
+    const QString &playerId,
+    const QString &metricCode)
+{
+    if (m_analysisCatalog == nullptr || !m_analysisCatalog->isOpen()
+        || !m_structureSnapshot.isEmpty() || playerId.isEmpty()
+        || !boardStructureMetricCodes().contains(metricCode)) {
+        return;
+    }
+    QString error;
+    const QVector<PlayerAnalysisCatalogMeasurementGame> rows =
+        m_analysisCatalog->measurementGames(playerId, metricCode, 5'000, &error);
+    if (!error.isEmpty()) {
+        clearBoardStructureDrilldown();
+        m_structureDrilldownLabel->setText(error);
+        m_structureDrilldownLabel->setVisible(true);
+        return;
+    }
+    m_structureDrilldownTable->clearContents();
+    m_structureDrilldownTable->setRowCount(rows.size());
+    qint64 observed = 0;
+    qint64 notApplicable = 0;
+    for (qsizetype row = 0; row < rows.size(); ++row) {
+        const PlayerAnalysisCatalogMeasurementGame &measurement = rows.at(row);
+        observed += measurement.measurementStatus == QStringLiteral("observed");
+        notApplicable += measurement.measurementStatus
+            == QStringLiteral("not_applicable");
+        QString opening = measurement.openingStatus;
+        if (measurement.openingStatus == QStringLiteral("classified")) {
+            QStringList openingParts;
+            if (!measurement.openingEco.isEmpty()) {
+                openingParts.append(measurement.openingEco);
+            }
+            if (!measurement.openingName.isEmpty()) {
+                openingParts.append(measurement.openingName);
+            }
+            opening = openingParts.join(QStringLiteral(" · "));
+        }
+        QString valueText = QStringLiteral("N/A");
+        if (measurement.valuePpm.has_value()) {
+            valueText = metricCode.startsWith(QStringLiteral("material_delta_mean."))
+                ? signedFixedPointText(
+                    *measurement.valuePpm, static_cast<double>(kPpm), QString())
+                : QStringLiteral("%1%").arg(QString::number(
+                    static_cast<double>(*measurement.valuePpm) / 10'000.0,
+                    'f', 1));
+        }
+        const QString numerator = measurement.numerator.has_value()
+            ? numberText(*measurement.numerator)
+            : QStringLiteral("N/A");
+        const QStringList values {
+            compactUtc(measurement.eventStartUtc),
+            measurement.opponentId,
+            phaseText(measurement.playerColor),
+            phaseText(measurement.outcome),
+            opening,
+            valueText,
+            QStringLiteral("%1 / %2")
+                .arg(numerator, numberText(measurement.denominator)),
+            measurement.measurementStatus == QStringLiteral("observed")
+                ? QStringLiteral("Observed") : QStringLiteral("N/A"),
+            measurement.sourceGameId,
+        };
+        for (qsizetype column = 0; column < values.size(); ++column) {
+            auto *item = readOnlyItem(values.at(column));
+            item->setToolTip(measurement.sourceGameId);
+            item->setData(
+                kBoardStructureSourceGameIdRole,
+                measurement.sourceGameId);
+            m_structureDrilldownTable->setItem(row, column, item);
+        }
+    }
+    m_structureDrilldownLabel->setText(
+        QStringLiteral(
+            "Supporting games · %1 · %2 · %3 rows (%4 observed / %5 N/A). "
+            "Results are retrospective; these mechanical rows are not pregame features. "
+            "Double-click a game to open its replay.")
+            .arg(playerId, metricCode)
+            .arg(numberText(rows.size()))
+            .arg(numberText(observed))
+            .arg(numberText(notApplicable)));
+    m_structureDrilldownLabel->setVisible(true);
+    m_structureDrilldownTable->setVisible(true);
+}
+
 void PlayerStatisticsPanel::refreshBoardStructureComparisonPlayers()
 {
     const QString primaryPlayerId = selectedPlayerId();
@@ -3408,9 +3903,15 @@ void PlayerStatisticsPanel::refreshBoardStructureComparisonPlayers()
     m_structureComparisonPlayerCombo->clear();
     m_structureComparisonPlayerCombo->addItem(
         QStringLiteral("No comparison"), QString());
-    if (!primaryPlayerId.isEmpty()
-        && m_structurePlayersById.contains(primaryPlayerId)) {
-        QStringList playerIds = m_structurePlayersById.keys();
+    const bool catalogView = m_structureSnapshot.isEmpty()
+        && m_analysisCatalog != nullptr && m_analysisCatalog->isOpen();
+    const bool primaryAvailable = catalogView
+        ? m_catalogStructurePlayerIds.contains(primaryPlayerId)
+        : m_structurePlayersById.contains(primaryPlayerId);
+    if (!primaryPlayerId.isEmpty() && primaryAvailable) {
+        QStringList playerIds = catalogView
+            ? m_catalogStructurePlayerIds
+            : m_structurePlayersById.keys();
         std::sort(playerIds.begin(), playerIds.end());
         for (const QString &playerId : playerIds) {
             if (playerId != primaryPlayerId) {
@@ -3428,7 +3929,10 @@ void PlayerStatisticsPanel::refreshBoardStructureComparisonPlayers()
 
 void PlayerStatisticsPanel::rebuildBoardStructureView()
 {
-    if (m_structureSnapshot.isEmpty()) {
+    clearBoardStructureDrilldown();
+    const bool catalogView = m_structureSnapshot.isEmpty()
+        && m_analysisCatalog != nullptr && m_analysisCatalog->isOpen();
+    if (m_structureSnapshot.isEmpty() && !catalogView) {
         m_structureStatusLabel->setText(
             QStringLiteral("No BoardStructure player statistics loaded."));
         m_structureConcentrationLabel->setText(
@@ -3449,7 +3953,10 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
     const QString playerId = selectedPlayerId();
     refreshBoardStructureComparisonPlayers();
     const bool globalView = playerId.isEmpty();
-    if (!globalView && !m_structurePlayersById.contains(playerId)) {
+    const bool playerAvailable = catalogView
+        ? m_catalogStructurePlayerIds.contains(playerId)
+        : m_structurePlayersById.contains(playerId);
+    if (!globalView && !playerAvailable) {
         m_structureStatusLabel->setText(
             QStringLiteral("No BoardStructure summary is available for %1.").arg(playerId));
         m_structureSummaryLabel->setText(
@@ -3469,19 +3976,53 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         m_structureHeadToHeadTable->setVisible(false);
         return;
     }
-    const QJsonObject view = globalView
-        ? m_structureSnapshot.value(QStringLiteral("global_statistics")).toObject()
-        : m_structurePlayersById.value(playerId);
+    QString catalogError;
+    const QJsonObject view = catalogView
+        ? catalogBoardStructureView(playerId, &catalogError)
+        : (globalView
+            ? m_structureSnapshot.value(QStringLiteral("global_statistics")).toObject()
+            : m_structurePlayersById.value(playerId));
+    if (view.isEmpty()) {
+        m_structureStatusLabel->setText(catalogError.isEmpty()
+                ? QStringLiteral("BoardStructure statistics are unavailable.")
+                : catalogError);
+        m_structureSummaryLabel->setText(
+            QStringLiteral("No mechanical player summary could be loaded."));
+        m_structureConcentrationLabel->clear();
+        m_structureMetricTable->setRowCount(0);
+        m_structureCastlingTable->setRowCount(0);
+        m_structureComparisonTable->setRowCount(0);
+        m_structureComparisonPanel->setVisible(false);
+        m_structureComparisonSummaryLabel->setVisible(false);
+        m_structureComparisonTable->setVisible(false);
+        m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadFilterPanel->setVisible(false);
+        m_structureHeadToHeadTable->setVisible(false);
+        return;
+    }
     const QJsonArray metrics = view.value(QStringLiteral("metrics")).toArray();
-    const QString sourcePlan = m_structureSnapshot.value(
-        QStringLiteral("source_plan_v2_id")).toString();
-    m_structureStatusLabel->setText(
-        QStringLiteral("Display snapshot · source %1 · not source-authenticated · explorer filters do not alter these values")
-            .arg(compactSourcePlan(sourcePlan)));
-    m_structureStatusLabel->setToolTip(
-        sourcePlan + QLatin1Char('\n')
-        + m_structureSnapshot.value(
-            QStringLiteral("descriptive_metric_registry_id")).toString());
+    const QString sourcePlan = catalogView
+        ? m_analysisCatalog->sourcePlanId()
+        : m_structureSnapshot.value(
+            QStringLiteral("source_plan_v2_id")).toString();
+    if (catalogView) {
+        m_structureStatusLabel->setText(
+            QStringLiteral("Read-only analysis catalog · source %1 · exact 39-cell rows queried on demand · catalog does not authenticate source replay")
+                .arg(compactSourcePlan(sourcePlan)));
+        m_structureStatusLabel->setToolTip(
+            sourcePlan + QLatin1Char('\n')
+            + m_explorerMetadata.value(
+                QStringLiteral("descriptive_metric_registry_id")));
+    } else {
+        m_structureStatusLabel->setText(
+            QStringLiteral("Display snapshot · source %1 · not source-authenticated · explorer filters do not alter these values")
+                .arg(compactSourcePlan(sourcePlan)));
+        m_structureStatusLabel->setToolTip(
+            sourcePlan + QLatin1Char('\n')
+            + m_structureSnapshot.value(
+                QStringLiteral("descriptive_metric_registry_id")).toString());
+    }
     if (globalView) {
         m_structureComparisonPanel->setVisible(false);
         m_structureComparisonSummaryLabel->setVisible(false);
@@ -3569,10 +4110,19 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             m_structureComparisonPlayerCombo->currentData().toString();
         const bool comparisonView = !comparisonPlayerId.isEmpty()
             && comparisonPlayerId != playerId
-            && m_structurePlayersById.contains(comparisonPlayerId);
+            && (catalogView
+                ? m_catalogStructurePlayerIds.contains(comparisonPlayerId)
+                : m_structurePlayersById.contains(comparisonPlayerId));
         if (comparisonView) {
-            const QJsonObject comparisonViewData =
-                m_structurePlayersById.value(comparisonPlayerId);
+            const QJsonObject comparisonViewData = catalogView
+                ? catalogBoardStructureView(comparisonPlayerId, &catalogError)
+                : m_structurePlayersById.value(comparisonPlayerId);
+            if (comparisonViewData.isEmpty()) {
+                m_structureComparisonSummaryLabel->setText(catalogError);
+                m_structureComparisonSummaryLabel->setVisible(true);
+                m_structureComparisonTable->setVisible(false);
+                return;
+            }
             const QJsonArray comparisonMetrics = comparisonViewData.value(
                 QStringLiteral("metrics")).toArray();
             const QJsonObject directRecord = boardStructureHeadToHeadRow(
@@ -3673,6 +4223,10 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
                     comparisonMetrics, metricRow.code);
                 auto *labelItem = readOnlyItem(metricRow.label);
                 labelItem->setToolTip(metricRow.code);
+                if (catalogView) {
+                    labelItem->setData(kBoardStructureMetricCodeRole, metricRow.code);
+                    labelItem->setData(kBoardStructurePlayerIdRole, playerId);
+                }
                 m_structureComparisonTable->setItem(row, 0, labelItem);
                 const QStringList cellTexts {
                     boardStructureValueText(primaryMetric),
@@ -3689,6 +4243,13 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
                             boardStructureTooltip(column == 1
                                 ? comparisonMetric
                                 : primaryMetric));
+                    }
+                    if (catalogView) {
+                        const bool comparisonColumn = column == 1 || column == 4;
+                        item->setData(kBoardStructureMetricCodeRole, metricRow.code);
+                        item->setData(
+                            kBoardStructurePlayerIdRole,
+                            comparisonColumn ? comparisonPlayerId : playerId);
                     }
                     m_structureComparisonTable->setItem(row, column + 1, item);
                 }
@@ -3821,6 +4382,10 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             auto *item = readOnlyItem(boardStructureCellText(metric));
             item->setToolTip(boardStructureTooltip(metric));
             item->setTextAlignment(Qt::AlignCenter);
+            if (catalogView && !globalView) {
+                item->setData(kBoardStructureMetricCodeRole, code);
+                item->setData(kBoardStructurePlayerIdRole, playerId);
+            }
             m_structureMetricTable->setItem(row, phase + 1, item);
         }
     }
@@ -3852,6 +4417,11 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         for (qsizetype column = 0; column < values.size(); ++column) {
             auto *item = readOnlyItem(values.at(column));
             item->setToolTip(boardStructureTooltip(metric));
+            if (catalogView && !globalView) {
+                item->setData(
+                    kBoardStructureMetricCodeRole, castlingCodes.at(row));
+                item->setData(kBoardStructurePlayerIdRole, playerId);
+            }
             m_structureCastlingTable->setItem(row, column, item);
         }
     }
