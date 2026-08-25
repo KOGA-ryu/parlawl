@@ -95,6 +95,7 @@ public:
     bool activateGame(const QString &sourceGameId);
     bool seekGame(const QString &sourceGameId, int ply);
     void surfaceActiveGame();
+    void hideWorkspace();
 
 signals:
     void playerExplorerRequested();
@@ -122,6 +123,7 @@ private:
     void closeGameAt(int tabIndex);
     void activateBoardForCurrentTab();
     void updateWindowTitleForCurrentTab();
+    void updateGameTabBarVisibility();
 
     QTabWidget *m_gameTabs;
     QHash<QString, OpenGame *> m_games;

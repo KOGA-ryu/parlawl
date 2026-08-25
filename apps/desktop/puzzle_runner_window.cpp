@@ -560,6 +560,7 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
         &GameReviewHubWindow::playerExplorerRequested,
         this,
         [this]() {
+            m_gameReviewHubWindow->hideWorkspace();
             showNormal();
             raise();
             activateWindow();
@@ -961,6 +962,7 @@ void PuzzleRunnerWindow::surfaceGameStudyWorkspace()
 {
     if (m_gameReviewHubWindow != nullptr
         && m_gameReviewHubWindow->openGameCount() > 0) {
+        hide();
         m_gameReviewHubWindow->surfaceActiveGame();
     }
 }
@@ -1111,7 +1113,9 @@ void PuzzleRunnerWindow::onPlayerGameBreakdownRequested(const QString &sourceGam
     QString errorMessage;
     if (!openPlayerGameBreakdown(sourceGameId, &errorMessage)) {
         QMessageBox::warning(this, QStringLiteral("game breakdown"), errorMessage);
+        return;
     }
+    surfaceGameStudyWorkspace();
 }
 
 void PuzzleRunnerWindow::onOpenValidatedPuzzlePackRequested()

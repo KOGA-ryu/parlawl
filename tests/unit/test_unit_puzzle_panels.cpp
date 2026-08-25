@@ -755,8 +755,13 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
 
     GameReviewHubWindow hub;
     QVERIFY(hub.openGame(*first, &error));
+    auto *gameTabs = hub.findChild<QTabWidget *>(QStringLiteral("reviewHubGameTabs"));
+    QVERIFY(gameTabs != nullptr);
+    QCOMPARE(hub.openGameCount(), 1);
+    QVERIFY(gameTabs->tabBar()->isHidden());
     QVERIFY(hub.openGame(*second, &error));
     QCOMPARE(hub.openGameCount(), 2);
+    QVERIFY(!gameTabs->tabBar()->isHidden());
     QCOMPARE(hub.activeGameId(), second->sourceGameId());
     QVERIFY(hub.boardWindowForGame(first->sourceGameId()) != nullptr);
     QVERIFY(hub.boardWindowForGame(second->sourceGameId()) != nullptr);
@@ -768,9 +773,7 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
     QVERIFY(hub.windowTitle().contains(QStringLiteral("Beta 2050")));
     QVERIFY(!hub.windowTitle().contains(QStringLiteral("Review Hub")));
     auto *firstBoard = hub.boardWindowForGame(first->sourceGameId());
-    auto *gameTabs = hub.findChild<QTabWidget *>(QStringLiteral("reviewHubGameTabs"));
     QVERIFY(firstBoard != nullptr);
-    QVERIFY(gameTabs != nullptr);
     const auto *boardIdentity = firstBoard->findChild<QLabel *>(
         QStringLiteral("boardGameIdentity"));
     QVERIFY(boardIdentity != nullptr);
@@ -788,7 +791,36 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
         QStringLiteral("floatingBoardPositionLabel"));
     QVERIFY(position != nullptr);
     QCOMPARE(position->text(), QStringLiteral("2. Nf3"));
-    hub.close();
+
+    auto *play = firstBoard->findChild<QPushButton *>(QStringLiteral("playMovesButton"));
+    QVERIFY(play != nullptr);
+    QTest::mouseClick(play, Qt::LeftButton);
+    QCOMPARE(play->text(), QStringLiteral("❚❚ Pause"));
+    hub.hideWorkspace();
+    QVERIFY(!hub.isVisible());
+    QVERIFY(!firstBoard->isVisible());
+    QCOMPARE(play->text(), QStringLiteral("▶ Play"));
+    hub.surfaceActiveGame();
+    QVERIFY(hub.isVisible());
+    QVERIFY(firstBoard->isVisible());
+
+    QSignalSpy explorerSpy(&hub, &GameReviewHubWindow::playerExplorerRequested);
+    QVERIFY(QMetaObject::invokeMethod(
+        gameTabs,
+        "tabCloseRequested",
+        Qt::DirectConnection,
+        Q_ARG(int, 0)));
+    QCOMPARE(hub.openGameCount(), 1);
+    QVERIFY(gameTabs->tabBar()->isHidden());
+    QCOMPARE(explorerSpy.count(), 0);
+    QVERIFY(QMetaObject::invokeMethod(
+        gameTabs,
+        "tabCloseRequested",
+        Qt::DirectConnection,
+        Q_ARG(int, 0)));
+    QCOMPARE(hub.openGameCount(), 0);
+    QCOMPARE(explorerSpy.count(), 1);
+    QVERIFY(!hub.isVisible());
 }
 
 void TestUnitPuzzlePanels::gameReviewDisplayCatalogEnforcesFrozenSidecarContract()

@@ -2281,7 +2281,7 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     m_detailsView->setObjectName(QStringLiteral("coachDetailedEvidenceView"));
     m_detailsView->setReadOnly(true);
     m_detailsView->setLineWrapMode(QTextEdit::WidgetWidth);
-    m_detailsView->setMinimumHeight(185);
+    m_detailsView->setMinimumHeight(320);
     m_detailsView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_detailsView->hide();
     cardLayout->addWidget(m_detailsView, 1);

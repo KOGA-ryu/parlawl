@@ -123,6 +123,20 @@ GameBoardWindow::GameBoardWindow(
     setWindowTitle(QStringLiteral("%1 · %2").arg(m_identityLabel, gameTitle(pack)));
     setStyleSheet(parlawl::review_ui::studyWindowStyleSheet());
     resize(700, 790);
+    if (QScreen *screen = QGuiApplication::primaryScreen(); screen != nullptr) {
+        const QRect available = screen->availableGeometry();
+        const int safeWidth = std::max(1, available.width() - 48);
+        const int safeHeight = std::max(1, available.height() - 96);
+        resize(std::min(700, safeWidth), std::min(790, safeHeight));
+        const int cascade = std::min(identityIndex, 6) * 22;
+        const int left = std::max(
+            available.left() + 24,
+            available.right() - width() + 1 - 24 - cascade);
+        const int top = std::min(
+            available.bottom() - height() + 1 - 24,
+            available.top() + 64 + cascade);
+        move(left, std::max(available.top() + 24, top));
+    }
 
     m_tabs->setObjectName(QStringLiteral("boardWorkspaceTabs"));
     auto *boardPage = new QWidget(m_tabs);
@@ -421,12 +435,16 @@ GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
     resize(660, 860);
     if (QScreen *screen = QGuiApplication::primaryScreen(); screen != nullptr) {
         const QRect available = screen->availableGeometry();
+        const int safeWidth = std::max(1, available.width() - 48);
+        const int safeHeight = std::max(1, available.height() - 96);
+        resize(std::min(660, safeWidth), std::min(860, safeHeight));
         move(available.left() + 24, available.top() + 64);
     }
     m_gameTabs->setObjectName(QStringLiteral("reviewHubGameTabs"));
     m_gameTabs->setTabsClosable(true);
     m_gameTabs->setMovable(true);
     m_gameTabs->setDocumentMode(true);
+    m_gameTabs->tabBar()->hide();
     setCentralWidget(m_gameTabs);
 
     connect(m_gameTabs, &QTabWidget::currentChanged, this, [this](int) {
@@ -513,6 +531,7 @@ bool GameReviewHubWindow::openGame(
     const int tabIndex = m_gameTabs->addTab(openGame->reviewPanel, tabTitle(pack));
     m_gameTabs->setTabToolTip(tabIndex, gameTitle(pack));
     m_gameTabs->tabBar()->setTabTextColor(tabIndex, themeAccent(tabIndex));
+    updateGameTabBarVisibility();
 
     connect(openGame->reviewPanel, &GameReviewPanel::replayPlyRequested,
             this, [this, sourceGameId](int ply) { seekGame(sourceGameId, ply); });
@@ -550,13 +569,12 @@ bool GameReviewHubWindow::openGame(
             this, [this, sourceGameId]() { stepGame(sourceGameId, 1); });
 
     refreshGame(openGame);
-    showNormal();
-    raise();
-    activateWindow();
     m_gameTabs->setCurrentIndex(tabIndex);
     openGame->boardWindow->showNormal();
     openGame->boardWindow->raise();
-    openGame->boardWindow->activateWindow();
+    showNormal();
+    raise();
+    activateWindow();
     return true;
 }
 
@@ -628,24 +646,30 @@ bool GameReviewHubWindow::seekGame(const QString &sourceGameId, int ply)
 
 void GameReviewHubWindow::surfaceActiveGame()
 {
-    showNormal();
-    raise();
-    activateWindow();
     if (OpenGame *openGame = currentGame(); openGame != nullptr) {
         openGame->boardWindow->showNormal();
         openGame->boardWindow->raise();
-        openGame->boardWindow->activateWindow();
     }
+    showNormal();
+    raise();
+    activateWindow();
 }
 
-void GameReviewHubWindow::closeEvent(QCloseEvent *event)
+void GameReviewHubWindow::hideWorkspace()
 {
     for (OpenGame *openGame : m_games) {
         openGame->playing = false;
         openGame->playbackTimer->stop();
+        refreshGame(openGame);
         openGame->boardWindow->saveNotesNow();
         openGame->boardWindow->hide();
     }
+    hide();
+}
+
+void GameReviewHubWindow::closeEvent(QCloseEvent *event)
+{
+    hideWorkspace();
     QMainWindow::closeEvent(event);
 }
 
@@ -757,6 +781,11 @@ void GameReviewHubWindow::closeGameAt(int tabIndex)
     delete target->reviewPanel;
     m_games.remove(targetId);
     delete target;
+    updateGameTabBarVisibility();
+    if (m_games.isEmpty()) {
+        hide();
+        emit playerExplorerRequested();
+    }
 }
 
 void GameReviewHubWindow::activateBoardForCurrentTab()
@@ -776,4 +805,9 @@ void GameReviewHubWindow::updateWindowTitleForCurrentTab()
     setWindowTitle(openGame == nullptr
         ? QStringLiteral("Game Review")
         : gameTitle(openGame->pack));
+}
+
+void GameReviewHubWindow::updateGameTabBarVisibility()
+{
+    m_gameTabs->tabBar()->setVisible(m_gameTabs->count() > 1);
 }

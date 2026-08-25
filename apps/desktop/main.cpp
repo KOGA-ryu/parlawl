@@ -210,7 +210,10 @@ int main(int argc, char *argv[])
             return 2;
         }
     }
-    window.show();
-    QTimer::singleShot(0, &window, &PuzzleRunnerWindow::surfaceGameStudyWorkspace);
+    if (sourceGameId.isEmpty()) {
+        window.show();
+    } else {
+        QTimer::singleShot(0, &window, &PuzzleRunnerWindow::surfaceGameStudyWorkspace);
+    }
     return app.exec();
 }
