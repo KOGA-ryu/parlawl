@@ -14,6 +14,7 @@
 #include "session_controller.h"
 #include "source_game.h"
 #include "annotated_replay_pack.h"
+#include "game_review_display.h"
 #include "replay_session.h"
 
 class AnalysisOrchestrator;
@@ -56,6 +57,7 @@ public:
         const QString &playerId = QString(),
         const QString &sourceGameId = QString(),
         const QString &selectiveReportDirectory = QString(),
+        const QString &gameReviewDirectory = QString(),
         QString *errorMessage = nullptr);
     void surfaceGameStudyWorkspace();
 
@@ -153,6 +155,7 @@ private:
     WorkspaceMode m_workspaceMode = WorkspaceMode::Puzzle;
     std::optional<parlawl::puzzle_runner::AnnotatedReplayPack> m_annotatedReplayPack;
     std::optional<parlawl::puzzle_runner::SelectiveDeepReportCatalog> m_selectiveDeepReports;
+    std::optional<parlawl::puzzle_runner::GameReviewDisplayCatalog> m_gameReviewDisplays;
     parlawl::puzzle_runner::ReplaySession m_replaySession;
     int m_replayVariationAnchorPly = 0;
     int m_preReplayInfoTabIndex = 0;

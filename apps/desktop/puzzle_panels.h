@@ -6,6 +6,7 @@
 #include "puzzle_info_summary_builder.h"
 #include "puzzle_types.h"
 #include "annotated_replay_pack.h"
+#include "game_review_display.h"
 #include "replay_session.h"
 
 class QLabel;
@@ -14,6 +15,7 @@ class QKeyEvent;
 class QSplitter;
 class QTableWidget;
 class QTabWidget;
+class QTimer;
 class QPushButton;
 class QCheckBox;
 class QComboBox;
@@ -118,6 +120,73 @@ private:
     bool m_inlineCoachMode = false;
 };
 
+class CoachReviewPanel : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit CoachReviewPanel(QWidget *parent = nullptr);
+    void setReview(const parlawl::puzzle_runner::GameReviewDisplay *review, int currentPly);
+    [[nodiscard]] bool hasMomentAtPly(int ply) const;
+    bool selectMomentAtPly(int ply);
+    [[nodiscard]] int currentReviewIndex() const;
+
+signals:
+    void criticalMomentRequested(
+        int ply,
+        const QString &beforeFen,
+        const QString &playedUci,
+        const QString &positionLabel);
+    void linePreviewRequested(
+        const QString &beforeFen,
+        const QString &rootUci,
+        const QString &positionLabel);
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
+
+private:
+    void setCurrentMoment(int vectorIndex, bool requestBoardPosition);
+    void refreshCard();
+    void updateFocusRead();
+    void stepFocusRead(int delta);
+    void setFocusPlaybackRunning(bool running);
+    QString detailedEvidenceText() const;
+
+    std::optional<parlawl::puzzle_runner::GameReviewDisplay> m_review;
+    int m_currentMomentVectorIndex = 0;
+    QLabel *m_unavailableLabel;
+    QFrame *m_card;
+    QLabel *m_openingChip;
+    QLabel *m_timingChip;
+    QLabel *m_counterChip;
+    QLabel *m_titleLabel;
+    QLabel *m_summaryLabel;
+    QLabel *m_comparisonLabel;
+    QLabel *m_scoreLabel;
+    QLabel *m_contextLabel;
+    QPushButton *m_previousMomentButton;
+    QPushButton *m_nextMomentButton;
+    QPushButton *m_bestLineButton;
+    QPushButton *m_playedLineButton;
+    QLabel *m_linePreviewLabel;
+    QPushButton *m_detailsButton;
+    QTextEdit *m_detailsView;
+    QPushButton *m_focusReadButton;
+    QFrame *m_focusReadFrame;
+    QLabel *m_focusBeforeLabel;
+    QLabel *m_focusAnchorLabel;
+    QLabel *m_focusAfterLabel;
+    QLabel *m_focusProgressLabel;
+    QPushButton *m_focusStartPauseButton;
+    QPushButton *m_focusPreviousButton;
+    QPushButton *m_focusNextButton;
+    QPushButton *m_focusReplayButton;
+    QTimer *m_focusTimer;
+    QStringList m_focusWords;
+    int m_focusWordIndex = 0;
+};
+
 class GameReviewPanel : public QWidget
 {
     Q_OBJECT
@@ -128,11 +197,22 @@ public:
         const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
         const parlawl::puzzle_runner::ReplaySession &session,
         int variationAnchorPly);
+    void setGameReviewDisplay(
+        const parlawl::puzzle_runner::GameReviewDisplay *review);
     void setEmptyState();
 
 signals:
     void replayPlyRequested(int ply);
     void backToPlayerStatisticsRequested();
+    void criticalMomentRequested(
+        int ply,
+        const QString &beforeFen,
+        const QString &playedUci,
+        const QString &positionLabel);
+    void coachLinePreviewRequested(
+        const QString &beforeFen,
+        const QString &rootUci,
+        const QString &positionLabel);
 
 private:
     QTabWidget *m_reviewModes;
@@ -140,6 +220,8 @@ private:
     MoveListPanel *m_moveListPanel;
     ReplayEvidencePanel *m_evidencePanel;
     QTextEdit *m_detailedEvidenceView;
+    CoachReviewPanel *m_coachReviewPanel;
+    int m_currentReplayPly = 0;
 };
 
 class MetadataCard : public QGroupBox

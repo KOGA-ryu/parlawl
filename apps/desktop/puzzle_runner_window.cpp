@@ -21,6 +21,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSaveFile>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSettings>
 #include <QStandardPaths>
@@ -812,7 +813,8 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
     const bool explorer = QFileInfo(path).suffix().compare(
         QStringLiteral("sqlite3"), Qt::CaseInsensitive) == 0;
     if (explorer) {
-        if (!openPlayerGameExplorer(path, QString(), QString(), QString(), &errorMessage)) {
+        if (!openPlayerGameExplorer(
+                path, QString(), QString(), QString(), QString(), &errorMessage)) {
             QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
         }
         return;
@@ -870,6 +872,7 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     const QString &playerId,
     const QString &sourceGameId,
     const QString &selectiveReportDirectory,
+    const QString &gameReviewDirectory,
     QString *errorMessage)
 {
     if (errorMessage != nullptr) {
@@ -893,6 +896,15 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
             return false;
         }
     }
+    std::optional<GameReviewDisplayCatalog> gameReviewDisplays;
+    if (!gameReviewDirectory.isEmpty()) {
+        gameReviewDisplays = GameReviewDisplayCatalog::fromDirectory(
+            gameReviewDirectory,
+            errorMessage);
+        if (!gameReviewDisplays.has_value()) {
+            return false;
+        }
+    }
     if (!m_playerStatisticsPanel->loadExplorerDatabase(
             absoluteSqlitePath,
             errorMessage)) {
@@ -903,13 +915,39 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
         return fail(QStringLiteral("player explorer does not contain the exact requested player ID"));
     }
     m_selectiveDeepReports = std::move(deepReports);
+    m_gameReviewDisplays = std::move(gameReviewDisplays);
+
+    if (m_gameReviewDisplays.has_value()) {
+        QSet<QString> reportGames;
+        if (m_selectiveDeepReports.has_value()) {
+            const QStringList ids = m_selectiveDeepReports->sourceGameIds();
+            reportGames = QSet<QString>(ids.cbegin(), ids.cend());
+        }
+        int orphanCount = 0;
+        for (const QString &gameId : m_gameReviewDisplays->sourceGameIds()) {
+            if (!reportGames.contains(gameId)) {
+                ++orphanCount;
+            }
+        }
+        if (orphanCount > 0) {
+            appendLogMessage(timestamped(QStringLiteral(
+                "ignored %1 orphan Coach Review sidecar%2 with no joined Report-v2 game")
+                    .arg(orphanCount)
+                    .arg(orphanCount == 1 ? QString() : QStringLiteral("s"))));
+        }
+    }
 
     m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
     appendLogMessage(timestamped(
         m_selectiveDeepReports.has_value()
             ? QStringLiteral(
-                  "opened local read-only player analysis data with %1 exact-join selective deep reports; ParlAWL ran no engine, network, or source replay")
+                  "opened local read-only player analysis data with %1 exact-join selective deep reports and %2 Coach Review projection%3; ParlAWL ran no engine, network, or source replay")
                   .arg(m_selectiveDeepReports->reportCount())
+                  .arg(m_gameReviewDisplays.has_value()
+                           ? m_gameReviewDisplays->reviewCount() : 0)
+                  .arg(m_gameReviewDisplays.has_value()
+                           && m_gameReviewDisplays->reviewCount() == 1
+                       ? QString() : QStringLiteral("s"))
             : QStringLiteral(
                   "opened local read-only player analysis data; ParlAWL ran no engine, network, or source replay")));
     if (!sourceGameId.isEmpty()
@@ -970,6 +1008,19 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
                 m_selectiveDeepReports->reviewForGame(sourceGameId);
             review != nullptr) {
             mechanical.selectiveDeepReview = *review;
+        }
+    }
+    const GameReviewDisplay *gameReviewDisplay = nullptr;
+    if (m_gameReviewDisplays.has_value()) {
+        gameReviewDisplay = m_gameReviewDisplays->reviewForGame(sourceGameId);
+        if (gameReviewDisplay != nullptr) {
+            if (!mechanical.selectiveDeepReview.has_value()) {
+                gameReviewDisplay = nullptr;
+            } else if (gameReviewDisplay->sourceReportId
+                       != mechanical.selectiveDeepReview->reportId) {
+                return fail(QStringLiteral(
+                    "Coach Review sidecar source_report_id does not match the joined Report-v2 game."));
+            }
         }
     }
     if (breakdown->engineEvidence.has_value()) {
@@ -1044,7 +1095,7 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     }
 
     if (m_gameReviewHubWindow == nullptr
-        || !m_gameReviewHubWindow->openGame(*replay, &details)) {
+        || !m_gameReviewHubWindow->openGame(*replay, &details, gameReviewDisplay)) {
         return fail(details.isEmpty()
                 ? QStringLiteral("The game could not be opened in Review Hub.")
                 : details);

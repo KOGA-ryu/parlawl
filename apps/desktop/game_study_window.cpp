@@ -297,6 +297,32 @@ void GameBoardWindow::setReplayState(
     m_positionLabel->setText(selectedMoveLabel());
 }
 
+bool GameBoardWindow::showCoachPreview(
+    const QString &beforeFen,
+    const QString &rootMoveUci,
+    const QString &positionLabel)
+{
+    QString errorMessage;
+    const auto position = ChessPosition::fromFen(beforeFen, &errorMessage);
+    const auto move = Move::fromUci(rootMoveUci);
+    if (!position.has_value() || !move.has_value()) {
+        return false;
+    }
+    const PieceColor viewColor = m_pack.viewedPlayerColor() == QStringLiteral("black")
+        ? PieceColor::Black : PieceColor::White;
+    m_boardWidget->setPosition(
+        *position,
+        viewColor,
+        -1,
+        {},
+        {move->from, move->to},
+        SessionStatus::Ready,
+        true,
+        false);
+    m_positionLabel->setText(positionLabel);
+    return true;
+}
+
 void GameBoardWindow::setTransportState(
     bool canStepBackward,
     bool canStepForward,
@@ -425,7 +451,8 @@ GameReviewHubWindow::~GameReviewHubWindow()
 
 bool GameReviewHubWindow::openGame(
     const AnnotatedReplayPack &pack,
-    QString *errorMessage)
+    QString *errorMessage,
+    const GameReviewDisplay *display)
 {
     if (errorMessage != nullptr) {
         errorMessage->clear();
@@ -436,6 +463,26 @@ bool GameReviewHubWindow::openGame(
         }
         return false;
     }
+    if (display != nullptr) {
+        if (display->sourceGameId != pack.sourceGameId()
+            || display->moves.size() != pack.moves().size()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral(
+                    "Coach Review sidecar does not match the exact replay game.");
+            }
+            return false;
+        }
+        for (int index = 0; index < display->moves.size(); ++index) {
+            if (display->moves.at(index).san != pack.moves().at(index).notation.san
+                || display->moves.at(index).uci != pack.moves().at(index).notation.uci) {
+                if (errorMessage != nullptr) {
+                    *errorMessage = QStringLiteral(
+                        "Coach Review sidecar move sequence differs from the exact replay.");
+                }
+                return false;
+            }
+        }
+    }
     if (m_games.contains(pack.sourceGameId())) {
         activateGame(pack.sourceGameId());
         return true;
@@ -443,6 +490,9 @@ bool GameReviewHubWindow::openGame(
 
     auto *openGame = new OpenGame;
     openGame->pack = pack;
+    if (display != nullptr) {
+        openGame->display = *display;
+    }
     openGame->session.load(openGame->pack);
     openGame->reviewPanel = new GameReviewPanel(m_gameTabs);
     openGame->reviewPanel->setObjectName(QStringLiteral("reviewHubGamePage"));
@@ -461,6 +511,24 @@ bool GameReviewHubWindow::openGame(
             this, [this, sourceGameId](int ply) { seekGame(sourceGameId, ply); });
     connect(openGame->reviewPanel, &GameReviewPanel::backToPlayerStatisticsRequested,
             this, &GameReviewHubWindow::playerExplorerRequested);
+    connect(openGame->reviewPanel, &GameReviewPanel::criticalMomentRequested,
+            this, [this, sourceGameId](int ply, const QString &beforeFen,
+                    const QString &playedUci, const QString &positionLabel) {
+                if (seekGame(sourceGameId, ply)) {
+                    if (OpenGame *selected = game(sourceGameId); selected != nullptr) {
+                        selected->boardWindow->showCoachPreview(
+                            beforeFen, playedUci, positionLabel);
+                    }
+                }
+            });
+    connect(openGame->reviewPanel, &GameReviewPanel::coachLinePreviewRequested,
+            this, [this, sourceGameId](const QString &beforeFen,
+                    const QString &rootUci, const QString &positionLabel) {
+                if (OpenGame *selected = game(sourceGameId); selected != nullptr) {
+                    selected->boardWindow->showCoachPreview(
+                        beforeFen, rootUci, positionLabel);
+                }
+            });
     connect(openGame->boardWindow, &GameBoardWindow::reviewTabRequested,
             this, [this](const QString &id) { activateGame(id); });
     connect(openGame->boardWindow, &GameBoardWindow::previousRequested,
@@ -597,6 +665,8 @@ void GameReviewHubWindow::refreshGame(OpenGame *openGame)
     }
     openGame->reviewPanel->setReplayState(
         openGame->pack, openGame->session, openGame->variationAnchorPly);
+    openGame->reviewPanel->setGameReviewDisplay(
+        openGame->display.has_value() ? &*openGame->display : nullptr);
     openGame->boardWindow->setReplayState(
         openGame->session, openGame->variationAnchorPly);
     const bool canBack = openGame->session.inVariation()

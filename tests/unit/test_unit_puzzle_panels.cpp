@@ -1,13 +1,17 @@
 #include <QtTest>
 #include <algorithm>
 #include <QComboBox>
+#include <QFile>
 #include <QFrame>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTemporaryDir>
 #include <QTextEdit>
 
 #include "board_widget.h"
@@ -199,6 +203,141 @@ parlawl::puzzle_runner::MechanicalReplayGame mechanicalGameWithDeepFixture()
     return game;
 }
 
+parlawl::puzzle_runner::GameReviewDisplay gameReviewDisplayFixture(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    using namespace parlawl::puzzle_runner;
+    GameReviewDisplay review;
+    review.displaySchema = QStringLiteral("chess-game-review-display-v1");
+    review.sourceReportId = pack.selectiveDeepReview()->reportId;
+    review.sourceGameId = pack.sourceGameId();
+    review.canonicalGameUrl = pack.canonicalGameUrl();
+    review.startTimeUtc = QStringLiteral("2026-08-01T12:00:00Z");
+    review.endTimeUtc = QStringLiteral("2026-08-01T12:01:00Z");
+    review.whiteUsername = QStringLiteral("Alpha");
+    review.blackUsername = QStringLiteral("Beta");
+    review.whiteRating = 2100;
+    review.blackRating = 2050;
+    review.rated = true;
+    review.rules = QStringLiteral("chess");
+    review.timeClass = QStringLiteral("blitz");
+    review.timeControl = QStringLiteral("180");
+    review.moveCount = pack.moves().size();
+    review.selectedMomentCount = 2;
+    review.openingEco = QStringLiteral("C20");
+    review.openingName = QStringLiteral("King's Pawn Game");
+    review.openingStatus = QStringLiteral("classified");
+    review.deepestExactMatchPositionIndex = 2;
+    review.firstPlyAfterBook = 3;
+    review.firstMoveAfterBookSan = QStringLiteral("Nf3");
+    review.result = QStringLiteral("1-0");
+    review.winnerUsername = QStringLiteral("Alpha");
+    review.terminationStatus = QStringLiteral("source_header_claim");
+    review.terminationClaim = QStringLiteral("Alpha won by resignation");
+    review.outcomeSummary = QStringLiteral("Alpha won by resignation.");
+    review.clockSemantics = QStringLiteral("server-accounted-not-cognitive-time");
+    review.decisionCount = review.moveCount;
+    review.elapsedObservedCount = review.moveCount;
+    review.elapsedMissingCount = 0;
+    review.observedElapsedSumMs = 10'000;
+
+    for (int index = 0; index < pack.moves().size(); ++index) {
+        const auto &source = pack.moves().at(index);
+        GameReviewDisplayMove move;
+        move.ply = index + 1;
+        move.moveNumber = (move.ply + 1) / 2;
+        move.mover = move.ply % 2 == 1 ? QStringLiteral("white") : QStringLiteral("black");
+        move.playerUsername = move.mover == QStringLiteral("white")
+            ? review.whiteUsername : review.blackUsername;
+        move.san = source.notation.san;
+        move.uci = source.notation.uci;
+        move.phase = QStringLiteral("opening");
+        move.beforeFen = source.notation.beforeFen;
+        move.afterFen = source.notation.afterFen;
+        move.elapsedMoveMs = static_cast<qint64>((index + 1) * 1000);
+        move.elapsedStatus = QStringLiteral("derived_clock_difference");
+        move.decisionStartClockMs = 180'000;
+        move.clockRemainingMs = 179'000 - index * 1000;
+        move.piece = source.notation.san.startsWith(QLatin1Char('N'))
+            ? QStringLiteral("knight") : QStringLiteral("pawn");
+        move.capture = source.notation.san.contains(QLatin1Char('x'));
+        move.check = source.notation.san.contains(QLatin1Char('+'));
+        move.checkmate = source.notation.san.contains(QLatin1Char('#'));
+        review.moves.append(move);
+    }
+    review.moves[2].selectedMomentIndexes = {1};
+    review.moves[3].selectedMomentIndexes = {2};
+
+    GameReviewDisplayMoment first;
+    first.reviewIndex = 1;
+    first.ply = 3;
+    first.moveNumber = 2;
+    first.mover = QStringLiteral("white");
+    first.playerUsername = QStringLiteral("Alpha");
+    first.phase = QStringLiteral("opening");
+    first.playedSan = QStringLiteral("Nf3");
+    first.playedUci = QStringLiteral("g1f3");
+    first.bestMoveSan = QStringLiteral("d4");
+    first.bestMoveUci = QStringLiteral("d2d4");
+    first.status = QStringLiteral("confirmed_severe_error");
+    first.severity = QStringLiteral("severe");
+    first.confidence = QStringLiteral("confirmed-under-engine-contract");
+    first.centipawnLoss = 40;
+    first.bestCentipawnsMover = 100;
+    first.playedCentipawnsMover = 60;
+    first.expectationLossMillionths = 166'000;
+    first.elapsedMoveMs = 3'000;
+    first.title = QStringLiteral("Critical error");
+    first.summary = QStringLiteral(
+        "Alpha played Nf3; the engine strongly preferred d4. The engine comparison differed by 0.40 pawns from the mover's perspective.");
+    first.bestLineUci = {QStringLiteral("d2d4"), QStringLiteral("d7d5")};
+    first.playedLineUci = {QStringLiteral("g1f3"), QStringLiteral("b8c6")};
+    review.criticalMoments.append(first);
+
+    GameReviewDisplayMoment second;
+    second.reviewIndex = 2;
+    second.ply = 4;
+    second.moveNumber = 2;
+    second.mover = QStringLiteral("black");
+    second.playerUsername = QStringLiteral("Beta");
+    second.phase = QStringLiteral("opening");
+    second.playedSan = QStringLiteral("Nc6");
+    second.playedUci = QStringLiteral("b8c6");
+    second.bestMoveSan = QStringLiteral("d6");
+    second.bestMoveUci = QStringLiteral("d7d6");
+    second.status = QStringLiteral("below_confirmation_threshold");
+    second.confidence = QStringLiteral("below-confirmation-threshold");
+    second.centipawnLoss = 5;
+    second.bestCentipawnsMover = 15;
+    second.playedCentipawnsMover = 10;
+    second.expectationLossMillionths = 25'000;
+    second.elapsedMoveMs = 4'000;
+    second.title = QStringLiteral("Small engine difference");
+    second.summary = QStringLiteral(
+        "Beta played Nc6; the retained comparison did not cross the confirmation threshold.");
+    second.bestLineUci = {QStringLiteral("d7d6"), QStringLiteral("d2d4")};
+    second.playedLineUci = {QStringLiteral("b8c6"), QStringLiteral("d2d4")};
+    review.criticalMoments.append(second);
+    return review;
+}
+
+QByteArray strictGameReviewSidecarFixture()
+{
+    QByteArray json = QByteArrayLiteral("{")
+        + QByteArrayLiteral("\"claim_boundary\":{\"causal_or_intent_explanation\":false,\"complete_game_error_coverage\":false,\"display_projection_only\":true,\"engine_or_network_work_performed\":false,\"objective_chess_truth\":false,\"source_report_content_address_validated\":true,\"source_report_replay_reperformed\":false,\"unselected_moves_claimed_safe\":false},")
+        + QByteArrayLiteral("\"critical_moments\":[{\"best_centipawns_mover\":25,\"best_line_uci\":[\"d2d4\"],\"best_move_san\":\"d4\",\"best_move_uci\":\"d2d4\",\"centipawn_loss\":10,\"confidence\":\"confirmed-under-engine-contract\",\"elapsed_move_ms\":1000,\"expectation_loss_millionths\":5000,\"move_number\":1,\"mover\":\"white\",\"phase\":\"opening\",\"played_centipawns_mover\":15,\"played_line_uci\":[\"e2e4\"],\"played_san\":\"e4\",\"played_uci\":\"e2e4\",\"player_username\":\"Alpha\",\"ply\":1,\"review_index\":1,\"severity\":\"mistake\",\"status\":\"confirmed_missed_opportunity\",\"summary\":\"Alpha played e4, but d4 preserved the stronger retained line.\",\"title\":\"Missed opportunity\"}],")
+        + QByteArrayLiteral("\"display_schema\":\"chess-game-review-display-v1\",")
+        + QByteArrayLiteral("\"game\":{\"black_postgame_rating_observed\":2050,\"black_username\":\"Beta\",\"canonical_game_url\":\"https://www.chess.com/game/live/1\",\"end_time_utc\":\"2026-08-01T12:01:00Z\",\"move_count\":1,\"rated\":true,\"rules\":\"chess\",\"selected_moment_count\":1,\"source_game_id\":\"chesscom-game-v1:@GAME@\",\"start_time_utc\":\"2026-08-01T12:00:00Z\",\"time_class\":\"blitz\",\"time_control\":\"180\",\"white_postgame_rating_observed\":2100,\"white_username\":\"Alpha\"},")
+        + QByteArrayLiteral("\"moves\":[{\"after_fen\":\"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1\",\"before_fen\":\"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\",\"capture\":false,\"castling\":null,\"check\":false,\"checkmate\":false,\"clock_remaining_ms\":179000,\"decision_start_clock_ms\":180000,\"elapsed_move_ms\":1000,\"elapsed_status\":\"derived_clock_difference\",\"move_number\":1,\"mover\":\"white\",\"phase\":\"opening\",\"piece\":\"pawn\",\"player_username\":\"Alpha\",\"ply\":1,\"pressure_thresholds_met_ms\":[],\"san\":\"e4\",\"selected_moment_indexes\":[1],\"uci\":\"e2e4\"}],")
+        + QByteArrayLiteral("\"opening\":{\"deepest_exact_match_position_index\":0,\"eco\":\"A00\",\"first_move_after_book_san\":\"e4\",\"first_ply_after_book\":1,\"name\":\"Uncommon Opening\",\"status\":\"classified\"},")
+        + QByteArrayLiteral("\"outcome\":{\"result\":\"1-0\",\"summary\":\"Alpha won by resignation.\",\"termination_claim\":\"Alpha won by resignation\",\"termination_status\":\"source_header_claim\",\"winner_username\":\"Alpha\"},")
+        + QByteArrayLiteral("\"source_report_id\":\"chess-selective-game-analysis-report-v2:@REPORT@\",")
+        + QByteArrayLiteral("\"timing\":{\"by_player_and_phase\":[{\"decision_count\":1,\"elapsed_missing_count\":0,\"elapsed_observed_count\":1,\"maximum_observed_elapsed_ms\":1000,\"mean_observed_elapsed_ms\":1000,\"observed_elapsed_sum_ms\":1000,\"phase\":\"opening\",\"player_color\":\"white\"}],\"clock_semantics\":\"server-accounted-not-cognitive-time\",\"decision_count\":1,\"elapsed_missing_count\":0,\"elapsed_observed_count\":1,\"longest_observed_by_player\":[{\"elapsed_move_ms\":1000,\"move_number\":1,\"phase\":\"opening\",\"player_color\":\"white\",\"player_username\":\"Alpha\",\"ply\":1,\"san\":\"e4\",\"uci\":\"e2e4\"}],\"observed_elapsed_sum_ms\":1000}}\n");
+    json.replace("@REPORT@", QByteArray(64, 'a'));
+    json.replace("@GAME@", QByteArray(64, 'b'));
+    return json;
+}
+
 } // namespace
 
 class TestUnitPuzzlePanels : public QObject
@@ -217,6 +356,8 @@ private slots:
     void gameBreakdownShowsDeepSelectiveEvidenceAboveShallowScreen();
     void gameReviewPanelKeepsMovesAndEvidenceTogether();
     void gameReviewHubKeepsMultipleBoardsAndTabsSynchronized();
+    void gameReviewDisplayCatalogEnforcesFrozenSidecarContract();
+    void coachReviewUsesBackendWordingDetailsAndFocusNavigation();
     void floatingBoardOffersThemesAndPinnedNotes();
     void settingsCardShowsSupplyStatusText();
     void enginePanelTreatsDynamicMarkupAsPlainText();
@@ -641,6 +782,160 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
     QVERIFY(position != nullptr);
     QCOMPARE(position->text(), QStringLiteral("2. Nf3"));
     hub.close();
+}
+
+void TestUnitPuzzlePanels::gameReviewDisplayCatalogEnforcesFrozenSidecarContract()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString digest(64, QLatin1Char('a'));
+    const QString filePath = directory.filePath(
+        QStringLiteral("game-review-display-v1-%1.json").arg(digest));
+    const auto writeSidecar = [&filePath](const QByteArray &bytes) {
+        QFile file(filePath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        return file.write(bytes) == bytes.size() && file.flush();
+    };
+    QVERIFY(writeSidecar(strictGameReviewSidecarFixture()));
+
+    QString error;
+    const QString canonicalDirectory = QFileInfo(directory.path()).canonicalFilePath();
+    const auto catalog = parlawl::puzzle_runner::GameReviewDisplayCatalog::fromDirectory(
+        canonicalDirectory, &error);
+    QVERIFY2(catalog.has_value(), qPrintable(error));
+    QCOMPARE(catalog->reviewCount(), 1);
+    const QString sourceGameId = QStringLiteral("chesscom-game-v1:")
+        + QString(64, QLatin1Char('b'));
+    const auto *review = catalog->reviewForGame(sourceGameId);
+    QVERIFY(review != nullptr);
+    QCOMPARE(review->criticalMoments.first().title, QStringLiteral("Missed opportunity"));
+    QCOMPARE(review->clockSemantics,
+        QStringLiteral("server-accounted-not-cognitive-time"));
+
+    QJsonDocument wrongSchema = QJsonDocument::fromJson(strictGameReviewSidecarFixture());
+    QJsonObject root = wrongSchema.object();
+    root.insert(QStringLiteral("display_schema"), QStringLiteral("chess-game-review-display-v2"));
+    QVERIFY(writeSidecar(QJsonDocument(root).toJson(QJsonDocument::Compact)));
+    const auto rejected = parlawl::puzzle_runner::GameReviewDisplayCatalog::fromDirectory(
+        canonicalDirectory, &error);
+    QVERIFY(!rejected.has_value());
+    QVERIFY(error.contains(QStringLiteral("schema"), Qt::CaseInsensitive));
+}
+
+void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigation()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        mechanicalGameWithDeepFixture(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    auto review = gameReviewDisplayFixture(*pack);
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(3));
+
+    GameReviewPanel panel;
+    panel.resize(680, 840);
+    panel.setReplayState(*pack, session, 0);
+    panel.setGameReviewDisplay(&review);
+    panel.show();
+    QCoreApplication::processEvents();
+
+    auto *tabs = panel.findChild<QTabWidget *>(QStringLiteral("gameReviewModes"));
+    auto *moves = panel.findChild<MoveListPanel *>(QStringLiteral("gameReviewMoveList"));
+    auto *table = moves != nullptr ? moves->findChild<QTableWidget *>() : nullptr;
+    auto *coach = panel.findChild<CoachReviewPanel *>(QStringLiteral("coachReviewPanel"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(table != nullptr);
+    QVERIFY(coach != nullptr);
+    QCOMPARE(tabs->tabText(2), QStringLiteral("Coach Review"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        table,
+        "cellClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 1),
+        Q_ARG(int, 2)));
+    QCOMPARE(tabs->currentWidget(), coach);
+    QCOMPARE(coach->currentReviewIndex(), 2);
+    const auto *title = coach->findChild<QLabel *>(QStringLiteral("coachReviewTitle"));
+    const auto *summary = coach->findChild<QLabel *>(QStringLiteral("coachReviewSummary"));
+    const auto *context = coach->findChild<QLabel *>(QStringLiteral("coachReviewContext"));
+    QVERIFY(title != nullptr);
+    QVERIFY(summary != nullptr);
+    QVERIFY(context != nullptr);
+    QCOMPARE(title->text(), QStringLiteral("Small engine difference"));
+    QCOMPARE(summary->text(), review.criticalMoments.at(1).summary);
+    QVERIFY(context->text().contains(QStringLiteral("server-accounted, not cognitive")));
+    const auto *card = coach->findChild<QFrame *>(QStringLiteral("coachReviewCard"));
+    QVERIFY(card != nullptr);
+    QVERIFY(card->styleSheet().contains(QStringLiteral("#4a6a88")));
+
+    QSignalSpy momentSpy(coach, &CoachReviewPanel::criticalMomentRequested);
+    auto *previous = coach->findChild<QPushButton *>(
+        QStringLiteral("previousCriticalMomentButton"));
+    QVERIFY(previous != nullptr);
+    QTest::mouseClick(previous, Qt::LeftButton);
+    QCOMPARE(coach->currentReviewIndex(), 1);
+    QCOMPARE(title->text(), QStringLiteral("Critical error"));
+    QCOMPARE(momentSpy.count(), 1);
+    QCOMPARE(momentSpy.first().at(0).toInt(), 3);
+    QCOMPARE(momentSpy.first().at(1).toString(), review.moves.at(2).beforeFen);
+    QCOMPARE(momentSpy.first().at(2).toString(), QStringLiteral("g1f3"));
+
+    auto *detailsButton = coach->findChild<QPushButton *>(
+        QStringLiteral("coachDetailedEvidenceButton"));
+    auto *details = coach->findChild<QTextEdit *>(
+        QStringLiteral("coachDetailedEvidenceView"));
+    QVERIFY(detailsButton != nullptr);
+    QVERIFY(details != nullptr);
+    QVERIFY(!details->isVisible());
+    QTest::mouseClick(detailsButton, Qt::LeftButton);
+    QVERIFY(details->isVisible());
+    QVERIFY(details->toPlainText().contains(
+        QStringLiteral("Status      confirmed_severe_error")));
+    QVERIFY(details->toPlainText().contains(
+        QStringLiteral("Retained best line, not a complete search tree")));
+
+    QSignalSpy lineSpy(coach, &CoachReviewPanel::linePreviewRequested);
+    auto *bestLine = coach->findChild<QPushButton *>(
+        QStringLiteral("showBestRetainedLineButton"));
+    auto *linePreview = coach->findChild<QLabel *>(
+        QStringLiteral("retainedLinePreview"));
+    QVERIFY(bestLine != nullptr);
+    QVERIFY(linePreview != nullptr);
+    QTest::mouseClick(bestLine, Qt::LeftButton);
+    QCOMPARE(lineSpy.count(), 1);
+    QCOMPARE(lineSpy.first().at(1).toString(), QStringLiteral("d2d4"));
+    QCOMPARE(linePreview->text(), QStringLiteral("Retained best line · d2d4 d7d5"));
+
+    auto *focusButton = coach->findChild<QPushButton *>(
+        QStringLiteral("coachFocusReadButton"));
+    auto *focusFrame = coach->findChild<QFrame *>(
+        QStringLiteral("coachFocusReadFrame"));
+    auto *focusAnchor = coach->findChild<QLabel *>(
+        QStringLiteral("coachFocusAnchor"));
+    auto *focusNext = coach->findChild<QPushButton *>(
+        QStringLiteral("coachFocusNextButton"));
+    auto *focusReplay = coach->findChild<QPushButton *>(
+        QStringLiteral("coachFocusReplayButton"));
+    auto *focusStartPause = coach->findChild<QPushButton *>(
+        QStringLiteral("coachFocusStartPauseButton"));
+    QVERIFY(focusButton != nullptr);
+    QVERIFY(focusFrame != nullptr);
+    QVERIFY(focusAnchor != nullptr);
+    QVERIFY(focusNext != nullptr);
+    QVERIFY(focusReplay != nullptr);
+    QVERIFY(focusStartPause != nullptr);
+    QTest::mouseClick(focusButton, Qt::LeftButton);
+    QVERIFY(focusFrame->isVisible());
+    QCOMPARE(focusAnchor->text(), QStringLiteral("Critical"));
+    QTest::mouseClick(focusNext, Qt::LeftButton);
+    QCOMPARE(focusAnchor->text(), QStringLiteral("error."));
+    QTest::mouseClick(focusReplay, Qt::LeftButton);
+    QCOMPARE(focusAnchor->text(), QStringLiteral("Critical"));
+    QCOMPARE(focusStartPause->text(), QStringLiteral("Pause"));
+    QTest::mouseClick(focusStartPause, Qt::LeftButton);
+    QCOMPARE(focusStartPause->text(), QStringLiteral("Start"));
 }
 
 void TestUnitPuzzlePanels::floatingBoardOffersThemesAndPinnedNotes()

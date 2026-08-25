@@ -97,6 +97,7 @@ public:
     [[nodiscard]] const SelectiveDeepGameReview *reviewForGame(
         const QString &sourceGameId) const;
     [[nodiscard]] int reportCount() const { return m_reviewsByGame.size(); }
+    [[nodiscard]] QStringList sourceGameIds() const { return m_reviewsByGame.keys(); }
     [[nodiscard]] const QString &directoryPath() const { return m_directoryPath; }
 
 private:

@@ -15,7 +15,7 @@ This document describes ParlAWL's multi-game study presentation. It changes how 
 
 The Review Hub contains one movable, closable tab per open game. Player names identify the tab; the tooltip retains ratings, result, and date. A tab accent and the floating board's letter and palette provide redundant identity so games are not distinguished by color alone.
 
-Every game tab contains two reading modes:
+Every game tab contains three reading modes:
 
 ### Visual Map
 
@@ -40,6 +40,16 @@ The worded view uses a fixed plain-text section order so every selected move sca
 8. Source and claim boundary.
 
 The view uses fixed-scale text and preserves scrolling without zooming. It remains copyable and does not replace SAN with icons.
+
+### Coach Review
+
+- Coach Review is available only when the caller supplies a matching `chess-game-review-display-v1` sidecar through `--game-review-directory`. ParlAWL joins it by the exact `game.source_game_id` and checks its source report ID and full SAN/UCI move sequence against the already joined Report-v2 replay.
+- A missing sidecar leaves this mode in the plain `Review summary not generated` state. Visual Map, Detailed Evidence, and Notes continue to work.
+- Clicking notation with a non-empty `selected_moment_indexes` opens the corresponding Coach Review card. Unselected moves do not open a coach card and receive no inferred approval or synthesized score.
+- The card presents the backend-owned title and summary first, then played versus best retained SAN, mover-perspective score and expectation comparison, phase, and explicitly server-accounted time.
+- Previous and Next critical-moment controls show the position before the played move and highlight that played root on the floating board. Each open game keeps its own current moment.
+- `Show best line` and `Show played line` are explicit retained-line previews. They highlight the corresponding retained root; ParlAWL does not simulate a complete search tree or run an engine.
+- Detailed Evidence expands in place and keeps the frozen backend status, raw numeric fields, retained UCI lines, FEN, schema, and source-report lineage copyable.
 
 ## Evidence vocabulary and honesty
 
@@ -74,7 +84,14 @@ An unknown deep source status fails closed as `evidence unavailable`; its raw re
 
 ## Focus Read
 
-`Focus Read` remains optional inside a retained deep-moment coach row. It uses one emphasized anchor word, up to four preceding and following words, and a current/total counter. Left moves backward, Right or Space advances, and Escape closes it.
+`Focus Read` remains optional inside retained review cards. It uses one emphasized anchor word, up to four preceding and following words, and a current/total counter. In Coach Review it reads only the backend title and deterministic summary: Start/Pause controls continuous playback, Step moves manually, Replay returns to the first word, Left/Right step, Space starts or pauses, and Escape closes it.
+
+## Display-sidecar boundary
+
+- The viewer scans only exact `game-review-display-v1-<64 lowercase hex>.json` filenames in a distinct caller-prebuilt directory. It performs no Python invocation, database lookup, network call, source replay, or engine work.
+- The loader rejects an unsupported schema or claim boundary, filename/source-report mismatch, duplicate source game, invalid FEN/UCI, inconsistent counts or moment attachments, and sidecars whose SAN/UCI replay differs from the joined report.
+- Sidecars with no matching Report-v2 game are ignored for tabs and reported once as loader diagnostics. An existing game with no sidecar keeps the other review modes and shows the missing summary state.
+- Backend-provided titles such as `Critical error`, `Missed opportunity`, `Engine’s first choice`, `Unclear at this depth`, and `Small engine difference` are displayed verbatim. C++ does not reclassify statuses or invent prose.
 
 ## Boundaries
 

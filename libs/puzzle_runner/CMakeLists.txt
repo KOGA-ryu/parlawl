@@ -7,6 +7,8 @@ add_library(puzzle_runner STATIC
     engine_validated_puzzle_pack.h
     fixture_puzzle_source.cpp
     fixture_puzzle_source.h
+    game_review_display.cpp
+    game_review_display.h
     game_state_store.cpp
     game_state_store.h
     pgn_utils.cpp

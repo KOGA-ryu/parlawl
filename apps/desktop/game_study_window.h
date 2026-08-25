@@ -1,9 +1,12 @@
 #pragma once
 
+#include <optional>
+
 #include <QHash>
 #include <QMainWindow>
 
 #include "annotated_replay_pack.h"
+#include "game_review_display.h"
 #include "replay_session.h"
 
 class BoardWidget;
@@ -33,6 +36,10 @@ public:
     void setReplayState(
         const parlawl::puzzle_runner::ReplaySession &session,
         int variationAnchorPly);
+    bool showCoachPreview(
+        const QString &beforeFen,
+        const QString &rootMoveUci,
+        const QString &positionLabel);
     void setTransportState(bool canStepBackward, bool canStepForward, bool playing);
     void saveNotesNow();
 
@@ -79,7 +86,8 @@ public:
 
     bool openGame(
         const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
-        QString *errorMessage = nullptr);
+        QString *errorMessage = nullptr,
+        const parlawl::puzzle_runner::GameReviewDisplay *display = nullptr);
     [[nodiscard]] int openGameCount() const;
     [[nodiscard]] QString activeGameId() const;
     [[nodiscard]] GameBoardWindow *boardWindowForGame(const QString &sourceGameId) const;
@@ -97,6 +105,7 @@ protected:
 private:
     struct OpenGame {
         parlawl::puzzle_runner::AnnotatedReplayPack pack;
+        std::optional<parlawl::puzzle_runner::GameReviewDisplay> display;
         parlawl::puzzle_runner::ReplaySession session;
         int variationAnchorPly = 0;
         GameReviewPanel *reviewPanel = nullptr;
