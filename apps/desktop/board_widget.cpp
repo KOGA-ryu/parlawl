@@ -12,6 +12,16 @@ BoardWidget::BoardWidget(QWidget *parent)
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 }
 
+void BoardWidget::setAppearance(BoardPalette palette, PieceStyle pieceStyle)
+{
+    if (m_boardPalette == palette && m_pieceStyle == pieceStyle) {
+        return;
+    }
+    m_boardPalette = palette;
+    m_pieceStyle = pieceStyle;
+    update();
+}
+
 void BoardWidget::setPosition(
     const ChessPosition &position,
     parlawl::puzzle_runner::PieceColor viewColor,
@@ -45,21 +55,53 @@ void BoardWidget::paintEvent(QPaintEvent *event)
     const int xOffset = (width() - boardSize) / 2;
     const int yOffset = (height() - boardSize) / 2;
 
-    const QColor lightSquare(240, 217, 181);
-    const QColor darkSquare(181, 136, 99);
-    const QColor selectedColor(246, 246, 105, 220);
+    QColor lightSquare;
+    QColor darkSquare;
+    QColor selectedColor;
+    QColor lastMoveColor;
+    QColor frameColor;
+    switch (m_boardPalette) {
+    case BoardPalette::Graphite:
+        lightSquare = QColor(QStringLiteral("#aeb8c4"));
+        darkSquare = QColor(QStringLiteral("#475563"));
+        selectedColor = QColor(105, 165, 218, 220);
+        lastMoveColor = QColor(76, 128, 176, 180);
+        frameColor = QColor(QStringLiteral("#6c8fb2"));
+        break;
+    case BoardPalette::Sage:
+        lightSquare = QColor(QStringLiteral("#dce3d0"));
+        darkSquare = QColor(QStringLiteral("#71816b"));
+        selectedColor = QColor(229, 198, 91, 220);
+        lastMoveColor = QColor(166, 190, 112, 190);
+        frameColor = QColor(QStringLiteral("#82946f"));
+        break;
+    case BoardPalette::Tournament:
+        lightSquare = QColor(QStringLiteral("#eeeed2"));
+        darkSquare = QColor(QStringLiteral("#769656"));
+        selectedColor = QColor(246, 246, 105, 220);
+        lastMoveColor = QColor(186, 202, 68, 180);
+        frameColor = QColor(QStringLiteral("#607d46"));
+        break;
+    case BoardPalette::Walnut:
+    default:
+        lightSquare = QColor(240, 217, 181);
+        darkSquare = QColor(181, 136, 99);
+        selectedColor = QColor(246, 246, 105, 220);
+        lastMoveColor = QColor(186, 202, 68, 160);
+        frameColor = QColor(172, 122, 58);
+        break;
+    }
     const QColor targetColor(64, 126, 201, 110);
     const QColor targetRing(32, 82, 157, 210);
-    const QColor lastMoveColor(186, 202, 68, 160);
 
     // Review mode takes precedence over solved/failed coloring because the user is
     // explicitly browsing an older position rather than acting on the latest state.
-    QColor frameColor(58, 95, 11);
-    if (m_reviewMode) {
-        frameColor = QColor(172, 122, 58);
-    } else if (m_status == parlawl::puzzle_runner::SessionStatus::Failed) {
+    if (!m_reviewMode) {
+        frameColor = QColor(58, 95, 11);
+    }
+    if (m_status == parlawl::puzzle_runner::SessionStatus::Failed && !m_reviewMode) {
         frameColor = QColor(170, 54, 54);
-    } else if (m_status == parlawl::puzzle_runner::SessionStatus::Solved) {
+    } else if (m_status == parlawl::puzzle_runner::SessionStatus::Solved && !m_reviewMode) {
         frameColor = QColor(39, 132, 104);
     }
 
@@ -89,7 +131,28 @@ void BoardWidget::paintEvent(QPaintEvent *event)
             const auto piece = m_position.pieceAt(square);
             const QChar glyph = ChessPosition::pieceGlyph(piece);
             if (!glyph.isNull()) {
-                painter.setPen(piece.color == parlawl::puzzle_runner::PieceColor::White ? Qt::white : Qt::black);
+                QColor fill = piece.color == parlawl::puzzle_runner::PieceColor::White
+                    ? QColor(QStringLiteral("#fffaf0"))
+                    : QColor(QStringLiteral("#15191e"));
+                QColor outline = piece.color == parlawl::puzzle_runner::PieceColor::White
+                    ? QColor(QStringLiteral("#5b4633"))
+                    : QColor(QStringLiteral("#e3e8ee"));
+                if (m_pieceStyle == PieceStyle::Monochrome) {
+                    fill = piece.color == parlawl::puzzle_runner::PieceColor::White
+                        ? QColor(QStringLiteral("#e9e1d1"))
+                        : QColor(QStringLiteral("#29313a"));
+                    outline = piece.color == parlawl::puzzle_runner::PieceColor::White
+                        ? QColor(QStringLiteral("#29313a"))
+                        : QColor(QStringLiteral("#d6dce2"));
+                }
+                if (m_pieceStyle != PieceStyle::Classic) {
+                    painter.setPen(outline);
+                    for (const QPoint offset : {QPoint(-1, 0), QPoint(1, 0),
+                                                QPoint(0, -1), QPoint(0, 1)}) {
+                        painter.drawText(rect.translated(offset), Qt::AlignCenter, QString(glyph));
+                    }
+                }
+                painter.setPen(fill);
                 painter.drawText(rect, Qt::AlignCenter, QString(glyph));
             }
         }

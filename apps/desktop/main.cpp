@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QTimer>
 
 #include <cstdio>
 
@@ -195,5 +196,6 @@ int main(int argc, char *argv[])
         }
     }
     window.show();
+    QTimer::singleShot(0, &window, &PuzzleRunnerWindow::surfaceGameStudyWorkspace);
     return app.exec();
 }

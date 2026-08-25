@@ -11,8 +11,25 @@ class BoardWidget : public QWidget
     Q_OBJECT
 
 public:
+    enum class BoardPalette {
+        Walnut,
+        Graphite,
+        Sage,
+        Tournament,
+    };
+
+    enum class PieceStyle {
+        Classic,
+        Outlined,
+        Monochrome,
+    };
+
     explicit BoardWidget(QWidget *parent = nullptr);
     QSize sizeHint() const override;
+
+    void setAppearance(BoardPalette palette, PieceStyle pieceStyle);
+    [[nodiscard]] BoardPalette boardPalette() const { return m_boardPalette; }
+    [[nodiscard]] PieceStyle pieceStyle() const { return m_pieceStyle; }
 
     void setPosition(
         const parlawl::puzzle_runner::ChessPosition &position,
@@ -50,4 +67,6 @@ private:
     bool m_reviewMode = false;
     bool m_inputEnabled = false;
     int m_wheelAccumulatorY = 0;
+    BoardPalette m_boardPalette = BoardPalette::Walnut;
+    PieceStyle m_pieceStyle = PieceStyle::Classic;
 };

@@ -1,12 +1,17 @@
 #include <QtTest>
 #include <algorithm>
+#include <QComboBox>
 #include <QFrame>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTextEdit>
 
+#include "board_widget.h"
+#include "game_study_window.h"
 #include "puzzle_panels.h"
 
 namespace parlawl::test_support {
@@ -211,6 +216,8 @@ private slots:
     void gameBreakdownShowsPersistedEngineEvidenceWithoutStartingEngine();
     void gameBreakdownShowsDeepSelectiveEvidenceAboveShallowScreen();
     void gameReviewPanelKeepsMovesAndEvidenceTogether();
+    void gameReviewHubKeepsMultipleBoardsAndTabsSynchronized();
+    void floatingBoardOffersThemesAndPinnedNotes();
     void settingsCardShowsSupplyStatusText();
     void enginePanelTreatsDynamicMarkupAsPlainText();
     void settingsCardOffersValidatedPackAction();
@@ -498,6 +505,26 @@ void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
     QCOMPARE(inlineStatus->text(), QStringLiteral("deep confirmed severe"));
     QVERIFY(inlineExplanation->text().contains(QStringLiteral("16.6 percentage-point")));
 
+    auto *modeTabs = panel.findChild<QTabWidget *>(QStringLiteral("gameReviewModes"));
+    auto *detailedEvidence = panel.findChild<QTextEdit *>(
+        QStringLiteral("detailedEvidenceView"));
+    QVERIFY(modeTabs != nullptr);
+    QVERIFY(detailedEvidence != nullptr);
+    QCOMPARE(modeTabs->tabText(0), QStringLiteral("Visual Map"));
+    QCOMPARE(modeTabs->tabText(1), QStringLiteral("Detailed Evidence"));
+    QVERIFY(detailedEvidence->toPlainText().contains(QStringLiteral("♘  2. Nf3")));
+    QVERIFY(detailedEvidence->toPlainText().contains(QStringLiteral("Retained alternatives")));
+
+    const auto alternativeNodes = inlineDetail->findChildren<QPushButton *>(
+        QStringLiteral("alternativeNodeButton"));
+    QCOMPARE(alternativeNodes.size(), 2);
+    auto *alternativeDetail = inlineDetail->findChild<QLabel *>(
+        QStringLiteral("alternativeNodeDetail"));
+    QVERIFY(alternativeDetail != nullptr);
+    QVERIFY(alternativeDetail->text().contains(QStringLiteral("retained nodes")));
+    QTest::mouseClick(alternativeNodes.at(1), Qt::LeftButton);
+    QVERIFY(alternativeDetail->text().contains(QStringLiteral("PV")));
+
     auto *detailsButton = inlineDetail->findChild<QPushButton *>(
         QStringLiteral("inlineDetailsButton"));
     auto *technicalDetails = inlineDetail->findChild<QTextEdit *>(
@@ -562,6 +589,95 @@ void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
     QTest::keyClick(table, Qt::Key_Return);
     QCOMPARE(seekSpy.count(), 2);
     QCOMPARE(seekSpy.at(1).at(0).toInt(), 1);
+}
+
+void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
+{
+    auto firstGame = mechanicalGameWithDeepFixture();
+    auto secondGame = mechanicalGameWithDeepFixture();
+    secondGame.sourceGameId = QStringLiteral("chesscom-game-v1:")
+        + QString(64, QLatin1Char('9'));
+    secondGame.whiteUsername = QStringLiteral("Gamma");
+    secondGame.blackUsername = QStringLiteral("Delta");
+    QVERIFY(secondGame.selectiveDeepReview.has_value());
+    secondGame.selectiveDeepReview->sourceGameId = secondGame.sourceGameId;
+    secondGame.selectiveDeepReview->whiteUsername = secondGame.whiteUsername;
+    secondGame.selectiveDeepReview->blackUsername = secondGame.blackUsername;
+
+    QString error;
+    const auto first = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        firstGame, &error);
+    QVERIFY2(first.has_value(), qPrintable(error));
+    const auto second = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        secondGame, &error);
+    QVERIFY2(second.has_value(), qPrintable(error));
+
+    GameReviewHubWindow hub;
+    QVERIFY(hub.openGame(*first, &error));
+    QVERIFY(hub.openGame(*second, &error));
+    QCOMPARE(hub.openGameCount(), 2);
+    QCOMPARE(hub.activeGameId(), second->sourceGameId());
+    QVERIFY(hub.boardWindowForGame(first->sourceGameId()) != nullptr);
+    QVERIFY(hub.boardWindowForGame(second->sourceGameId()) != nullptr);
+    QVERIFY(hub.reviewPanelForGame(first->sourceGameId()) != nullptr);
+
+    QVERIFY(hub.activateGame(first->sourceGameId()));
+    QCOMPARE(hub.activeGameId(), first->sourceGameId());
+    auto *firstBoard = hub.boardWindowForGame(first->sourceGameId());
+    auto *gameTabs = hub.findChild<QTabWidget *>(QStringLiteral("reviewHubGameTabs"));
+    QVERIFY(firstBoard != nullptr);
+    QVERIFY(gameTabs != nullptr);
+    firstBoard->close();
+    QVERIFY(!firstBoard->isVisible());
+    QTest::mouseClick(
+        gameTabs->tabBar(),
+        Qt::LeftButton,
+        Qt::NoModifier,
+        gameTabs->tabBar()->tabRect(gameTabs->currentIndex()).center());
+    QVERIFY(firstBoard->isVisible());
+    QVERIFY(hub.seekGame(first->sourceGameId(), 3));
+    auto *position = firstBoard->findChild<QLabel *>(
+        QStringLiteral("floatingBoardPositionLabel"));
+    QVERIFY(position != nullptr);
+    QCOMPARE(position->text(), QStringLiteral("2. Nf3"));
+    hub.close();
+}
+
+void TestUnitPuzzlePanels::floatingBoardOffersThemesAndPinnedNotes()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        mechanicalGameWithDeepFixture(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+    QVERIFY(session.seekMainlinePly(3));
+
+    GameBoardWindow board(*pack, 2);
+    board.setReplayState(session, 0);
+    board.show();
+    QCoreApplication::processEvents();
+    auto *tabs = board.findChild<QTabWidget *>(QStringLiteral("boardWorkspaceTabs"));
+    auto *palette = board.findChild<QComboBox *>(QStringLiteral("boardPaletteCombo"));
+    auto *pieces = board.findChild<QComboBox *>(QStringLiteral("pieceStyleCombo"));
+    auto *pin = board.findChild<QPushButton *>(QStringLiteral("pinCurrentMoveButton"));
+    auto *notes = board.findChild<QPlainTextEdit *>(QStringLiteral("gameNotesEditor"));
+    auto *boardWidget = board.findChild<BoardWidget *>(QStringLiteral("floatingBoardWidget"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(palette != nullptr);
+    QVERIFY(pieces != nullptr);
+    QVERIFY(pin != nullptr);
+    QVERIFY(notes != nullptr);
+    QVERIFY(boardWidget != nullptr);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("Board"));
+    QCOMPARE(tabs->tabText(1), QStringLiteral("Notes"));
+    palette->setCurrentIndex(1);
+    pieces->setCurrentIndex(1);
+    QVERIFY(boardWidget->boardPalette() == BoardWidget::BoardPalette::Graphite);
+    QVERIFY(boardWidget->pieceStyle() == BoardWidget::PieceStyle::Outlined);
+    QTest::mouseClick(pin, Qt::LeftButton);
+    QVERIFY(notes->toPlainText().contains(QStringLiteral("[2. Nf3]")));
+    board.close();
 }
 
 void TestUnitPuzzlePanels::settingsCardShowsSupplyStatusText()

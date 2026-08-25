@@ -13,6 +13,7 @@ class QFrame;
 class QKeyEvent;
 class QSplitter;
 class QTableWidget;
+class QTabWidget;
 class QPushButton;
 class QCheckBox;
 class QComboBox;
@@ -134,9 +135,11 @@ signals:
     void backToPlayerStatisticsRequested();
 
 private:
+    QTabWidget *m_reviewModes;
     QSplitter *m_splitter;
     MoveListPanel *m_moveListPanel;
     ReplayEvidencePanel *m_evidencePanel;
+    QTextEdit *m_detailedEvidenceView;
 };
 
 class MetadataCard : public QGroupBox

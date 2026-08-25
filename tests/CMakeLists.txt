@@ -98,6 +98,8 @@ add_test(NAME test_unit_replay_session COMMAND test_unit_replay_session)
 add_executable(test_unit_puzzle_panels
     unit/test_unit_puzzle_panels.cpp
     unit/test_unit_annotated_replay_pack.cpp
+    ../apps/desktop/board_widget.cpp
+    ../apps/desktop/game_study_window.cpp
     ../apps/desktop/puzzle_panels.cpp
 )
 target_compile_definitions(test_unit_puzzle_panels PRIVATE PARLAWL_REPLAY_FIXTURE_PROVIDER_ONLY)

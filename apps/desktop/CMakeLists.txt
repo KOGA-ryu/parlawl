@@ -3,6 +3,8 @@ qt_add_executable(parlawl_desktop MACOSX_BUNDLE
     board_widget.h
     evaluation_bar_widget.cpp
     evaluation_bar_widget.h
+    game_study_window.cpp
+    game_study_window.h
     main.cpp
     player_analysis_catalog.cpp
     player_analysis_catalog.h

@@ -23,6 +23,7 @@ class PuzzleAttemptRepository;
 class EvaluationBarWidget;
 class EnginePanel;
 class GameReviewPanel;
+class GameReviewHubWindow;
 class PuzzleSupplyCoordinator;
 class SourceGamePgnCache;
 class QLabel;
@@ -56,6 +57,7 @@ public:
         const QString &sourceGameId = QString(),
         const QString &selectiveReportDirectory = QString(),
         QString *errorMessage = nullptr);
+    void surfaceGameStudyWorkspace();
 
 signals:
     void analyzeCurrentPuzzleRequested();
@@ -166,6 +168,7 @@ private:
     PlayerStatisticsPanel *m_playerStatisticsPanel;
     ReplayEvidencePanel *m_replayEvidencePanel;
     GameReviewPanel *m_gameReviewPanel;
+    GameReviewHubWindow *m_gameReviewHubWindow;
     QTabWidget *m_rightTabs;
     QTabWidget *m_infoTabs;
     QWidget *m_settingsPage;

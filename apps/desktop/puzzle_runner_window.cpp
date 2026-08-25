@@ -40,6 +40,7 @@
 #include "database_manager.h"
 #include "evaluation_bar_widget.h"
 #include "engine_validated_puzzle_pack.h"
+#include "game_study_window.h"
 #include "lichess_client.h"
 #include "parlawl_config.h"
 #include "player_statistics_panel.h"
@@ -516,6 +517,7 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_playerStatisticsPanel(nullptr)
     , m_replayEvidencePanel(nullptr)
     , m_gameReviewPanel(nullptr)
+    , m_gameReviewHubWindow(nullptr)
     , m_rightTabs(nullptr)
     , m_infoTabs(nullptr)
     , m_settingsPage(nullptr)
@@ -551,6 +553,19 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_preserveAnalyzedSetting(true)
 {
     buildUi();
+    m_gameReviewHubWindow = new GameReviewHubWindow(this);
+    connect(
+        m_gameReviewHubWindow,
+        &GameReviewHubWindow::playerExplorerRequested,
+        this,
+        [this]() {
+            showNormal();
+            raise();
+            activateWindow();
+            if (m_rightTabs != nullptr && m_playerStatisticsPanel != nullptr) {
+                m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
+            }
+        });
     loadSettings();
     loadDatabase();
     m_sessionController.setQueueSize(m_queueSizeSetting.toInt());
@@ -904,6 +919,14 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     return true;
 }
 
+void PuzzleRunnerWindow::surfaceGameStudyWorkspace()
+{
+    if (m_gameReviewHubWindow != nullptr
+        && m_gameReviewHubWindow->openGameCount() > 0) {
+        m_gameReviewHubWindow->surfaceActiveGame();
+    }
+}
+
 bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     const QString &sourceGameId,
     QString *errorMessage)
@@ -1020,22 +1043,15 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
                 .arg(attemptError));
     }
 
-    m_annotatedReplayPack = *replay;
-    m_replayPlaybackTimer->stop();
-    m_transportControls->setPlaying(false);
-    m_replaySession.load(*m_annotatedReplayPack);
-    m_replayVariationAnchorPly = 0;
-    m_workspaceMode = WorkspaceMode::AnnotatedReplay;
-    m_lastReviewedFen.clear();
-    if (m_stockfishReviewController != nullptr) {
-        m_stockfishReviewController->resetCurrentReview(
-            QStringLiteral("engine browsing is disabled in game breakdown"));
+    if (m_gameReviewHubWindow == nullptr
+        || !m_gameReviewHubWindow->openGame(*replay, &details)) {
+        return fail(details.isEmpty()
+                ? QStringLiteral("The game could not be opened in Review Hub.")
+                : details);
     }
-    setAnnotatedReplayWorkspaceUi(true);
     appendLogMessage(timestamped(
-        QStringLiteral("opened local read-only game breakdown %1; no engine or network process was started")
+        QStringLiteral("opened local read-only game breakdown %1 in Review Hub; no engine or network process was started")
             .arg(sourceGameId)));
-    refreshReplayUi();
     return true;
 }
 
