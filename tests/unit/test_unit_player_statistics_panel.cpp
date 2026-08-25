@@ -14,6 +14,7 @@
 #include <QMap>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTabWidget>
@@ -950,16 +951,42 @@ void TestUnitPlayerStatisticsPanel::loadsBoardStructureAlongsideExplorerAndSwitc
     QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("100.0%")));
     QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("3 obs")));
     QVERIFY(metrics->item(8, 1)->toolTip().contains(QStringLiteral("not engine evaluation"), Qt::CaseInsensitive));
-    const QTableWidget *headToHead = panel.findChild<QTableWidget *>(
+    QTableWidget *headToHead = panel.findChild<QTableWidget *>(
         QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
     QVERIFY(headToHead != nullptr);
+    QVERIFY(headToHead->isSortingEnabled());
     QCOMPARE(headToHead->rowCount(), 2);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("gamma"));
+    QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("2"));
+    QCOMPARE(headToHead->item(0, 4)->text(), QStringLiteral("0-1-1"));
+    QCOMPARE(headToHead->item(0, 5)->text(), QStringLiteral("25.0%"));
+    QCOMPARE(headToHead->item(1, 0)->text(), QStringLiteral("beta"));
+    QCOMPARE(headToHead->item(1, 1)->text(), QStringLiteral("1"));
+    QLineEdit *opponentSearch = panel.findChild<QLineEdit *>(
+        QStringLiteral("playerStatisticsBoardStructureOpponentSearch"));
+    QSpinBox *minimumGames = panel.findChild<QSpinBox *>(
+        QStringLiteral("playerStatisticsBoardStructureMinimumGames"));
+    const QLabel *headToHeadLabel = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsBoardStructureHeadToHeadLabel"));
+    QVERIFY(opponentSearch != nullptr);
+    QVERIFY(minimumGames != nullptr);
+    QVERIFY(headToHeadLabel != nullptr);
+    QVERIFY(headToHeadLabel->text().contains(QStringLiteral("2 of 2")));
+
+    opponentSearch->setText(QStringLiteral("BETA"));
+    QCOMPARE(headToHead->rowCount(), 1);
     QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("beta"));
-    QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("1"));
-    QCOMPARE(headToHead->item(1, 0)->text(), QStringLiteral("gamma"));
-    QCOMPARE(headToHead->item(1, 1)->text(), QStringLiteral("2"));
-    QCOMPARE(headToHead->item(1, 4)->text(), QStringLiteral("0-1-1"));
-    QCOMPARE(headToHead->item(1, 5)->text(), QStringLiteral("25.0%"));
+    QVERIFY(headToHeadLabel->text().contains(QStringLiteral("1 of 2")));
+    opponentSearch->clear();
+    minimumGames->setValue(2);
+    QCOMPARE(headToHead->rowCount(), 1);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("gamma"));
+    minimumGames->setValue(1);
+    QCOMPARE(headToHead->rowCount(), 2);
+    headToHead->sortItems(4, Qt::DescendingOrder);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("beta"));
+    headToHead->sortItems(5, Qt::AscendingOrder);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("gamma"));
 
     QVERIFY(panel.selectPlayer(QStringLiteral("beta")));
     QVERIFY(summary->text().contains(QStringLiteral("beta · 3 games")));
@@ -1116,22 +1143,54 @@ void TestUnitPlayerStatisticsPanel::rejectsBrokenBoardStructureWithoutReplacingS
 
 void TestUnitPlayerStatisticsPanel::loadsRealSnapshotWhenProvided()
 {
-    const QString path = qEnvironmentVariable("PARLAWL_REAL_PLAYER_STATISTICS_SNAPSHOT");
-    if (path.isEmpty()) {
-        QSKIP("real player-statistics snapshot was not requested");
+    const QString playerPath = qEnvironmentVariable(
+        "PARLAWL_REAL_PLAYER_STATISTICS_SNAPSHOT");
+    const QString structurePath = qEnvironmentVariable(
+        "PARLAWL_REAL_BOARD_STRUCTURE_STATISTICS_SNAPSHOT");
+    if (playerPath.isEmpty() && structurePath.isEmpty()) {
+        QSKIP("real player-statistics snapshots were not requested");
     }
-    QFile file(path);
-    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
-    const QByteArray raw = file.readAll();
     PlayerStatisticsPanel panel;
     QString error;
-    QVERIFY2(panel.loadSnapshot(raw, &error), qPrintable(error));
-    QCOMPARE(panel.playerIds().size(), 701);
-    QVERIFY(panel.summaryText().contains(QStringLiteral("975 unordered pairs")));
-    QCOMPARE(panel.phaseRowCount(), 3);
-    QCOMPARE(panel.decisionContextRowCount(), 4);
-    QCOMPARE(panel.opponentRowCount(), 0);
-    QCOMPARE(panel.longestMoveRowCount(), 20);
+    if (!playerPath.isEmpty()) {
+        QFile file(playerPath);
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+        QVERIFY2(panel.loadSnapshot(file.readAll(), &error), qPrintable(error));
+        QCOMPARE(panel.playerIds().size(), 701);
+        QVERIFY(panel.summaryText().contains(QStringLiteral("975 unordered pairs")));
+        QCOMPARE(panel.phaseRowCount(), 3);
+        QCOMPARE(panel.decisionContextRowCount(), 4);
+        QCOMPARE(panel.opponentRowCount(), 0);
+        QCOMPARE(panel.longestMoveRowCount(), 20);
+    }
+    if (!structurePath.isEmpty()) {
+        QFile file(structurePath);
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+        QVERIFY2(panel.loadBoardStructureSnapshot(
+            file.readAll(), &error), qPrintable(error));
+        QCOMPARE(panel.playerIds().size(), 701);
+        QVERIFY(panel.selectPlayer(QStringLiteral("caesar")));
+        const QLabel *summary = panel.findChild<QLabel *>(
+            QStringLiteral("playerStatisticsStructureSummary"));
+        QTableWidget *headToHead = panel.findChild<QTableWidget *>(
+            QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
+        QLineEdit *search = panel.findChild<QLineEdit *>(
+            QStringLiteral("playerStatisticsBoardStructureOpponentSearch"));
+        QSpinBox *minimumGames = panel.findChild<QSpinBox *>(
+            QStringLiteral("playerStatisticsBoardStructureMinimumGames"));
+        QVERIFY(summary != nullptr);
+        QVERIFY(headToHead != nullptr);
+        QVERIFY(search != nullptr);
+        QVERIFY(minimumGames != nullptr);
+        QVERIFY(summary->text().contains(QStringLiteral("caesar · 588 games")));
+        QCOMPARE(headToHead->rowCount(), 164);
+        search->setText(QStringLiteral("TURBOPLOMBIR"));
+        QCOMPARE(headToHead->rowCount(), 1);
+        QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("turboplombir"));
+        QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("28"));
+        minimumGames->setValue(29);
+        QCOMPARE(headToHead->rowCount(), 0);
+    }
 }
 
 QTEST_MAIN(TestUnitPlayerStatisticsPanel)

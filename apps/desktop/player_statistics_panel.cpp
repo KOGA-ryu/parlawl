@@ -21,6 +21,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -1369,6 +1370,9 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_structureSummaryLabel(new QLabel(this))
     , m_structureConcentrationLabel(new QLabel(this))
     , m_structureHeadToHeadLabel(new QLabel(QStringLiteral("Head-to-head results"), this))
+    , m_structureHeadToHeadFilterPanel(new QWidget(this))
+    , m_structureOpponentSearch(new QLineEdit(m_structureHeadToHeadFilterPanel))
+    , m_structureMinimumGamesSpin(new QSpinBox(m_structureHeadToHeadFilterPanel))
     , m_detailTabs(new QTabWidget(this))
     , m_phaseTable(new QTableWidget(this))
     , m_decisionContextTable(new QTableWidget(this))
@@ -1620,6 +1624,7 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         QStringLiteral(
             "Display-only mechanical postgame descriptions labeled for the complete target corpus; "
             "ParlAWL does not authenticate the snapshot. Explorer filters do not alter this tab. "
+            "Opponent controls only narrow the head-to-head rows; summaries and metrics remain complete. "
             "Hover a cell for its numerator, denominator, observability, and same-game paired comparison."),
         structurePage);
     structureHint->setTextFormat(Qt::PlainText);
@@ -1644,7 +1649,28 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     QFont structureHeadingFont = m_structureHeadToHeadLabel->font();
     structureHeadingFont.setBold(true);
     m_structureHeadToHeadLabel->setFont(structureHeadingFont);
+    m_structureHeadToHeadLabel->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureHeadToHeadLabel"));
     structureLayout->addWidget(m_structureHeadToHeadLabel);
+    auto *structureHeadToHeadFilters = new QHBoxLayout(
+        m_structureHeadToHeadFilterPanel);
+    structureHeadToHeadFilters->setContentsMargins(0, 0, 0, 0);
+    structureHeadToHeadFilters->addWidget(new QLabel(
+        QStringLiteral("Opponent"), m_structureHeadToHeadFilterPanel));
+    m_structureOpponentSearch->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureOpponentSearch"));
+    m_structureOpponentSearch->setPlaceholderText(
+        QStringLiteral("Search opponents"));
+    m_structureOpponentSearch->setClearButtonEnabled(true);
+    structureHeadToHeadFilters->addWidget(m_structureOpponentSearch, 1);
+    structureHeadToHeadFilters->addWidget(new QLabel(
+        QStringLiteral("Minimum games"), m_structureHeadToHeadFilterPanel));
+    m_structureMinimumGamesSpin->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureMinimumGames"));
+    m_structureMinimumGamesSpin->setRange(1, 5'000);
+    m_structureMinimumGamesSpin->setValue(1);
+    structureHeadToHeadFilters->addWidget(m_structureMinimumGamesSpin);
+    structureLayout->addWidget(m_structureHeadToHeadFilterPanel);
     m_structureHeadToHeadTable->setObjectName(
         QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
     m_structureHeadToHeadTable->horizontalHeader()->setSectionResizeMode(
@@ -1655,6 +1681,9 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
             column, QHeaderView::ResizeToContents);
     }
     m_structureHeadToHeadTable->setMaximumHeight(180);
+    m_structureHeadToHeadTable->setSortingEnabled(true);
+    m_structureHeadToHeadTable->horizontalHeader()->setSortIndicator(
+        1, Qt::DescendingOrder);
     structureLayout->addWidget(m_structureHeadToHeadTable);
 
     m_detailTabs->setObjectName(QStringLiteral("playerStatisticsDetailTabs"));
@@ -1672,6 +1701,14 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         &QPushButton::clicked,
         this,
         &PlayerStatisticsPanel::openBoardStructureSnapshotRequested);
+    connect(m_structureOpponentSearch, &QLineEdit::textChanged, this, [this] {
+        rebuildBoardStructureView();
+    });
+    connect(
+        m_structureMinimumGamesSpin,
+        &QSpinBox::valueChanged,
+        this,
+        [this](int) { rebuildBoardStructureView(); });
     connect(m_gameTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
         const QTableWidgetItem *item = m_gameTable->item(row, 0);
         if (item == nullptr) {
@@ -2229,7 +2266,9 @@ void PlayerStatisticsPanel::clearSnapshot()
     m_structureMetricTable->setRowCount(0);
     m_structureCastlingTable->setRowCount(0);
     m_structureHeadToHeadTable->setRowCount(0);
+    m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
     m_structureHeadToHeadLabel->setVisible(false);
+    m_structureHeadToHeadFilterPanel->setVisible(false);
     m_structureHeadToHeadTable->setVisible(false);
     m_detailTabs->setTabEnabled(m_detailTabs->count() - 1, false);
 }
@@ -3150,7 +3189,9 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
         m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
         m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadFilterPanel->setVisible(false);
         m_structureHeadToHeadTable->setVisible(false);
         return;
     }
@@ -3166,7 +3207,9 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
         m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
         m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadFilterPanel->setVisible(false);
         m_structureHeadToHeadTable->setVisible(false);
         return;
     }
@@ -3225,7 +3268,9 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         m_structureConcentrationLabel->setToolTip(
             view.value(QStringLiteral("largest_unordered_pair_id")).toString());
         m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
         m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadFilterPanel->setVisible(false);
         m_structureHeadToHeadTable->setVisible(false);
     } else {
         m_structureSummaryLabel->setText(
@@ -3260,10 +3305,31 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
 
         const QJsonArray headToHead = view.value(
             QStringLiteral("head_to_head")).toArray();
+        const QString opponentSearch = m_structureOpponentSearch->text().trimmed();
+        const qint64 minimumGames = m_structureMinimumGamesSpin->value();
+        QVector<QJsonObject> visibleRows;
+        visibleRows.reserve(headToHead.size());
+        for (const QJsonValue &value : headToHead) {
+            const QJsonObject result = value.toObject();
+            const QString opponentId = result.value(
+                QStringLiteral("opponent_id")).toString();
+            const qint64 games = static_cast<qint64>(result.value(
+                QStringLiteral("game_count")).toDouble());
+            if (games >= minimumGames
+                && (opponentSearch.isEmpty()
+                    || opponentId.contains(opponentSearch, Qt::CaseInsensitive))) {
+                visibleRows.append(result);
+            }
+        }
+        const int sortColumn = m_structureHeadToHeadTable->horizontalHeader()
+            ->sortIndicatorSection();
+        const Qt::SortOrder sortOrder = m_structureHeadToHeadTable
+            ->horizontalHeader()->sortIndicatorOrder();
+        m_structureHeadToHeadTable->setSortingEnabled(false);
         m_structureHeadToHeadTable->clearContents();
-        m_structureHeadToHeadTable->setRowCount(headToHead.size());
-        for (qsizetype row = 0; row < headToHead.size(); ++row) {
-            const QJsonObject result = headToHead.at(row).toObject();
+        m_structureHeadToHeadTable->setRowCount(visibleRows.size());
+        for (qsizetype row = 0; row < visibleRows.size(); ++row) {
+            const QJsonObject result = visibleRows.at(row);
             auto *opponentItem = readOnlyItem(
                 result.value(QStringLiteral("opponent_id")).toString());
             opponentItem->setToolTip(
@@ -3278,18 +3344,34 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             m_structureHeadToHeadTable->setItem(row, 3, new NumericTableWidgetItem(
                 static_cast<qint64>(result.value(
                     QStringLiteral("black_game_count")).toDouble())));
-            m_structureHeadToHeadTable->setItem(row, 4, readOnlyItem(
-                QStringLiteral("%1-%2-%3")
-                    .arg(numberText(static_cast<qint64>(result.value(
-                        QStringLiteral("win_count")).toDouble())))
-                    .arg(numberText(static_cast<qint64>(result.value(
-                        QStringLiteral("draw_count")).toDouble())))
-                    .arg(numberText(static_cast<qint64>(result.value(
-                        QStringLiteral("loss_count")).toDouble())))));
-            m_structureHeadToHeadTable->setItem(row, 5, readOnlyItem(
-                coverageText(result.value(QStringLiteral("score_rate_ppm")))));
+            const qint64 wins = static_cast<qint64>(result.value(
+                QStringLiteral("win_count")).toDouble());
+            const qint64 draws = static_cast<qint64>(result.value(
+                QStringLiteral("draw_count")).toDouble());
+            const qint64 losses = static_cast<qint64>(result.value(
+                QStringLiteral("loss_count")).toDouble());
+            auto *recordItem = new NumericTableWidgetItem(
+                wins * 100'000'000 + draws * 10'000 + (5'000 - losses));
+            recordItem->setText(QStringLiteral("%1-%2-%3")
+                .arg(numberText(wins))
+                .arg(numberText(draws))
+                .arg(numberText(losses)));
+            m_structureHeadToHeadTable->setItem(row, 4, recordItem);
+            const qint64 scoreRate = static_cast<qint64>(result.value(
+                QStringLiteral("score_rate_ppm")).toDouble());
+            auto *scoreItem = new NumericTableWidgetItem(scoreRate);
+            scoreItem->setText(coverageText(
+                result.value(QStringLiteral("score_rate_ppm"))));
+            m_structureHeadToHeadTable->setItem(row, 5, scoreItem);
         }
+        m_structureHeadToHeadTable->setSortingEnabled(true);
+        m_structureHeadToHeadTable->sortItems(sortColumn, sortOrder);
+        m_structureHeadToHeadLabel->setText(
+            QStringLiteral("Head-to-head results · %1 of %2 opponents shown")
+                .arg(numberText(visibleRows.size()))
+                .arg(numberText(headToHead.size())));
         m_structureHeadToHeadLabel->setVisible(true);
+        m_structureHeadToHeadFilterPanel->setVisible(true);
         m_structureHeadToHeadTable->setVisible(true);
     }
 
