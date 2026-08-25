@@ -257,7 +257,83 @@ void AnnotatedReplayPackTest::buildsMechanicalGameBreakdownFromLegalExplorerMove
     QCOMPARE(pack->moves().at(3).elapsedMoveMs.value_or(-1), 4'000);
     QVERIFY(pack->preferredVariation(4) == nullptr);
 
+    const auto deepId = [](const QByteArray &prefix, char digit) {
+        return QString::fromLatin1(parlawl::test_support::fixtureId(prefix, digit));
+    };
+    SelectiveDeepGameReview deepReview;
+    deepReview.reportId = deepId("chess-selective-game-analysis-report-v2", 'a');
+    deepReview.selectionReceiptId = deepId("chess-selective-game-selection-receipt-v1", 'b');
+    deepReview.interpretationId = deepId("chess-engine-deep-interpretation-v1", 'c');
+    deepReview.sourceGameId = game.sourceGameId;
+    deepReview.canonicalGameUrl = game.canonicalGameUrl;
+    deepReview.eventStartUtc = game.eventStartUtc;
+    deepReview.whiteUsername = game.whiteUsername;
+    deepReview.blackUsername = game.blackUsername;
+    deepReview.whiteRating = game.whiteRating;
+    deepReview.blackRating = game.blackRating;
+    deepReview.result = game.result;
+    deepReview.engineContractId = deepId("chess-engine-deep-engine-contract-v1", 'd');
+    deepReview.engineName = QStringLiteral("Stockfish 18");
+    deepReview.engineAuthor = QStringLiteral("Stockfish developers");
+    deepReview.engineBinarySha256 = QString(64, QLatin1Char('e'));
+    deepReview.nodeLimit = 50'000;
+    deepReview.alternativeLineCount = 3;
+    for (int index = 0; index < game.moves.size(); ++index) {
+        SelectiveDeepMainlineMove move;
+        move.ply = index + 1;
+        move.mover = index % 2 == 0 ? QStringLiteral("white") : QStringLiteral("black");
+        move.phase = game.moves.at(index).positionPhase;
+        move.san = game.moves.at(index).san;
+        move.uci = game.moves.at(index).uci;
+        move.beforeFen = pack->moves().at(index).notation.beforeFen;
+        move.afterFen = pack->moves().at(index).notation.afterFen;
+        move.selectionStatus = index == 2
+            ? QStringLiteral("selected_for_deep_assessment")
+            : QStringLiteral("not_selected_for_deep_assessment");
+        deepReview.mainline.append(move);
+    }
+    SelectiveDeepMoment deepMoment;
+    deepMoment.presentationOrder = 1;
+    deepMoment.priorityRank = 1;
+    deepMoment.ply = 3;
+    deepMoment.assessmentId = deepId("chess-engine-deep-decision-assessment-v1", '1');
+    deepMoment.occurrenceId = deepId("chess-engine-deep-episode-occurrence-v1", '2');
+    deepMoment.episodeId = deepId("chess-engine-critical-episode-v1", '3');
+    deepMoment.transitionId = deepId("chess-engine-transition-v1", '4');
+    deepMoment.mover = QStringLiteral("white");
+    deepMoment.phase = QStringLiteral("opening");
+    deepMoment.san = QStringLiteral("Nf3");
+    deepMoment.playedMoveUci = QStringLiteral("g1f3");
+    deepMoment.beforeFen = pack->moves().at(2).notation.beforeFen;
+    deepMoment.status = QStringLiteral("confirmed_severe_error");
+    deepMoment.severity = QStringLiteral("severe");
+    deepMoment.bestMoveUci = QStringLiteral("d2d4");
+    deepMoment.bestExpectationMillionths = 750'000;
+    deepMoment.playedExpectationMillionths = 584'000;
+    deepMoment.signedExpectationDeltaMillionths = 166'000;
+    deepMoment.wdlLossMillionths = 166'000;
+    deepMoment.centipawnLoss = 40;
+    deepMoment.mateComparison = QStringLiteral("none");
+    deepMoment.pairStability = QStringLiteral("played_move_absent_from_multipv");
+    deepReview.moments.append(deepMoment);
+    game.selectiveDeepReview = deepReview;
+
+    const auto deepPack = AnnotatedReplayPack::fromMechanicalGame(game, &error);
+    QVERIFY2(deepPack.has_value(), qPrintable(error));
+    QVERIFY(deepPack->selectiveDeepReview().has_value());
+    QCOMPARE(deepPack->moves().at(2).selectiveDeepMoments.size(), 1);
+    QCOMPARE(deepPack->moves().at(2).selectiveDeepMoments.first().status,
+        QStringLiteral("confirmed_severe_error"));
+    QVERIFY(deepPack->replayId() != pack->replayId());
+
+    MechanicalReplayGame deepTampered = game;
+    deepTampered.selectiveDeepReview->mainline[2].beforeFen =
+        deepTampered.selectiveDeepReview->mainline[1].beforeFen;
+    QVERIFY(!AnnotatedReplayPack::fromMechanicalGame(deepTampered, &error).has_value());
+    QVERIFY(error.contains(QStringLiteral("mainline differs")));
+
     MechanicalReplayGame tampered = game;
+    tampered.selectiveDeepReview.reset();
     tampered.moves[2].san = QStringLiteral("Nc3");
     QVERIFY(!AnnotatedReplayPack::fromMechanicalGame(tampered, &error).has_value());
     QVERIFY(error.contains(QStringLiteral("SAN")));

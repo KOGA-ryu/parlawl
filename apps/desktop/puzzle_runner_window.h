@@ -53,6 +53,7 @@ public:
         const QString &absoluteSqlitePath,
         const QString &playerId = QString(),
         const QString &sourceGameId = QString(),
+        const QString &selectiveReportDirectory = QString(),
         QString *errorMessage = nullptr);
 
 signals:
@@ -147,6 +148,7 @@ private:
     };
     WorkspaceMode m_workspaceMode = WorkspaceMode::Puzzle;
     std::optional<parlawl::puzzle_runner::AnnotatedReplayPack> m_annotatedReplayPack;
+    std::optional<parlawl::puzzle_runner::SelectiveDeepReportCatalog> m_selectiveDeepReports;
     parlawl::puzzle_runner::ReplaySession m_replaySession;
     int m_replayVariationAnchorPly = 0;
     int m_preReplayInfoTabIndex = 0;

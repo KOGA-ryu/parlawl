@@ -13,6 +13,7 @@ struct StartupPreflight {
     bool playerExplorerPresent = false;
     bool playerIdPresent = false;
     bool sourceGameIdPresent = false;
+    bool selectiveReportDirectoryPresent = false;
     QString error;
 };
 
@@ -76,16 +77,22 @@ StartupPreflight preflightStartupArguments(int argc, char *argv[])
                 &index,
                 argument,
                 QStringLiteral("--source-game-id"),
-                &result.sourceGameIdPresent)) {
+                &result.sourceGameIdPresent)
+            || markValueOption(
+                &index,
+                argument,
+                QStringLiteral("--selective-report-directory"),
+                &result.selectiveReportDirectoryPresent)) {
             continue;
         }
     }
 
     if (result.error.isEmpty()
         && !result.playerExplorerPresent
-        && (result.playerIdPresent || result.sourceGameIdPresent)) {
+        && (result.playerIdPresent || result.sourceGameIdPresent
+            || result.selectiveReportDirectoryPresent)) {
         result.error = QStringLiteral(
-            "--player-id and --source-game-id require --player-explorer");
+            "--player-id, --source-game-id, and --selective-report-directory require --player-explorer");
     }
     if (result.error.isEmpty()
         && result.sourceGameIdPresent
@@ -105,7 +112,8 @@ void printStartupHelp(const char *program)
         "  -h, --help                                Displays this help.\n"
         "  --player-explorer <absolute-sqlite-path>  Open an exact local player-game explorer read-only.\n"
         "  --player-id <player-id>                   Select an exact player from --player-explorer.\n"
-        "  --source-game-id <source-game-id>         Open an exact game for --player-id at its report start position.\n",
+        "  --source-game-id <source-game-id>         Open an exact game for --player-id at its report start position.\n"
+        "  --selective-report-directory <directory>  Join bounded selective deep Report-v2 files read-only.\n",
         program != nullptr ? program : "parlawl");
 }
 
@@ -144,19 +152,26 @@ int main(int argc, char *argv[])
         QStringLiteral("source-game-id"),
         QStringLiteral("Open an exact game for --player-id at its report start position."),
         QStringLiteral("source-game-id"));
+    const QCommandLineOption selectiveReportDirectoryOption(
+        QStringLiteral("selective-report-directory"),
+        QStringLiteral("Join bounded selective deep Report-v2 files read-only."),
+        QStringLiteral("absolute-directory"));
     parser.addOptions({
         playerExplorerOption,
         playerIdOption,
         sourceGameIdOption,
+        selectiveReportDirectoryOption,
     });
     parser.process(app);
 
     const QString explorerPath = parser.value(playerExplorerOption);
     const QString playerId = parser.value(playerIdOption);
     const QString sourceGameId = parser.value(sourceGameIdOption);
-    if (explorerPath.isEmpty() && (!playerId.isEmpty() || !sourceGameId.isEmpty())) {
+    const QString selectiveReportDirectory = parser.value(selectiveReportDirectoryOption);
+    if (explorerPath.isEmpty() && (!playerId.isEmpty() || !sourceGameId.isEmpty()
+            || !selectiveReportDirectory.isEmpty())) {
         qCritical().noquote()
-            << QStringLiteral("--player-id and --source-game-id require --player-explorer");
+            << QStringLiteral("--player-id, --source-game-id, and --selective-report-directory require --player-explorer");
         return 2;
     }
     if (!sourceGameId.isEmpty() && playerId.isEmpty()) {
@@ -172,6 +187,7 @@ int main(int argc, char *argv[])
                 explorerPath,
                 playerId,
                 sourceGameId,
+                selectiveReportDirectory,
                 &errorMessage)) {
             qCritical().noquote()
                 << QStringLiteral("player explorer startup failed: %1").arg(errorMessage);

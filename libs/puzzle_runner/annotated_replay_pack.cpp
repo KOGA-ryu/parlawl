@@ -1531,6 +1531,151 @@ std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
         return std::nullopt;
     }
 
+    QHash<int, QVector<SelectiveDeepMoment>> deepMomentsByPly;
+    if (game.selectiveDeepReview.has_value()) {
+        const SelectiveDeepGameReview &review = *game.selectiveDeepReview;
+        const QSet<QString> statuses {
+            QStringLiteral("played_move_matches_best"),
+            QStringLiteral("confirmed_missed_opportunity"),
+            QStringLiteral("confirmed_severe_error"),
+            QStringLiteral("below_confirmation_threshold"),
+            QStringLiteral("ambiguous_engine_instability"),
+            QStringLiteral("incomplete_deep_evidence"),
+            QStringLiteral("categorical_mate_comparison"),
+        };
+        const auto validDeepLine = [&plainText](const SelectiveDeepEngineLine &line) {
+            const bool scoreValid = line.scoreKind == QStringLiteral("cp")
+                ? line.centipawnsWhite.has_value() && !line.mateForWhite.has_value()
+                : line.scoreKind == QStringLiteral("mate")
+                    && !line.centipawnsWhite.has_value()
+                    && line.mateForWhite.has_value() && *line.mateForWhite != 0;
+            return semanticId(line.observationId)
+                && semanticId(line.engineContractId)
+                && semanticId(line.transitionId)
+                && plainText(line.fen, 256)
+                && (line.sideToMove == QStringLiteral("white")
+                    || line.sideToMove == QStringLiteral("black"))
+                && scoreValid
+                && std::abs(line.centipawnsWhite.value_or(0)) <= 1'000'000
+                && std::abs(line.mateForWhite.value_or(0)) <= 1'000'000
+                && line.wdlWhite.size() == 3
+                && std::all_of(line.wdlWhite.cbegin(), line.wdlWhite.cend(), [](int value) {
+                    return value >= 0 && value <= 1'000;
+                })
+                && std::accumulate(line.wdlWhite.cbegin(), line.wdlWhite.cend(), 0) == 1'000
+                && kUciPattern.match(line.rootMoveUci).hasMatch()
+                && line.lineRank >= 1 && line.lineRank <= 10
+                && line.depth >= 1 && line.selectiveDepth >= 0 && line.nodes >= 1
+                && !line.pvUci.isEmpty() && line.pvUci.size() <= 256
+                && line.pvUci.first() == line.rootMoveUci
+                && std::all_of(line.pvUci.cbegin(), line.pvUci.cend(), [](const QString &move) {
+                    return kUciPattern.match(move).hasMatch();
+                })
+                && plainText(line.scoreKind, 16);
+        };
+        if (!semanticId(review.reportId)
+            || !semanticId(review.selectionReceiptId)
+            || !semanticId(review.interpretationId)
+            || !semanticId(review.engineContractId)
+            || review.sourceGameId != game.sourceGameId
+            || review.canonicalGameUrl != game.canonicalGameUrl
+            || review.eventStartUtc != game.eventStartUtc
+            || review.whiteUsername.compare(game.whiteUsername, Qt::CaseInsensitive) != 0
+            || review.blackUsername.compare(game.blackUsername, Qt::CaseInsensitive) != 0
+            || review.whiteRating != game.whiteRating
+            || review.blackRating != game.blackRating
+            || review.result != game.result
+            || !plainText(review.engineName, 256)
+            || !plainText(review.engineAuthor, 256)
+            || !kShaPattern.match(review.engineBinarySha256).hasMatch()
+            || review.nodeLimit < 1'000 || review.nodeLimit > 1'000'000
+            || review.alternativeLineCount < 2 || review.alternativeLineCount > 10
+            || review.mainline.size() != game.moves.size()
+            || review.moments.isEmpty() || review.moments.size() > 3) {
+            setError(errorMessage, QStringLiteral("selective deep report authority differs from the mechanical game"));
+            return std::nullopt;
+        }
+        QSet<QString> occurrenceIds;
+        for (int index = 0; index < review.moments.size(); ++index) {
+            const SelectiveDeepMoment &moment = review.moments.at(index);
+            const bool comparisonAvailable = moment.bestExpectationMillionths.has_value()
+                || moment.playedExpectationMillionths.has_value()
+                || moment.signedExpectationDeltaMillionths.has_value();
+            if (moment.presentationOrder != index + 1
+                || moment.priorityRank < 1 || moment.priorityRank > 512
+                || moment.ply < 1 || moment.ply > game.moves.size()
+                || !semanticId(moment.assessmentId)
+                || !semanticId(moment.occurrenceId)
+                || !semanticId(moment.episodeId)
+                || !semanticId(moment.transitionId)
+                || occurrenceIds.contains(moment.occurrenceId)
+                || !statuses.contains(moment.status)
+                || (moment.mover != QStringLiteral("white")
+                    && moment.mover != QStringLiteral("black"))
+                || (moment.phase != QStringLiteral("opening")
+                    && moment.phase != QStringLiteral("middlegame")
+                    && moment.phase != QStringLiteral("endgame"))
+                || !plainText(moment.san, 32)
+                || !kUciPattern.match(moment.playedMoveUci).hasMatch()
+                || !plainText(moment.beforeFen, 256)
+                || (moment.severity.has_value()
+                    && *moment.severity != QStringLiteral("inaccuracy")
+                    && *moment.severity != QStringLiteral("mistake")
+                    && *moment.severity != QStringLiteral("severe"))
+                || (moment.bestMoveUci.has_value()
+                    && !kUciPattern.match(*moment.bestMoveUci).hasMatch())
+                || (comparisonAvailable
+                    && (!moment.bestExpectationMillionths.has_value()
+                        || !moment.playedExpectationMillionths.has_value()
+                        || !moment.signedExpectationDeltaMillionths.has_value()
+                        || *moment.bestExpectationMillionths < 0
+                        || *moment.bestExpectationMillionths > 1'000'000
+                        || *moment.playedExpectationMillionths < 0
+                        || *moment.playedExpectationMillionths > 1'000'000
+                        || *moment.signedExpectationDeltaMillionths
+                            != *moment.bestExpectationMillionths
+                                - *moment.playedExpectationMillionths))
+                || (moment.wdlLossMillionths.has_value()
+                    && (!moment.signedExpectationDeltaMillionths.has_value()
+                        || *moment.signedExpectationDeltaMillionths < 0
+                        || *moment.wdlLossMillionths
+                            != *moment.signedExpectationDeltaMillionths))
+                || (moment.centipawnLoss.has_value() && *moment.centipawnLoss < 0)
+                || moment.alternativeLines.size() > review.alternativeLineCount
+                || !std::all_of(
+                    moment.alternativeLines.cbegin(), moment.alternativeLines.cend(), validDeepLine)
+                || (moment.playedLine.has_value()
+                    && (!validDeepLine(*moment.playedLine)
+                        || moment.playedLine->rootMoveUci != moment.playedMoveUci))) {
+                setError(errorMessage, QStringLiteral("selective deep moment is structurally inconsistent"));
+                return std::nullopt;
+            }
+            occurrenceIds.insert(moment.occurrenceId);
+            for (int lineIndex = 0; lineIndex < moment.alternativeLines.size(); ++lineIndex) {
+                const SelectiveDeepEngineLine &line = moment.alternativeLines.at(lineIndex);
+                if (line.engineContractId != review.engineContractId
+                    || line.transitionId != moment.transitionId
+                    || line.fen != moment.beforeFen || line.sideToMove != moment.mover
+                    || line.lineRank != lineIndex + 1) {
+                    setError(errorMessage,
+                        QStringLiteral("selective deep alternative line authority is inconsistent"));
+                    return std::nullopt;
+                }
+            }
+            if (moment.playedLine.has_value()
+                && (moment.playedLine->engineContractId != review.engineContractId
+                    || moment.playedLine->transitionId != moment.transitionId
+                    || moment.playedLine->fen != moment.beforeFen
+                    || moment.playedLine->sideToMove != moment.mover
+                    || moment.playedLine->lineRank != 1)) {
+                setError(errorMessage,
+                    QStringLiteral("selective deep played-line authority is inconsistent"));
+                return std::nullopt;
+            }
+            deepMomentsByPly[moment.ply].append(moment);
+        }
+    }
+
     QString fenError;
     auto current = exactPositionFromFen(kStandardInitialFen, &fenError);
     if (!current.has_value()) {
@@ -1554,6 +1699,7 @@ std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
     pack.m_viewedPlayerColor = game.viewedPlayerColor;
     pack.m_mechanicalGameBreakdown = true;
     pack.m_persistedEngineEvidence = game.engineEvidence;
+    pack.m_selectiveDeepReview = game.selectiveDeepReview;
     if (game.engineEvidence.has_value()) {
         pack.m_sourceRunId = game.engineEvidence->representativeRunId;
         pack.m_sourceEngineConfigId = game.engineEvidence->engineConfigId;
@@ -1723,6 +1869,32 @@ std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
             setError(errorMessage, QStringLiteral("mechanical move %1 SAN differs from legal replay").arg(expectedPly));
             return std::nullopt;
         }
+        if (game.selectiveDeepReview.has_value()) {
+            const SelectiveDeepMainlineMove &deepMove =
+                game.selectiveDeepReview->mainline.at(index);
+            const QString beforeFen = canonicalFen(*current);
+            const QString afterFen = canonicalFenAfterMove(*current, *move, after);
+            const bool hasMoment = deepMomentsByPly.contains(expectedPly);
+            if (deepMove.ply != expectedPly
+                || deepMove.mover != (expectedPly % 2 == 1
+                    ? QStringLiteral("white") : QStringLiteral("black"))
+                || deepMove.phase != source.positionPhase
+                || deepMove.san != source.san || deepMove.uci != source.uci
+                || deepMove.beforeFen != beforeFen || deepMove.afterFen != afterFen
+                || hasMoment != (deepMove.selectionStatus
+                    == QStringLiteral("selected_for_deep_assessment"))) {
+                setError(errorMessage, QStringLiteral("selective deep report mainline differs at ply %1").arg(expectedPly));
+                return std::nullopt;
+            }
+            for (const SelectiveDeepMoment &moment : deepMomentsByPly.value(expectedPly)) {
+                if (moment.mover != deepMove.mover || moment.phase != deepMove.phase
+                    || moment.san != deepMove.san || moment.playedMoveUci != deepMove.uci
+                    || moment.beforeFen != beforeFen) {
+                    setError(errorMessage, QStringLiteral("selective deep moment differs at ply %1").arg(expectedPly));
+                    return std::nullopt;
+                }
+            }
+        }
 
         ReplayMove output;
         output.ply = expectedPly;
@@ -1736,6 +1908,7 @@ std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
         output.elapsedMoveMs = source.elapsedMoveMs;
         output.elapsedStatus = source.elapsedStatus;
         output.persistedEngineEvidence = source.engineEvidence;
+        output.selectiveDeepMoments = deepMomentsByPly.value(expectedPly);
         if (source.engineEvidence.has_value()) {
             output.severity = source.engineEvidence->severity;
             output.expectedBeforeMillionths = source.engineEvidence->expectedBeforeMillionths;
@@ -1819,6 +1992,67 @@ std::optional<AnnotatedReplayPack> AnnotatedReplayPack::fromMechanicalGame(
             }
             for (const int value : engine.afterWdlWhite) {
                 addHashField(QByteArray::number(value));
+            }
+        }
+    }
+    if (game.selectiveDeepReview.has_value()) {
+        const SelectiveDeepGameReview &review = *game.selectiveDeepReview;
+        for (const QString &value : {
+                 review.reportId, review.selectionReceiptId, review.interpretationId,
+                 review.engineContractId, review.engineName, review.engineAuthor,
+                 review.engineBinarySha256,
+             }) {
+            addHashField(value.toUtf8());
+        }
+        addHashField(QByteArray::number(review.nodeLimit));
+        addHashField(QByteArray::number(review.alternativeLineCount));
+        const auto hashLine = [&addHashField, &addOptionalInteger](
+                                  const SelectiveDeepEngineLine &line) {
+            for (const QString &value : {
+                     line.observationId, line.engineContractId, line.transitionId,
+                     line.fen, line.sideToMove, line.scoreKind, line.rootMoveUci,
+                 }) {
+                addHashField(value.toUtf8());
+            }
+            addOptionalInteger(line.centipawnsWhite);
+            addOptionalInteger(line.mateForWhite);
+            addHashField(QByteArray::number(line.lineRank));
+            addHashField(QByteArray::number(line.depth));
+            addHashField(QByteArray::number(line.selectiveDepth));
+            addHashField(QByteArray::number(line.nodes));
+            for (const int value : line.wdlWhite) {
+                addHashField(QByteArray::number(value));
+            }
+            for (const QString &move : line.pvUci) {
+                addHashField(move.toUtf8());
+            }
+        };
+        for (const SelectiveDeepMoment &moment : review.moments) {
+            for (const QString &value : {
+                     moment.assessmentId, moment.occurrenceId, moment.episodeId,
+                     moment.transitionId, moment.mover, moment.phase, moment.san,
+                     moment.playedMoveUci, moment.beforeFen, moment.status,
+                     moment.severity.value_or(QString()),
+                     moment.bestMoveUci.value_or(QString()), moment.mateComparison,
+                     moment.pairStability,
+                 }) {
+                addHashField(value.toUtf8());
+            }
+            addHashField(QByteArray::number(moment.presentationOrder));
+            addHashField(QByteArray::number(moment.priorityRank));
+            addHashField(QByteArray::number(moment.ply));
+            addOptionalInteger(moment.bestExpectationMillionths);
+            addOptionalInteger(moment.playedExpectationMillionths);
+            addOptionalInteger(moment.signedExpectationDeltaMillionths);
+            addOptionalInteger(moment.wdlLossMillionths);
+            addOptionalInteger(moment.centipawnLoss);
+            for (const SelectiveDeepEngineLine &line : moment.alternativeLines) {
+                hashLine(line);
+            }
+            if (moment.playedLine.has_value()) {
+                hashLine(*moment.playedLine);
+            } else {
+                addHashField(QByteArrayLiteral("no-played-deep-line"));
             }
         }
     }

@@ -20,6 +20,8 @@ add_library(puzzle_runner STATIC
     replay_session.h
     session_controller.cpp
     session_controller.h
+    selective_deep_report.cpp
+    selective_deep_report.h
 )
 
 target_include_directories(puzzle_runner

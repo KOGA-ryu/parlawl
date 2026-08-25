@@ -793,7 +793,7 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
     const bool explorer = QFileInfo(path).suffix().compare(
         QStringLiteral("sqlite3"), Qt::CaseInsensitive) == 0;
     if (explorer) {
-        if (!openPlayerGameExplorer(path, QString(), QString(), &errorMessage)) {
+        if (!openPlayerGameExplorer(path, QString(), QString(), QString(), &errorMessage)) {
             QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
         }
         return;
@@ -850,6 +850,7 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     const QString &absoluteSqlitePath,
     const QString &playerId,
     const QString &sourceGameId,
+    const QString &selectiveReportDirectory,
     QString *errorMessage)
 {
     if (errorMessage != nullptr) {
@@ -864,6 +865,15 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     if (!sourceGameId.isEmpty() && playerId.isEmpty()) {
         return fail(QStringLiteral("an exact player ID is required to open an exact game"));
     }
+    std::optional<SelectiveDeepReportCatalog> deepReports;
+    if (!selectiveReportDirectory.isEmpty()) {
+        deepReports = SelectiveDeepReportCatalog::fromDirectory(
+            selectiveReportDirectory,
+            errorMessage);
+        if (!deepReports.has_value()) {
+            return false;
+        }
+    }
     if (!m_playerStatisticsPanel->loadExplorerDatabase(
             absoluteSqlitePath,
             errorMessage)) {
@@ -873,11 +883,16 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
         m_playerStatisticsPanel->clearSnapshot();
         return fail(QStringLiteral("player explorer does not contain the exact requested player ID"));
     }
+    m_selectiveDeepReports = std::move(deepReports);
 
     m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
     appendLogMessage(timestamped(
-        QStringLiteral(
-            "opened local read-only player analysis data; ParlAWL ran no engine, network, or source replay")));
+        m_selectiveDeepReports.has_value()
+            ? QStringLiteral(
+                  "opened local read-only player analysis data with %1 exact-join selective deep reports; ParlAWL ran no engine, network, or source replay")
+                  .arg(m_selectiveDeepReports->reportCount())
+            : QStringLiteral(
+                  "opened local read-only player analysis data; ParlAWL ran no engine, network, or source replay")));
     if (!sourceGameId.isEmpty()
         && !openPlayerGameBreakdown(sourceGameId, errorMessage)) {
         return false;
@@ -923,6 +938,13 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     mechanical.openingName = breakdown->openingName;
     mechanical.openingLastBookPly = breakdown->openingLastBookPly;
     mechanical.viewedPlayerColor = breakdown->viewedPlayerColor;
+    if (m_selectiveDeepReports.has_value()) {
+        if (const SelectiveDeepGameReview *review =
+                m_selectiveDeepReports->reviewForGame(sourceGameId);
+            review != nullptr) {
+            mechanical.selectiveDeepReview = *review;
+        }
+    }
     if (breakdown->engineEvidence.has_value()) {
         const PlayerStatisticsEngineGameEvidence &source = *breakdown->engineEvidence;
         PersistedEngineGameEvidence engine;

@@ -99,6 +99,99 @@ parlawl::puzzle_runner::MechanicalReplayGame mechanicalGameWithEngineFixture()
     return game;
 }
 
+parlawl::puzzle_runner::MechanicalReplayGame mechanicalGameWithDeepFixture()
+{
+    using namespace parlawl::puzzle_runner;
+    MechanicalReplayGame game = mechanicalGameWithEngineFixture();
+    QString error;
+    const auto replay = AnnotatedReplayPack::fromMechanicalGame(game, &error);
+    Q_ASSERT_X(replay.has_value(), "mechanicalGameWithDeepFixture", qPrintable(error));
+    const auto id = [](const QString &prefix, QChar digit) {
+        return prefix + QLatin1Char(':') + QString(64, digit);
+    };
+    SelectiveDeepGameReview review;
+    review.reportId = id(QStringLiteral("chess-selective-game-analysis-report-v2"), QLatin1Char('a'));
+    review.selectionReceiptId = id(QStringLiteral("chess-selective-game-selection-receipt-v1"), QLatin1Char('b'));
+    review.interpretationId = id(QStringLiteral("chess-engine-deep-interpretation-v1"), QLatin1Char('c'));
+    review.sourceGameId = game.sourceGameId;
+    review.canonicalGameUrl = game.canonicalGameUrl;
+    review.eventStartUtc = game.eventStartUtc;
+    review.whiteUsername = game.whiteUsername;
+    review.blackUsername = game.blackUsername;
+    review.whiteRating = game.whiteRating;
+    review.blackRating = game.blackRating;
+    review.result = game.result;
+    review.engineContractId = id(QStringLiteral("chess-engine-deep-engine-contract-v1"), QLatin1Char('d'));
+    review.engineName = QStringLiteral("Stockfish 18");
+    review.engineAuthor = QStringLiteral("Stockfish developers");
+    review.engineBinarySha256 = QString(64, QLatin1Char('e'));
+    review.nodeLimit = 50'000;
+    review.alternativeLineCount = 3;
+    for (int index = 0; index < game.moves.size(); ++index) {
+        SelectiveDeepMainlineMove move;
+        move.ply = index + 1;
+        move.mover = index % 2 == 0 ? QStringLiteral("white") : QStringLiteral("black");
+        move.phase = game.moves.at(index).positionPhase;
+        move.san = game.moves.at(index).san;
+        move.uci = game.moves.at(index).uci;
+        move.beforeFen = replay->moves().at(index).notation.beforeFen;
+        move.afterFen = replay->moves().at(index).notation.afterFen;
+        move.selectionStatus = index == 2
+            ? QStringLiteral("selected_for_deep_assessment")
+            : QStringLiteral("not_selected_for_deep_assessment");
+        review.mainline.append(move);
+    }
+    const auto line = [&id, &replay](const QString &rootMove, QChar digit, int score) {
+        SelectiveDeepEngineLine value;
+        value.observationId = id(
+            QStringLiteral("chess-engine-deep-line-observation-v1"), digit);
+        value.engineContractId = id(
+            QStringLiteral("chess-engine-deep-engine-contract-v1"), QLatin1Char('d'));
+        value.transitionId = id(
+            QStringLiteral("chess-engine-transition-v1"), QLatin1Char('4'));
+        value.fen = replay->moves().at(2).notation.beforeFen;
+        value.sideToMove = QStringLiteral("white");
+        value.scoreKind = QStringLiteral("cp");
+        value.centipawnsWhite = score;
+        value.wdlWhite = {500, 500, 0};
+        value.rootMoveUci = rootMove;
+        value.lineRank = 1;
+        value.depth = 12;
+        value.selectiveDepth = 16;
+        value.nodes = 50'000;
+        value.pvUci = {rootMove};
+        return value;
+    };
+    SelectiveDeepMoment moment;
+    moment.presentationOrder = 1;
+    moment.priorityRank = 1;
+    moment.ply = 3;
+    moment.assessmentId = id(QStringLiteral("chess-engine-deep-decision-assessment-v1"), QLatin1Char('1'));
+    moment.occurrenceId = id(QStringLiteral("chess-engine-deep-episode-occurrence-v1"), QLatin1Char('2'));
+    moment.episodeId = id(QStringLiteral("chess-engine-critical-episode-v1"), QLatin1Char('3'));
+    moment.transitionId = id(QStringLiteral("chess-engine-transition-v1"), QLatin1Char('4'));
+    moment.mover = QStringLiteral("white");
+    moment.phase = QStringLiteral("opening");
+    moment.san = QStringLiteral("Nf3");
+    moment.playedMoveUci = QStringLiteral("g1f3");
+    moment.beforeFen = replay->moves().at(2).notation.beforeFen;
+    moment.status = QStringLiteral("confirmed_severe_error");
+    moment.severity = QStringLiteral("severe");
+    moment.bestMoveUci = QStringLiteral("d2d4");
+    moment.bestExpectationMillionths = 750'000;
+    moment.playedExpectationMillionths = 584'000;
+    moment.signedExpectationDeltaMillionths = 166'000;
+    moment.wdlLossMillionths = 166'000;
+    moment.centipawnLoss = 40;
+    moment.mateComparison = QStringLiteral("none");
+    moment.pairStability = QStringLiteral("played_move_absent_from_multipv");
+    moment.alternativeLines.append(line(QStringLiteral("d2d4"), QLatin1Char('5'), 100));
+    moment.playedLine = line(QStringLiteral("g1f3"), QLatin1Char('6'), 60);
+    review.moments.append(moment);
+    game.selectiveDeepReview = review;
+    return game;
+}
+
 } // namespace
 
 class TestUnitPuzzlePanels : public QObject
@@ -114,6 +207,7 @@ private slots:
     void replayEvidencePanelMarksForgedSuppliedTextUnverified();
     void gameBreakdownShowsClockAndOpeningBoundaryWithoutEngineClaims();
     void gameBreakdownShowsPersistedEngineEvidenceWithoutStartingEngine();
+    void gameBreakdownShowsDeepSelectiveEvidenceAboveShallowScreen();
     void gameReviewPanelKeepsMovesAndEvidenceTogether();
     void settingsCardShowsSupplyStatusText();
     void enginePanelTreatsDynamicMarkupAsPlainText();
@@ -264,8 +358,8 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
     ReplayEvidencePanel evidence;
     evidence.setReplayState(*pack, session, 0);
     QVERIFY(evidence.summaryText().contains(QStringLiteral("GAME REPORT V1")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Coverage: persisted fixed-node evidence for 4/4 recorded moves")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Threshold labels: Severe 1 · Mistake 0 · Inaccuracy 0")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow screen coverage: persisted fixed-node evidence for 4/4 recorded moves")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow candidate labels: Severe 1 · Mistake 0 · Inaccuracy 0")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("1. Ply 3 Nf3 — Alpha — Severe — 16.6% mover expectation loss")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("best d2d4")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("do not prove cause, intent, or a unique best move")));
@@ -273,8 +367,8 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
     QVERIFY(session.seekMainlinePly(3));
 
     evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("PERSISTED FIXED-NODE REPORT")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Frozen threshold label: Severe")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("SHALLOW FIXED-NODE SCREEN")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow candidate label: Severe")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Engine-reported best move before play: d2d4")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Reported PV, not played: d2d4 d7d5")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("not an objective verdict")));
@@ -286,6 +380,41 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
     QVERIFY(table != nullptr);
     QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("severe")));
     QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("+0.60")));
+}
+
+void TestUnitPuzzlePanels::gameBreakdownShowsDeepSelectiveEvidenceAboveShallowScreen()
+{
+    QString error;
+    const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
+        mechanicalGameWithDeepFixture(), &error);
+    QVERIFY2(pack.has_value(), qPrintable(error));
+    parlawl::puzzle_runner::ReplaySession session;
+    session.load(*pack);
+
+    ReplayEvidencePanel evidence;
+    evidence.setReplayState(*pack, session, 0);
+    const QString gameSummary = evidence.summaryText();
+    QVERIFY(gameSummary.indexOf(QStringLiteral("DEEP SELECTIVE REVIEW"))
+        < gameSummary.indexOf(QStringLiteral("GAME REPORT V1")));
+    QVERIFY(gameSummary.contains(QStringLiteral("50000-NODE POLICY")));
+    QVERIFY(gameSummary.contains(QStringLiteral("confirmed severe 1")));
+    QVERIFY(gameSummary.contains(QStringLiteral("Unselected moves are not certified accurate")));
+    QVERIFY(gameSummary.contains(QStringLiteral("Rank 1 alternative, not played")));
+
+    QVERIFY(session.seekMainlinePly(3));
+    evidence.setReplayState(*pack, session, 0);
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("DEEP SELECTIVE ASSESSMENT · 50000 NODES")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("stable loss 16.6%")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Alternative 1, not played: d2d4")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Played-move constrained line: g1f3")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("SHALLOW FIXED-NODE SCREEN")));
+
+    MoveListPanel moves;
+    moves.setAnnotatedReplay(*pack, 3, false, 0);
+    const QTableWidget *table = moves.findChild<QTableWidget *>();
+    QVERIFY(table != nullptr);
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("deep severe")));
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("screen severe")));
 }
 
 void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()

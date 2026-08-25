@@ -213,11 +213,96 @@ QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pac
         : QStringLiteral("Supplied opening annotation (not verified): %1 %2").arg(eco, name);
 }
 
+QString deepLineSummary(const parlawl::puzzle_runner::SelectiveDeepEngineLine &line)
+{
+    const QString pv = line.pvUci.isEmpty()
+        ? QStringLiteral("PV unavailable") : line.pvUci.join(QLatin1Char(' '));
+    return QStringLiteral("%1 · %2 · depth %3/%4 · %5 nodes · PV %6")
+        .arg(
+            line.rootMoveUci,
+            engineScoreText(
+                line.scoreKind,
+                line.centipawnsWhite,
+                line.mateForWhite))
+        .arg(line.depth)
+        .arg(line.selectiveDepth)
+        .arg(line.nodes)
+        .arg(pv);
+}
+
+QStringList selectiveDeepReportLines(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    if (!pack.selectiveDeepReview().has_value()) {
+        return {};
+    }
+    const auto &review = *pack.selectiveDeepReview();
+    QHash<QString, int> statusCounts;
+    for (const auto &moment : review.moments) {
+        ++statusCounts[moment.status];
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("DEEP SELECTIVE REVIEW · %1-NODE POLICY")
+                 .arg(review.nodeLimit)
+          << QStringLiteral("%1 outcome-blind selected moment%2 · %3 other recorded moves were not selected for deep assessment.")
+                 .arg(review.moments.size())
+                 .arg(review.moments.size() == 1 ? QString() : QStringLiteral("s"))
+                 .arg(pack.moves().size() - review.moments.size())
+          << QStringLiteral("Deep statuses: confirmed severe %1 · confirmed missed opportunity %2 · ambiguous %3 · below threshold %4")
+                 .arg(statusCounts.value(QStringLiteral("confirmed_severe_error")))
+                 .arg(statusCounts.value(QStringLiteral("confirmed_missed_opportunity")))
+                 .arg(statusCounts.value(QStringLiteral("ambiguous_engine_instability")))
+                 .arg(statusCounts.value(QStringLiteral("below_confirmation_threshold")))
+          << QStringLiteral("Selected moments");
+    for (const auto &moment : review.moments) {
+        const QString player = moment.mover == QStringLiteral("white")
+            ? pack.whiteUsername() : pack.blackUsername();
+        const QString classification = moment.severity.has_value()
+            ? humanizedToken(*moment.severity)
+            : humanizedToken(moment.status);
+        const QString loss = moment.wdlLossMillionths.has_value()
+            ? percentageText(*moment.wdlLossMillionths)
+                + QStringLiteral(" mover expectation loss")
+            : QStringLiteral("no stable loss published");
+        lines << QStringLiteral("%1. Ply %2 %3 — %4 — %5 — %6 · played %7 · deep best %8")
+                     .arg(moment.presentationOrder)
+                     .arg(moment.ply)
+                     .arg(moment.san)
+                     .arg(player)
+                     .arg(classification)
+                     .arg(loss)
+                     .arg(moment.playedMoveUci)
+                     .arg(moment.bestMoveUci.value_or(QStringLiteral("unavailable")));
+        if (!moment.alternativeLines.isEmpty()) {
+            lines << QStringLiteral("   Rank 1 alternative, not played: %1")
+                         .arg(deepLineSummary(moment.alternativeLines.first()));
+        }
+        if (moment.playedLine.has_value()) {
+            lines << QStringLiteral("   Played-move constrained line: %1")
+                         .arg(deepLineSummary(*moment.playedLine));
+        }
+    }
+    lines << QStringLiteral(
+        "Selection used no result or postgame rating. Unselected moves are not certified accurate. ParlAWL exact-joined this retained Report v2 to the legal mainline; it did not rerun the producer's sources or Stockfish.");
+    return lines;
+}
+
 QStringList mechanicalGameReportLines(
     const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
 {
-    if (!pack.persistedEngineEvidence().has_value() || pack.moves().isEmpty()) {
+    if (pack.moves().isEmpty()
+        || (!pack.persistedEngineEvidence().has_value()
+            && !pack.selectiveDeepReview().has_value())) {
         return {};
+    }
+
+    QStringList lines = selectiveDeepReportLines(pack);
+    if (!lines.isEmpty()) {
+        lines << QString();
+    }
+    if (!pack.persistedEngineEvidence().has_value()) {
+        return lines;
     }
 
     QVector<const parlawl::puzzle_runner::ReplayMove *> coveredMoves;
@@ -259,16 +344,15 @@ QStringList mechanicalGameReportLines(
             return leftLoss != rightLoss ? leftLoss > rightLoss : left->ply < right->ply;
         });
 
-    QStringList lines;
     lines << QStringLiteral("GAME REPORT V1 · RETROSPECTIVE MECHANICAL SUMMARY")
-          << QStringLiteral("Coverage: persisted fixed-node evidence for %1/%2 recorded moves.")
+          << QStringLiteral("Shallow screen coverage: persisted fixed-node evidence for %1/%2 recorded moves.")
                  .arg(coveredMoves.size())
                  .arg(pack.moves().size())
-          << QStringLiteral("Threshold labels: Severe %1 · Mistake %2 · Inaccuracy %3")
+          << QStringLiteral("Shallow candidate labels: Severe %1 · Mistake %2 · Inaccuracy %3")
                  .arg(severeCount)
                  .arg(mistakeCount)
                  .arg(inaccuracyCount)
-          << QStringLiteral("Threshold events: lost winning advantage %1 · lost forced mate %2")
+          << QStringLiteral("Shallow candidate events: lost winning advantage %1 · lost forced mate %2")
                  .arg(missedWinCount)
                  .arg(missedMateCount);
 
@@ -284,9 +368,12 @@ QStringList mechanicalGameReportLines(
                          lastEngine.afterScoreKind,
                          lastEngine.afterCentipawnsWhite,
                          lastEngine.afterMateForWhite))
-          << QStringLiteral("Largest recorded mover-expectation losses");
+          << (pack.selectiveDeepReview().has_value()
+                ? QStringLiteral("The deep-selected list above supersedes a shallow-only critical-moment ranking.")
+                : QStringLiteral("Largest shallow-screen mover-expectation losses"));
 
-    const qsizetype maximumMomentCount = std::min<qsizetype>(5, coveredMoves.size());
+    const qsizetype maximumMomentCount = pack.selectiveDeepReview().has_value()
+        ? 0 : std::min<qsizetype>(5, coveredMoves.size());
     int emittedMomentCount = 0;
     for (qsizetype index = 0; index < maximumMomentCount; ++index) {
         const auto &move = *coveredMoves.at(index);
@@ -318,11 +405,11 @@ QStringList mechanicalGameReportLines(
                          .arg(humanizedToken(move.positionPhase), moveTimeText(move.elapsedMoveMs)))
                      .arg(bestMove);
     }
-    if (emittedMomentCount == 0) {
+    if (emittedMomentCount == 0 && !pack.selectiveDeepReview().has_value()) {
         lines << QStringLiteral("No positive mover-expectation loss was recorded.");
     }
     lines << QStringLiteral(
-        "Ranking uses only the frozen mover WDL-loss measurement. These events do not prove cause, intent, or a unique best move.");
+        "Shallow labels use only the frozen mover WDL-loss measurement. They are screening candidates, not deep verdicts, and do not prove cause, intent, or a unique best move.");
     return lines;
 }
 
@@ -493,8 +580,10 @@ void MoveListPanel::setAnnotatedReplay(
     m_table->setRowCount(rowCount);
     m_truthStatusLabel->setText(
         pack.isMechanicalGameBreakdown()
-            ? pack.persistedEngineEvidence().has_value()
-                ? QStringLiteral("Recorded legal game replay with persisted fixed-node engine reports. ParlAWL starts no engine; labels are descriptive, not objective verdicts.")
+            ? pack.selectiveDeepReview().has_value()
+                ? QStringLiteral("Recorded legal game replay with a retained outcome-blind selective deep report. Unselected moves are not certified accurate; ParlAWL starts no engine and does not replay producer sources.")
+                : pack.persistedEngineEvidence().has_value()
+                ? QStringLiteral("Recorded legal game replay with persisted shallow fixed-node screening. ParlAWL starts no engine; labels are candidates, not objective verdicts.")
                 : QStringLiteral("Recorded legal game replay. Times are server-accounted clock evidence, not direct thinking time. Engine analysis is not joined.")
             : variationActive
             ? QStringLiteral("Supplied engine line active: moves are legally checked, but engine claims are not verified. It was not played; Return restores the real game.")
@@ -541,9 +630,15 @@ void MoveListPanel::setAnnotatedReplay(
             if (move.elapsedMoveMs.has_value() && *move.elapsedMoveMs == longestElapsed) {
                 text += QStringLiteral(" · longest");
             }
+            if (!move.selectiveDeepMoments.isEmpty()) {
+                const auto &deep = move.selectiveDeepMoments.first();
+                text += QStringLiteral(" · deep %1")
+                    .arg(deep.severity.has_value()
+                        ? *deep.severity : humanizedToken(deep.status));
+            }
             if (move.persistedEngineEvidence.has_value()) {
                 const auto &engine = *move.persistedEngineEvidence;
-                text += QStringLiteral(" · %1 · %2")
+                text += QStringLiteral(" · screen %1 · %2")
                     .arg(engine.severity,
                          engineScoreText(
                              engine.afterScoreKind,
@@ -639,10 +734,21 @@ void ReplayEvidencePanel::setReplayState(
                 .arg(pack.blackRating())
                 .arg(pack.result(), pack.eventStartUtc()));
         m_openingLabel->setText(replayOpeningText(pack));
-        if (pack.persistedEngineEvidence().has_value()) {
+        if (pack.selectiveDeepReview().has_value()) {
+            const auto &deep = *pack.selectiveDeepReview();
+            const QString shallow = pack.persistedEngineEvidence().has_value()
+                ? QStringLiteral(" · SHALLOW %1 ALL MOVES")
+                      .arg(pack.persistedEngineEvidence()->nodeLimit)
+                : QString();
+            m_engineLabel->setText(
+                QStringLiteral("PERSISTED %1 · DEEP %2 SELECTED MOMENTS%3 · NO PROCESS STARTED")
+                    .arg(deep.engineName.toUpper())
+                    .arg(deep.nodeLimit)
+                    .arg(shallow));
+        } else if (pack.persistedEngineEvidence().has_value()) {
             const auto &engine = *pack.persistedEngineEvidence();
             m_engineLabel->setText(
-                QStringLiteral("PERSISTED %1 · %2 NODES/POSITION · %3 LINEAGE%4 · NO PROCESS STARTED")
+                QStringLiteral("PERSISTED %1 · SHALLOW SCREEN %2 NODES/POSITION · %3 LINEAGE%4 · NO PROCESS STARTED")
                     .arg(engine.engineName.toUpper())
                     .arg(engine.nodeLimit)
                     .arg(engine.lineageCount)
@@ -694,6 +800,9 @@ void ReplayEvidencePanel::setReplayState(
                                       engine.beforeCentipawnsWhite,
                                       engine.beforeMateForWhite),
                                   engineWdlText(engine.beforeWdlWhite));
+            }
+            if (pack.persistedEngineEvidence().has_value()
+                || pack.selectiveDeepReview().has_value()) {
                 lines << QString();
                 lines.append(mechanicalGameReportLines(pack));
             }
@@ -726,9 +835,52 @@ void ReplayEvidencePanel::setReplayState(
             if (longest == &move) {
                 lines << QStringLiteral("This is the longest server-recorded decision in the game.");
             }
+            if (!move.selectiveDeepMoments.isEmpty()) {
+                for (const auto &moment : move.selectiveDeepMoments) {
+                    lines << QStringLiteral("DEEP SELECTIVE ASSESSMENT · %1 NODES")
+                                 .arg(pack.selectiveDeepReview()->nodeLimit)
+                          << QStringLiteral("Status: %1%2")
+                                 .arg(
+                                     humanizedToken(moment.status),
+                                     moment.severity.has_value()
+                                         ? QStringLiteral(" · frozen severity %1")
+                                               .arg(humanizedToken(*moment.severity))
+                                         : QStringLiteral(" · no stable severity published"));
+                    if (moment.bestExpectationMillionths.has_value()
+                        && moment.playedExpectationMillionths.has_value()) {
+                        lines << QStringLiteral("Mover expectation: deep best %1 · played %2%3")
+                                     .arg(
+                                         percentageText(*moment.bestExpectationMillionths),
+                                         percentageText(*moment.playedExpectationMillionths),
+                                         moment.wdlLossMillionths.has_value()
+                                             ? QStringLiteral(" · stable loss %1")
+                                                   .arg(percentageText(*moment.wdlLossMillionths))
+                                             : QStringLiteral(" · no stable loss published"));
+                    }
+                    lines << QStringLiteral("Deep best move: %1 · recorded move: %2")
+                                 .arg(
+                                     moment.bestMoveUci.value_or(QStringLiteral("unavailable")),
+                                     moment.playedMoveUci)
+                          << QStringLiteral("Pair stability: %1 · mate comparison: %2")
+                                 .arg(
+                                     humanizedToken(moment.pairStability),
+                                     humanizedToken(moment.mateComparison));
+                    for (int lineIndex = 0; lineIndex < moment.alternativeLines.size(); ++lineIndex) {
+                        lines << QStringLiteral("Alternative %1, not played: %2")
+                                     .arg(lineIndex + 1)
+                                     .arg(deepLineSummary(moment.alternativeLines.at(lineIndex)));
+                    }
+                    if (moment.playedLine.has_value()) {
+                        lines << QStringLiteral("Played-move constrained line: %1")
+                                     .arg(deepLineSummary(*moment.playedLine));
+                    }
+                }
+            } else if (pack.selectiveDeepReview().has_value()) {
+                lines << QStringLiteral("Deep assessment: not selected by the bounded outcome-blind policy. This does not mean the move was accurate or engine-approved.");
+            }
             if (move.persistedEngineEvidence.has_value()) {
                 const auto &engine = *move.persistedEngineEvidence;
-                lines << QStringLiteral("PERSISTED FIXED-NODE REPORT")
+                lines << QStringLiteral("SHALLOW FIXED-NODE SCREEN")
                       << QStringLiteral("White evaluation: %1 before · %2 after")
                              .arg(engineScoreText(
                                       engine.beforeScoreKind,
@@ -745,7 +897,7 @@ void ReplayEvidencePanel::setReplayState(
                              .arg(percentageText(engine.expectedBeforeMillionths),
                                   percentageText(engine.expectedAfterMillionths),
                                   percentageText(engine.wdlLossMillionths))
-                      << QStringLiteral("Frozen threshold label: %1%2")
+                      << QStringLiteral("Shallow candidate label: %1%2")
                              .arg(humanizedToken(engine.severity),
                                   engine.centipawnLoss.has_value()
                                       ? QStringLiteral(" · centipawn loss %1").arg(*engine.centipawnLoss)
@@ -764,10 +916,10 @@ void ReplayEvidencePanel::setReplayState(
                              .arg(engine.beforeSelectiveDepth)
                              .arg(engine.beforeNodes);
                 if (engine.missedWinningAdvantage) {
-                    lines << QStringLiteral("Threshold event: winning advantage was lost under the frozen engine policy.");
+                    lines << QStringLiteral("Shallow threshold event: winning advantage was lost under the frozen screen policy.");
                 }
                 if (engine.missedForcedMate) {
-                    lines << QStringLiteral("Threshold event: a forced mate was lost under the frozen engine policy.");
+                    lines << QStringLiteral("Shallow threshold event: a forced mate was lost under the frozen screen policy.");
                 }
             }
             if (move.ply == pack.moves().size()) {
@@ -776,9 +928,19 @@ void ReplayEvidencePanel::setReplayState(
             }
         }
         lines << QString();
-        if (pack.persistedEngineEvidence().has_value()) {
+        if (pack.selectiveDeepReview().has_value()) {
+            const auto &deep = *pack.selectiveDeepReview();
+            lines << QStringLiteral("Deep evidence is limited to %1 outcome-blind selected moment%2 under a %3-node contract. Unselected moves are not certified accurate. ParlAWL exact-joined the retained report but did not rerun its source replay or Stockfish.")
+                         .arg(deep.moments.size())
+                         .arg(deep.moments.size() == 1 ? QString() : QStringLiteral("s"))
+                         .arg(deep.nodeLimit);
+            if (pack.persistedEngineEvidence().has_value()) {
+                lines << QStringLiteral("The complete-move %1-node layer is shallow screening context, not a final verdict.")
+                             .arg(pack.persistedEngineEvidence()->nodeLimit);
+            }
+        } else if (pack.persistedEngineEvidence().has_value()) {
             const auto &engine = *pack.persistedEngineEvidence();
-            lines << QStringLiteral("This is a persisted %1-node report recorded at %2. It is not an objective verdict, proof of a unique best move, causal explanation, or live analysis.")
+            lines << QStringLiteral("This is persisted %1-node shallow screening recorded at %2. It is not an objective verdict, proof of a unique best move, causal explanation, or live analysis.")
                          .arg(engine.nodeLimit)
                          .arg(engine.analysisRecordedAtUtc);
         } else {

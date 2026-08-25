@@ -8,6 +8,7 @@
 #include <QVector>
 
 #include "chess_position.h"
+#include "selective_deep_report.h"
 
 namespace parlawl::puzzle_runner {
 
@@ -161,6 +162,7 @@ struct ReplayMove {
     ReplayNotation notation;
     std::optional<ReplayPreferredVariation> preferredVariation;
     std::optional<PersistedEngineMoveEvidence> persistedEngineEvidence;
+    QVector<SelectiveDeepMoment> selectiveDeepMoments;
     QString positionPhase;
     QString forcednessStatus;
     int legalMoveCount = 0;
@@ -199,6 +201,7 @@ struct MechanicalReplayGame {
     std::optional<int> openingLastBookPly;
     QString viewedPlayerColor;
     std::optional<PersistedEngineGameEvidence> engineEvidence;
+    std::optional<SelectiveDeepGameReview> selectiveDeepReview;
     QVector<MechanicalReplayMove> moves;
 };
 
@@ -234,6 +237,7 @@ public:
     [[nodiscard]] const QString &viewedPlayerColor() const { return m_viewedPlayerColor; }
     [[nodiscard]] bool isMechanicalGameBreakdown() const { return m_mechanicalGameBreakdown; }
     [[nodiscard]] const std::optional<PersistedEngineGameEvidence> &persistedEngineEvidence() const { return m_persistedEngineEvidence; }
+    [[nodiscard]] const std::optional<SelectiveDeepGameReview> &selectiveDeepReview() const { return m_selectiveDeepReview; }
     [[nodiscard]] const QVector<ReplayMove> &moves() const { return m_moves; }
     [[nodiscard]] const QVector<ChessPosition> &mainlinePositions() const { return m_mainlinePositions; }
     [[nodiscard]] constexpr bool legalMechanicsAreVerified() const { return true; }
@@ -263,6 +267,7 @@ private:
     QString m_viewedPlayerColor = QStringLiteral("white");
     bool m_mechanicalGameBreakdown = false;
     std::optional<PersistedEngineGameEvidence> m_persistedEngineEvidence;
+    std::optional<SelectiveDeepGameReview> m_selectiveDeepReview;
     QVector<ReplayMove> m_moves;
     QVector<ChessPosition> m_mainlinePositions;
 };
