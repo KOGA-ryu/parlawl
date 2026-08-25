@@ -11,6 +11,7 @@
 class QLabel;
 class QFrame;
 class QKeyEvent;
+class QSplitter;
 class QTableWidget;
 class QPushButton;
 class QCheckBox;
@@ -46,6 +47,10 @@ private:
     QTableWidget *m_table;
     bool m_showingAnnotatedReplay = false;
     int m_replayMoveCount = 0;
+    QWidget *m_inlineDetailWidget = nullptr;
+    int m_inlineDetailRow = -1;
+    int m_currentReplayPly = 0;
+    bool m_selectedExpansionCollapsed = false;
 };
 
 class ReplayEvidencePanel : public QGroupBox
@@ -54,6 +59,7 @@ class ReplayEvidencePanel : public QGroupBox
 
 public:
     explicit ReplayEvidencePanel(QWidget *parent = nullptr);
+    void setInlineCoachMode(bool enabled);
     void setEmptyState();
     void setReplayState(
         const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
@@ -67,6 +73,7 @@ public:
     [[nodiscard]] bool technicalDetailsVisible() const;
     [[nodiscard]] bool focusReadVisible() const;
     [[nodiscard]] QString focusReadAnchorText() const;
+    [[nodiscard]] bool primaryCoachVisible() const;
 
 signals:
     void openReplayRequested();
@@ -87,7 +94,6 @@ private:
     QLabel *m_openingLabel;
     QLabel *m_engineLabel;
     QFrame *m_coachCard;
-    QLabel *m_moveTitleLabel;
     QLabel *m_evidenceStatusLabel;
     QLabel *m_evaluationChangeLabel;
     QLabel *m_explanationLabel;
@@ -108,6 +114,7 @@ private:
     QStringList m_focusReadWords;
     int m_focusReadWordIndex = 0;
     int m_lastMechanicalPly = -1;
+    bool m_inlineCoachMode = false;
 };
 
 class GameReviewPanel : public QWidget
@@ -127,6 +134,7 @@ signals:
     void backToPlayerStatisticsRequested();
 
 private:
+    QSplitter *m_splitter;
     MoveListPanel *m_moveListPanel;
     ReplayEvidencePanel *m_evidencePanel;
 };

@@ -6,20 +6,20 @@ This document describes the focused game-breakdown presentation. It changes how 
 
 - Game breakdown opens in a 1280 x 860 desktop window with a 5:3 board/review column ratio.
 - The board has a 560 x 560 minimum size. The review column is capped at 500 pixels, the evaluation bar is hidden, and unrelated right-side tabs are removed from view.
-- Replay controls remain below the board in a compact area. The review column places the selected-move coach above the move timeline with a 5:3 vertical split.
+- Replay controls remain below the board in a compact area. The review column uses one continuous rail: compact game facts followed by the move table. It has no visible `Game Review` or `move timeline` title.
+- The native window title carries player names, ratings, result, and date. The compact metadata row reduces opening and retained-engine facts to `ECO · opening` and `SF · nodes · selected`; plain-language provenance remains in tooltips.
 
 ## Selected-move coach
 
-The coach shows one recorded move at a time. Its primary fields are:
+Clicking a White or Black notation selects that ply and opens one full-width coach row immediately beneath its move pair. Clicking the selected notation again collapses the row; selecting another notation moves the expansion to the new pair. The row's primary fields are:
 
-1. Ply and SAN move.
-2. Evidence status.
-3. Evaluation change, when retained evidence publishes one.
-4. One concise deterministic explanation derived from the joined evidence.
+1. Exact evidence status.
+2. A compact mover-expectation change such as `◒ 91.7% → 75.1% −16.6 pp`, when retained evidence publishes one.
+3. One concise deterministic explanation derived from the joined evidence.
 
-At the start position, the card asks the user to choose a move and offers a collapsible evidence overview. Changing the selected ply closes Focus Read and collapses technical details; ordinary refreshes of the same ply preserve their open/closed state.
+Ply and SAN are not repeated in the expanded row because the selected notation is highlighted directly above it. At the start position, the row is absent. An ordinary move that was not selected for deep review expands to deterministic move mechanics such as phase, legal-move count, forcedness, and server-accounted time; its shallow values are not exposed as an unlabeled score. A shallow-only report uses the exact quiet `shallow screening candidate` label with its compact expectation strip. Changing the selected ply closes Focus Read and technical details; clicking the same notation controls the row's open/closed state.
 
-`Show technical details` expands the retained evidence beneath the explanation. The details can include recorded SAN/UCI, phase, legal-move count, forcedness, server-accounted clocks and time; retained deep status and comparison; alternative and recorded-move engine lines; shallow screening context; search depth/node facts; and the claim boundary. The action becomes `Hide technical details` while expanded.
+For a retained deep moment, `▸ Details` is a quiet disclosure inside the inline row, not a primary button. It expands retained SAN/UCI, phase, legal-move count, forcedness, server-accounted clocks and time; retained deep status and comparison; alternative and recorded-move engine lines; shallow screening context; search depth/node facts; and the claim boundary. It becomes `▾ Details` while expanded.
 
 ## Evidence vocabulary and state mapping
 
@@ -37,14 +37,15 @@ The visible evidence vocabulary is fixed:
 
 An unknown deep source status fails closed as `evidence unavailable`; its raw retained status remains visible in technical details. A move with no joined evidence uses the same neutral fallback. At the start position, evidence status and evaluation change remain hidden until a move is selected. These states do not make a move-quality claim.
 
-If a deep report exists and a move was not selected, shallow data may only be described as a `shallow screening candidate`. The UI explicitly says that unselected moves are not certified accurate. It never converts absence of selection into Accurate, Best, Brilliant, Perfect, or engine approval.
+If a deep report exists and a move was not selected, shallow data may only be described as a `shallow screening candidate`. The exact `not selected for deep review` state remains available to assistive text, timeline tooltips, and technical evidence; it is not rendered as a yellow warning pill or a paragraph. The UI never converts absence of selection into Accurate, Best, Brilliant, Perfect, or engine approval.
 
 ## Compact move timeline
 
 - The timeline is a three-column move table: move number, White, and Black.
 - Rows use fixed compact sizing, a fixed-width font, 13-pixel move text, and 12-pixel headers. Grid decoration is removed.
-- Clicking a White or Black move seeks to that ply. Keyboard users can focus the table, move between cells with the arrow keys, and activate a move with Enter or Return. The current move is highlighted and scrolled into the center of the list.
-- Inline annotations are limited to opening boundary, longest server-accounted move, retained deep status, and qualifying shallow screening candidates. Unselected moves receive a tooltip that states non-selection does not certify accuracy.
+- Clicking a White or Black move seeks to that ply and opens its coach row beneath the move pair. A second click collapses it. Keyboard users can focus the table, move between notation cells with the arrow keys, and activate a move with Enter or Return. The current move is highlighted and scrolled into the center of the list.
+- Inline annotations are symbol-only: `◫` marks the first move outside the retained opening path, `◷` marks the longest server-accounted move, and `●` marks a retained deep moment. Tooltips explain each symbol and preserve exact evidence wording. Unselected moves receive a tooltip that states non-selection does not certify accuracy.
+- The long evidence disclaimer is not permanently displayed above the table; it remains available in tooltips and Details.
 
 ## Previous, Play, and Next
 
@@ -55,7 +56,7 @@ If a deep report exists and a move was not selected, shallow data may only be de
 
 ## Focus Read
 
-`Focus Read` is optional and operates only on the deterministic explanation for the selected move. It uses a fixed lens: one emphasized anchor word, up to five preceding words, up to five following words, and a current/total word counter. Context remains visible while the anchor advances, and the lens does not auto-advance.
+`Focus Read` is optional and appears inside the expanded coach row for a retained deep moment. It operates only on the deterministic explanation for the selected move. It uses a fixed lens: one emphasized anchor word, up to four preceding words, up to four following words, and a current/total word counter. Context remains visible while the anchor advances, and the lens does not auto-advance.
 
 Controls are available as buttons and hotkeys:
 

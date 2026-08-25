@@ -1,6 +1,8 @@
 #include "puzzle_panels.h"
 
 #include <algorithm>
+#include <functional>
+#include <utility>
 
 #include <QCheckBox>
 #include <QColor>
@@ -171,6 +173,37 @@ QString percentageText(int millionths)
     return text + QLatin1Char('%');
 }
 
+QString signedPercentagePointText(int deltaMillionths)
+{
+    QString magnitude = percentageText(std::abs(deltaMillionths));
+    magnitude.chop(1);
+    const QString sign = deltaMillionths > 0
+        ? QStringLiteral("+")
+        : deltaMillionths < 0 ? QString::fromUtf8("−") : QStringLiteral("±");
+    return QStringLiteral("%1%2 pp").arg(sign, magnitude);
+}
+
+QString compactNodeCount(qint64 nodes)
+{
+    if (nodes > 0 && nodes % 1000 == 0) {
+        return QStringLiteral("%1k").arg(nodes / 1000);
+    }
+    return QString::number(nodes);
+}
+
+QString compactEngineName(QString engineName)
+{
+    if (engineName.startsWith(QStringLiteral("Stockfish "), Qt::CaseInsensitive)) {
+        engineName.replace(0, QStringLiteral("Stockfish ").size(), QStringLiteral("SF"));
+    }
+    return engineName;
+}
+
+QString compactReviewDate(const QString &eventStartUtc)
+{
+    return eventStartUtc.size() >= 10 ? eventStartUtc.left(10) : eventStartUtc;
+}
+
 QString engineScoreText(
     const QString &kind,
     const std::optional<qint64> &centipawnsWhite,
@@ -274,6 +307,41 @@ QString replayOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pac
         : QStringLiteral("Supplied opening annotation (not verified): %1 %2").arg(eco, name);
 }
 
+QString compactOpeningText(const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    if (pack.openingStatus() != QStringLiteral("classified")) {
+        return humanizedToken(pack.openingStatus());
+    }
+    const QString eco = pack.openingEco().value_or(QString());
+    QString name = pack.openingName().value_or(QStringLiteral("unnamed opening"));
+    const qsizetype separator = name.lastIndexOf(QStringLiteral(": "));
+    if (separator >= 0) {
+        name = name.mid(separator + 2).trimmed();
+    }
+    return eco.isEmpty() ? name : QStringLiteral("%1 · %2").arg(eco, name);
+}
+
+QString openingBoundaryToolTip(const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
+{
+    const QString eco = pack.openingEco().value_or(QString());
+    const QString name = pack.openingName().value_or(humanizedToken(pack.openingStatus()));
+    const QString opening = eco.isEmpty() ? name : QStringLiteral("%1 · %2").arg(eco, name);
+    const QString prefix = QStringLiteral("Retained opening: %1.\n").arg(opening);
+    if (!pack.openingLastBookPly().has_value()) {
+        return prefix + QStringLiteral(
+            "The retained classification does not publish an exact opening boundary.");
+    }
+    const int bookPly = *pack.openingLastBookPly();
+    if (bookPly >= pack.moves().size()) {
+        return prefix + QStringLiteral(
+            "The recorded game follows the retained opening reference through its final move.");
+    }
+    return prefix + QStringLiteral(
+        "The first %1 half-moves match the retained opening reference. Ply %2 is the first move outside that path.")
+        .arg(bookPly)
+        .arg(bookPly + 1);
+}
+
 QString deepLineSummary(const parlawl::puzzle_runner::SelectiveDeepEngineLine &line)
 {
     const QString pv = line.pvUci.isEmpty()
@@ -332,6 +400,8 @@ struct MoveCoachPresentation {
     QString explanation;
     QString focusReadText;
     QStringList technicalDetails;
+    bool hasDeepMoment = false;
+    bool hasShallowOnlyEvidence = false;
 };
 
 MoveCoachPresentation moveCoachPresentation(
@@ -363,24 +433,24 @@ MoveCoachPresentation moveCoachPresentation(
                    humanizedToken(move.elapsedStatus));
 
     if (moment != nullptr) {
+        presentation.hasDeepMoment = true;
         presentation.status = deepEvidenceStatusText(moment->status);
         const QString bestMove = moment->bestMoveUci.value_or(QStringLiteral("unavailable"));
-        const QString loss = moment->wdlLossMillionths.has_value()
-            ? percentageText(*moment->wdlLossMillionths) : QStringLiteral("not stably published");
+        const QString lossPoints = moment->wdlLossMillionths.has_value()
+            ? percentageText(*moment->wdlLossMillionths).chopped(1)
+            : QStringLiteral("not stably published");
         const bool stableChangeAvailable = deepEvidenceStatusAllowsStableChange(moment->status)
             && moment->bestExpectationMillionths.has_value()
             && moment->playedExpectationMillionths.has_value()
             && moment->wdlLossMillionths.has_value();
         if (stableChangeAvailable) {
-            presentation.evaluationChange = QStringLiteral(
-                "Mover expectation · retained alternative %1 → recorded move %2 · change −%3")
+            presentation.evaluationChange = QStringLiteral("◒ %1 → %2   −%3 pp")
                 .arg(
                     percentageText(*moment->bestExpectationMillionths),
                     percentageText(*moment->playedExpectationMillionths),
-                    loss);
+                    percentageText(*moment->wdlLossMillionths).chopped(1));
         } else {
-            presentation.evaluationChange = QStringLiteral(
-                "Evaluation change · no stable mover-expectation change was published");
+            presentation.evaluationChange = QStringLiteral("◒ no stable change published");
         }
 
         if (!deepEvidenceStatusIsRecognized(moment->status)) {
@@ -390,13 +460,13 @@ MoveCoachPresentation moveCoachPresentation(
         } else if (presentation.status == QStringLiteral("deep confirmed severe")
                    && stableChangeAvailable) {
             presentation.explanation = QStringLiteral(
-                "The retained deep comparison measured a stable %1 mover-expectation loss after %2; its leading alternative was %3.")
-                .arg(loss, move.notation.san, bestMove);
+                "The retained deep comparison measured a stable %1 percentage-point mover-expectation loss after %2; its leading alternative was %3.")
+                .arg(lossPoints, move.notation.san, bestMove);
         } else if (presentation.status == QStringLiteral("confirmed missed opportunity")
                    && stableChangeAvailable) {
             presentation.explanation = QStringLiteral(
-                "The retained deep comparison measured a stable %1 missed opportunity after %2; its leading alternative was %3.")
-                .arg(loss, move.notation.san, bestMove);
+                "The retained deep comparison measured a stable %1 percentage-point missed opportunity after %2; its leading alternative was %3.")
+                .arg(lossPoints, move.notation.san, bestMove);
         } else if (presentation.status == QStringLiteral("deep confirmed severe")
                    || presentation.status == QStringLiteral("confirmed missed opportunity")) {
             presentation.explanation = QStringLiteral(
@@ -413,11 +483,8 @@ MoveCoachPresentation moveCoachPresentation(
         }
 
         presentation.focusReadText = QStringLiteral(
-            "At ply %1, %2 played %3. The retained %4-node deep review labels this evidence %5. %6 This is a contract-bounded comparison of the recorded move and retained alternatives. It does not prove player intent, a causal explanation, or a uniquely correct move.")
-            .arg(move.ply)
-            .arg(mover, move.notation.san)
-            .arg(pack.selectiveDeepReview()->nodeLimit)
-            .arg(presentation.status, presentation.explanation);
+            "The retained fixed-node review compares the recorded move with retained alternatives. %1 The comparison is bounded evidence: it does not prove player intent, a causal explanation, or a uniquely correct move.")
+            .arg(presentation.explanation);
         presentation.technicalDetails
             << QStringLiteral("DEEP SELECTIVE EVIDENCE")
             << QStringLiteral("Evidence status: %1").arg(presentation.status)
@@ -440,56 +507,35 @@ MoveCoachPresentation moveCoachPresentation(
         }
     } else if (deepReviewAvailable) {
         presentation.status = QStringLiteral("not selected for deep review");
-        presentation.explanation = shallowAvailable
-            ? QStringLiteral(
-                  "This move was not selected for deep review. Its complete-move evidence remains a shallow screening candidate, not an accuracy claim.")
-            : QStringLiteral(
-                  "This move was not selected for deep review. No move-quality claim is available, and the move is not certified accurate.");
-        presentation.focusReadText = QStringLiteral(
-            "At ply %1, %2 played %3. This move was not selected for deep review by the bounded outcome-blind policy. %4 Unselected moves are not certified accurate, and no result or postgame rating was used to select them.")
-            .arg(move.ply)
-            .arg(mover, move.notation.san, presentation.explanation);
         presentation.technicalDetails
             << QStringLiteral("DEEP SELECTIVE EVIDENCE")
             << QStringLiteral("Evidence status: not selected for deep review")
             << QStringLiteral("Unselected moves are not certified accurate.");
     } else if (shallowAvailable) {
         presentation.status = QStringLiteral("shallow screening candidate");
-        presentation.explanation = QStringLiteral(
-            "Only the persisted shallow fixed-node screen covers this move; it is a screening candidate, not a deep verdict or accuracy claim.");
-        presentation.focusReadText = QStringLiteral(
-            "At ply %1, %2 played %3. Only persisted shallow fixed-node evidence is available. It is a screening candidate rather than an objective verdict, a causal explanation, or proof of a uniquely correct move.")
-            .arg(move.ply)
-            .arg(mover, move.notation.san);
+        presentation.hasShallowOnlyEvidence = true;
     } else {
         presentation.status = QStringLiteral("evidence unavailable");
-        presentation.evaluationChange = QStringLiteral("Evaluation change · unavailable");
-        presentation.explanation = QStringLiteral(
-            "No joined move evidence is available, so no best-move, accuracy, or causal claim is shown.");
-        presentation.focusReadText = QStringLiteral(
-            "At ply %1, %2 played %3. No joined move evidence is available. The recorded legal replay does not establish move accuracy, a best move, or a causal explanation.")
-            .arg(move.ply)
-            .arg(mover, move.notation.san);
     }
 
     if (shallowAvailable) {
         const auto &engine = *move.persistedEngineEvidence;
         if (presentation.evaluationChange.isEmpty()) {
-            presentation.evaluationChange = QStringLiteral(
-                "shallow screening candidate · mover expectation %1 → %2 · change −%3")
+            presentation.evaluationChange = QStringLiteral("◒ %1 → %2   %3")
                 .arg(
                     percentageText(engine.expectedBeforeMillionths),
                     percentageText(engine.expectedAfterMillionths),
-                    percentageText(engine.wdlLossMillionths));
+                    signedPercentagePointText(
+                        engine.expectedAfterMillionths - engine.expectedBeforeMillionths));
         }
         presentation.technicalDetails
             << QStringLiteral("SHALLOW SCREENING CONTEXT")
-            << QStringLiteral("Shallow screening candidate: %1 · mover expectation %2 → %3 · loss %4")
+            << QStringLiteral("Shallow screen label: %1 · mover expectation %2 → %3 · published loss %4 pp")
                    .arg(
                        humanizedToken(engine.severity),
                        percentageText(engine.expectedBeforeMillionths),
                        percentageText(engine.expectedAfterMillionths),
-                       percentageText(engine.wdlLossMillionths))
+                       percentageText(engine.wdlLossMillionths).chopped(1))
             << QStringLiteral("White evaluation: %1 before · %2 after")
                    .arg(
                        engineScoreText(
@@ -515,6 +561,248 @@ MoveCoachPresentation moveCoachPresentation(
                "ParlAWL displays retained evidence only. It starts no engine, replays no producer source, makes no causal claim, and never certifies an unselected move as accurate.");
     return presentation;
 }
+
+class InlineMoveDetail final : public QFrame
+{
+public:
+    InlineMoveDetail(
+        const MoveCoachPresentation &presentation,
+        std::function<void()> geometryChanged,
+        QWidget *parent = nullptr)
+        : QFrame(parent)
+        , m_geometryChanged(std::move(geometryChanged))
+        , m_words(presentation.focusReadText.split(QLatin1Char(' '), Qt::SkipEmptyParts))
+    {
+        setObjectName(QStringLiteral("inlineMoveDetail"));
+        setFrameShape(QFrame::NoFrame);
+        setFocusPolicy(Qt::StrongFocus);
+        setStyleSheet(QStringLiteral(
+            "QFrame#inlineMoveDetail { background: #1d2127; border: 0; border-left: 3px solid #547ca8; }"
+            "QLabel#inlineMoveStatus { color: #d7be83; font-weight: 600; }"
+            "QLabel#inlineMoveChange { color: #c3ccd8; }"
+            "QLabel#inlineMoveMechanics { color: #9ca7b5; }"
+            "QPushButton#inlineDetailsButton { background: transparent; color: #aeb8c5; border: 0; padding: 4px 2px; text-align: left; }"
+            "QPushButton#inlineFocusButton { background: #293545; color: #e7edf5; border: 1px solid #3a4a5f; border-radius: 7px; padding: 4px 8px; }"
+            "QFrame#inlineFocusFrame { background: #14171b; border: 0; border-radius: 8px; }"
+            "QLabel#inlineFocusAnchor { background: #f0e4cf; color: #202020; border: 0; border-radius: 8px; padding: 5px 8px; font-weight: 600; }"
+            "QLabel#inlineFocusContext { color: #8f99a7; }"));
+
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(10, 8, 10, 8);
+        layout->setSpacing(6);
+
+        if (presentation.hasDeepMoment || presentation.hasShallowOnlyEvidence) {
+            auto *status = new QLabel(presentation.status, this);
+            status->setObjectName(QStringLiteral("inlineMoveStatus"));
+            status->setTextFormat(Qt::PlainText);
+            status->setWordWrap(false);
+            layout->addWidget(status);
+        }
+        if (!presentation.evaluationChange.isEmpty()
+            && (presentation.hasDeepMoment || presentation.hasShallowOnlyEvidence)) {
+            auto *change = new QLabel(presentation.evaluationChange, this);
+            change->setObjectName(QStringLiteral("inlineMoveChange"));
+            change->setTextFormat(Qt::PlainText);
+            change->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            layout->addWidget(change);
+        }
+        if (presentation.hasDeepMoment && !presentation.explanation.isEmpty()) {
+            auto *explanation = new QLabel(presentation.explanation, this);
+            explanation->setObjectName(QStringLiteral("inlineMoveExplanation"));
+            explanation->setTextFormat(Qt::PlainText);
+            explanation->setWordWrap(true);
+            layout->addWidget(explanation);
+        } else if (presentation.technicalDetails.size() >= 4) {
+            auto *mechanics = new QLabel(
+                presentation.technicalDetails.at(2) + QLatin1Char('\n')
+                    + presentation.technicalDetails.at(3),
+                this);
+            mechanics->setObjectName(QStringLiteral("inlineMoveMechanics"));
+            mechanics->setTextFormat(Qt::PlainText);
+            mechanics->setWordWrap(true);
+            layout->addWidget(mechanics);
+        }
+
+        if (presentation.hasDeepMoment) {
+            auto *actions = new QHBoxLayout();
+            actions->setContentsMargins(0, 0, 0, 0);
+            actions->setSpacing(7);
+            m_detailsButton = new QPushButton(QStringLiteral("▸ Details"), this);
+            m_detailsButton->setObjectName(QStringLiteral("inlineDetailsButton"));
+            m_detailsButton->setAccessibleName(QStringLiteral("Show technical details"));
+            m_focusButton = new QPushButton(QStringLiteral("Focus Read"), this);
+            m_focusButton->setObjectName(QStringLiteral("inlineFocusButton"));
+            actions->addWidget(m_detailsButton);
+            actions->addWidget(m_focusButton);
+            actions->addStretch(1);
+            layout->addLayout(actions);
+
+            m_focusFrame = new QFrame(this);
+            m_focusFrame->setObjectName(QStringLiteral("inlineFocusFrame"));
+            auto *focusLayout = new QVBoxLayout(m_focusFrame);
+            focusLayout->setContentsMargins(8, 8, 8, 7);
+            focusLayout->setSpacing(6);
+            auto *tape = new QHBoxLayout();
+            tape->setContentsMargins(0, 0, 0, 0);
+            tape->setSpacing(6);
+            m_before = new QLabel(m_focusFrame);
+            m_anchor = new QLabel(m_focusFrame);
+            m_after = new QLabel(m_focusFrame);
+            m_before->setObjectName(QStringLiteral("inlineFocusContext"));
+            m_anchor->setObjectName(QStringLiteral("inlineFocusAnchor"));
+            m_after->setObjectName(QStringLiteral("inlineFocusContext"));
+            m_before->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            m_anchor->setAlignment(Qt::AlignCenter);
+            m_after->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            m_before->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            m_after->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            tape->addWidget(m_before, 1);
+            tape->addWidget(m_anchor);
+            tape->addWidget(m_after, 1);
+            focusLayout->addLayout(tape);
+            auto *focusControls = new QHBoxLayout();
+            auto *previous = new QPushButton(QStringLiteral("←"), m_focusFrame);
+            auto *next = new QPushButton(QStringLiteral("→"), m_focusFrame);
+            previous->setAccessibleName(QStringLiteral("Previous Focus Read word"));
+            next->setAccessibleName(QStringLiteral("Next Focus Read word"));
+            previous->setFocusPolicy(Qt::NoFocus);
+            next->setFocusPolicy(Qt::NoFocus);
+            m_progress = new QLabel(m_focusFrame);
+            focusControls->addWidget(previous);
+            focusControls->addWidget(next);
+            focusControls->addWidget(m_progress);
+            focusControls->addStretch(1);
+            focusLayout->addLayout(focusControls);
+            m_focusFrame->setVisible(false);
+            layout->addWidget(m_focusFrame);
+
+            m_details = new FixedScaleTextEdit(this);
+            m_details->setObjectName(QStringLiteral("inlineTechnicalDetails"));
+            m_details->setReadOnly(true);
+            m_details->setPlainText(presentation.technicalDetails.join(QLatin1Char('\n')));
+            m_details->setMinimumHeight(145);
+            m_details->setStyleSheet(QStringLiteral(
+                "QTextEdit { background: #14171b; border: 0; border-radius: 8px; padding: 7px; font-size: 13px; }"));
+            m_details->setVisible(false);
+            layout->addWidget(m_details);
+
+            connect(m_detailsButton, &QPushButton::clicked, this, [this]() {
+                const bool show = !m_details->isVisible();
+                m_details->setVisible(show);
+                m_detailsButton->setText(show ? QStringLiteral("▾ Details") : QStringLiteral("▸ Details"));
+                m_detailsButton->setAccessibleName(
+                    show ? QStringLiteral("Hide technical details")
+                         : QStringLiteral("Show technical details"));
+                if (show) {
+                    m_details->verticalScrollBar()->setValue(0);
+                }
+                updateGeometryAndRow();
+            });
+            connect(m_focusButton, &QPushButton::clicked, this, [this]() {
+                const bool show = !m_focusFrame->isVisible() && !m_words.isEmpty();
+                m_focusFrame->setVisible(show);
+                m_focusButton->setText(show ? QStringLiteral("Close Focus Read")
+                                            : QStringLiteral("Focus Read"));
+                if (show) {
+                    updateFocus();
+                    setFocus(Qt::OtherFocusReason);
+                }
+                updateGeometryAndRow();
+            });
+            connect(previous, &QPushButton::clicked, this, [this]() {
+                stepFocus(-1);
+                setFocus(Qt::OtherFocusReason);
+            });
+            connect(next, &QPushButton::clicked, this, [this]() {
+                stepFocus(1);
+                setFocus(Qt::OtherFocusReason);
+            });
+            updateFocus();
+        }
+    }
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (m_focusFrame != nullptr && m_focusFrame->isVisible()) {
+            if (event->key() == Qt::Key_Left) {
+                stepFocus(-1);
+                event->accept();
+                return;
+            }
+            if (event->key() == Qt::Key_Right || event->key() == Qt::Key_Space) {
+                stepFocus(1);
+                event->accept();
+                return;
+            }
+            if (event->key() == Qt::Key_Escape) {
+                m_focusFrame->setVisible(false);
+                m_focusButton->setText(QStringLiteral("Focus Read"));
+                updateGeometryAndRow();
+                event->accept();
+                return;
+            }
+        }
+        QFrame::keyPressEvent(event);
+    }
+
+private:
+    void updateGeometryAndRow()
+    {
+        updateGeometry();
+        adjustSize();
+        if (m_geometryChanged) {
+            m_geometryChanged();
+        }
+    }
+
+    void stepFocus(int delta)
+    {
+        if (m_words.isEmpty()) {
+            return;
+        }
+        m_wordIndex = std::clamp(
+            m_wordIndex + delta, 0, static_cast<int>(m_words.size()) - 1);
+        updateFocus();
+    }
+
+    void updateFocus()
+    {
+        if (m_words.isEmpty() || m_before == nullptr) {
+            return;
+        }
+        constexpr int contextWords = 4;
+        const int beforeStart = std::max(0, m_wordIndex - contextWords);
+        const int afterCount = std::min(
+            contextWords, static_cast<int>(m_words.size()) - m_wordIndex - 1);
+        QString before = m_words.mid(beforeStart, m_wordIndex - beforeStart)
+                             .join(QLatin1Char(' '));
+        QString after = m_words.mid(m_wordIndex + 1, afterCount).join(QLatin1Char(' '));
+        if (beforeStart > 0) {
+            before.prepend(QStringLiteral("… "));
+        }
+        if (m_wordIndex + 1 + afterCount < m_words.size()) {
+            after.append(QStringLiteral(" …"));
+        }
+        m_before->setText(before);
+        m_anchor->setText(m_words.at(m_wordIndex));
+        m_after->setText(after);
+        m_progress->setText(
+            QStringLiteral("%1 / %2").arg(m_wordIndex + 1).arg(m_words.size()));
+    }
+
+    std::function<void()> m_geometryChanged;
+    QStringList m_words;
+    int m_wordIndex = 0;
+    QPushButton *m_detailsButton = nullptr;
+    QPushButton *m_focusButton = nullptr;
+    FixedScaleTextEdit *m_details = nullptr;
+    QFrame *m_focusFrame = nullptr;
+    QLabel *m_before = nullptr;
+    QLabel *m_anchor = nullptr;
+    QLabel *m_after = nullptr;
+    QLabel *m_progress = nullptr;
+};
 
 QStringList selectiveDeepReportLines(
     const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
@@ -547,8 +835,8 @@ QStringList selectiveDeepReportLines(
             ? pack.whiteUsername() : pack.blackUsername();
         const QString evidenceStatus = deepEvidenceStatusText(moment.status);
         const QString loss = moment.wdlLossMillionths.has_value()
-            ? percentageText(*moment.wdlLossMillionths)
-                + QStringLiteral(" mover expectation loss")
+            ? percentageText(*moment.wdlLossMillionths).chopped(1)
+                + QStringLiteral(" pp mover expectation loss")
             : QStringLiteral("no stable loss published");
         lines << QStringLiteral("%1. Ply %2 %3 — %4 — %5 — %6 · retained source status %7 · played %8 · retained leading alternative %9")
                      .arg(moment.presentationOrder)
@@ -672,13 +960,13 @@ QStringList mechanicalGameReportLines(
         const QString bestMove = engine.beforeBestMoveUci.value_or(
             QStringLiteral("unavailable"));
         lines << QStringLiteral(
-                     "%1. Ply %2 %3 — %4 — %5 — %6 mover expectation loss · %7 → %8 · %9 · best %10")
+                     "%1. Ply %2 %3 — %4 — %5 — %6 pp mover expectation loss · %7 → %8 · %9 · best %10")
                      .arg(++emittedMomentCount)
                      .arg(move.ply)
                      .arg(move.notation.san)
                      .arg(mover)
                      .arg(humanizedToken(engine.severity))
-                     .arg(percentageText(engine.wdlLossMillionths))
+                     .arg(percentageText(engine.wdlLossMillionths).chopped(1))
                      .arg(engineScoreText(
                          engine.beforeScoreKind,
                          engine.beforeCentipawnsWhite,
@@ -762,13 +1050,20 @@ MoveListPanel::MoveListPanel(QWidget *parent)
     m_table->setStyleSheet(QStringLiteral(
         "QTableWidget { background: #171a1f; alternate-background-color: #171a1f; border: 0; font-size: 13px; }"
         "QTableWidget::item { padding: 5px 7px; border-bottom: 1px solid #272c34; }"
+        "QTableWidget::item:selected { background: #26384f; color: #edf4ff; }"
         "QHeaderView::section { background: #20242b; color: #aeb6c2; border: 0; padding: 5px; font-size: 12px; }"));
     const auto requestReplayPly = [this](int row, int column) {
         if (!m_showingAnnotatedReplay || column < 1 || column > 2) {
             return;
         }
-        const int ply = row * 2 + (column == 1 ? 1 : 2);
+        const QTableWidgetItem *item = m_table->item(row, column);
+        const int ply = item == nullptr ? 0 : item->data(Qt::UserRole).toInt();
         if (ply >= 1 && ply <= m_replayMoveCount) {
+            if (ply == m_currentReplayPly && m_inlineDetailRow >= 0) {
+                m_selectedExpansionCollapsed = !m_table->isRowHidden(m_inlineDetailRow);
+                m_table->setRowHidden(m_inlineDetailRow, m_selectedExpansionCollapsed);
+                return;
+            }
             emit replayPlyRequested(ply);
         }
     };
@@ -788,6 +1083,15 @@ void MoveListPanel::setMoves(
 {
     m_showingAnnotatedReplay = false;
     m_replayMoveCount = 0;
+    if (m_inlineDetailWidget != nullptr) {
+        m_table->removeCellWidget(m_inlineDetailRow, 0);
+        m_inlineDetailWidget->deleteLater();
+        m_inlineDetailWidget = nullptr;
+    }
+    m_inlineDetailRow = -1;
+    m_currentReplayPly = 0;
+    m_selectedExpansionCollapsed = false;
+    m_table->clearSpans();
     m_table->clearContents();
     const QStringList sourceMoves = sourceMoveList(puzzle);
     const int sourcePlyCount = std::min(puzzleInitialPly(puzzle), static_cast<int>(sourceMoves.size()));
@@ -802,6 +1106,7 @@ void MoveListPanel::setMoves(
     const int totalPlyCount = (hasSourceHistory ? displayedSourcePlyCount : sourceLikePlyCount) + moves.size() + (hasSourceHistory ? 0 : fallbackStartOffset);
     const int rowCount = std::max(1, (totalPlyCount + 1) / 2);
     m_table->setRowCount(rowCount);
+    m_truthStatusLabel->setVisible(true);
     if (hasFullSourceGame) {
         m_truthStatusLabel->setText(QStringLiteral("Full source game shown; board review starts at the puzzle position."));
     } else if (hasSourceHistory) {
@@ -869,9 +1174,35 @@ void MoveListPanel::setAnnotatedReplay(
 {
     m_showingAnnotatedReplay = true;
     m_replayMoveCount = pack.moves().size();
+    if (m_inlineDetailWidget != nullptr) {
+        m_table->removeCellWidget(m_inlineDetailRow, 0);
+        m_inlineDetailWidget->deleteLater();
+        m_inlineDetailWidget = nullptr;
+    }
+    m_inlineDetailRow = -1;
+    m_table->clearSpans();
     m_table->clearContents();
-    const int rowCount = std::max(1, (m_replayMoveCount + 1) / 2);
+    if (currentMainlinePly != m_currentReplayPly) {
+        m_selectedExpansionCollapsed = false;
+        m_currentReplayPly = currentMainlinePly;
+    }
+
+    const bool showInlineDetail = pack.isMechanicalGameBreakdown()
+        && !variationActive
+        && currentMainlinePly > 0
+        && currentMainlinePly <= m_replayMoveCount;
+    const int baseRowCount = std::max(1, (m_replayMoveCount + 1) / 2);
+    const int selectedBaseRow = showInlineDetail ? (currentMainlinePly - 1) / 2 : -1;
+    const int rowCount = baseRowCount + (showInlineDetail ? 1 : 0);
+    const auto displayRowForBase = [showInlineDetail, selectedBaseRow](int baseRow) {
+        return baseRow + (showInlineDetail && baseRow > selectedBaseRow ? 1 : 0);
+    };
     m_table->setRowCount(rowCount);
+    const int compactRowHeight = m_table->verticalHeader()->defaultSectionSize();
+    for (int row = 0; row < rowCount; ++row) {
+        m_table->setRowHeight(row, compactRowHeight);
+    }
+    m_truthStatusLabel->setVisible(!pack.isMechanicalGameBreakdown());
     m_truthStatusLabel->setText(
         pack.isMechanicalGameBreakdown()
             ? pack.selectiveDeepReview().has_value()
@@ -896,20 +1227,27 @@ void MoveListPanel::setAnnotatedReplay(
         auto *item = new QTableWidgetItem(text);
         item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
         if (isCurrent) {
-            item->setBackground(QColor(222, 235, 255));
-            item->setForeground(QColor(24, 54, 90));
+            item->setBackground(QColor(47, 73, 102));
+            item->setForeground(QColor(142, 190, 239));
+            QFont currentFont = item->font();
+            currentFont.setBold(true);
+            item->setFont(currentFont);
         } else if (isVariationAnchor) {
-            item->setBackground(QColor(255, 241, 194));
-            item->setForeground(QColor(90, 62, 12));
+            item->setBackground(QColor(75, 61, 35));
+            item->setForeground(QColor(244, 223, 174));
         }
         return item;
     };
 
-    for (int row = 0; row < rowCount; ++row) {
-        m_table->setItem(row, 0, makeItem(QString::number(row + 1), false, false));
+    for (int baseRow = 0; baseRow < baseRowCount; ++baseRow) {
+        const int displayRow = displayRowForBase(baseRow);
+        m_table->setItem(
+            displayRow,
+            0,
+            makeItem(QString::number(baseRow + 1), false, false));
     }
     for (const auto &move : pack.moves()) {
-        const int row = (move.ply - 1) / 2;
+        const int row = displayRowForBase((move.ply - 1) / 2);
         const int column = move.ply % 2 == 1 ? 1 : 2;
         QString text = move.notation.san;
         if (pack.isMechanicalGameBreakdown()) {
@@ -919,30 +1257,23 @@ void MoveListPanel::setAnnotatedReplay(
                             .arg(move.ply)
                             .arg(move.notation.uci, moveTimeText(move.elapsedMoveMs));
             if (pack.openingLastBookPly().has_value()) {
-                if (move.ply == *pack.openingLastBookPly()) {
-                    annotations << QStringLiteral("book end");
-                } else if (move.ply == *pack.openingLastBookPly() + 1) {
-                    annotations << QStringLiteral("first departure");
+                if (move.ply == *pack.openingLastBookPly() + 1) {
+                    annotations << QStringLiteral("◫");
+                    tooltips << openingBoundaryToolTip(pack);
                 }
             }
             if (move.elapsedMoveMs.has_value() && *move.elapsedMoveMs == longestElapsed) {
-                annotations << QStringLiteral("longest");
+                annotations << QStringLiteral("◷");
+                tooltips << QStringLiteral("Longest server-accounted move in this game.");
             }
             if (!move.selectiveDeepMoments.isEmpty()) {
                 const auto &deep = move.selectiveDeepMoments.first();
-                annotations << deepEvidenceStatusText(deep.status);
+                annotations << QStringLiteral("●");
                 tooltips << QStringLiteral("Deep evidence status: %1")
                                 .arg(deepEvidenceStatusText(deep.status));
             } else if (pack.selectiveDeepReview().has_value()) {
                 tooltips << QStringLiteral(
                     "Not selected for deep review; this does not certify the move as accurate.");
-                if (move.persistedEngineEvidence.has_value()
-                    && move.persistedEngineEvidence->severity != QStringLiteral("none")) {
-                    annotations << QStringLiteral("shallow screening candidate");
-                }
-            } else if (move.persistedEngineEvidence.has_value()
-                       && move.persistedEngineEvidence->severity != QStringLiteral("none")) {
-                annotations << QStringLiteral("shallow screening candidate");
             }
             if (!annotations.isEmpty()) {
                 text += QStringLiteral(" · ") + annotations.join(QStringLiteral(" · "));
@@ -953,6 +1284,7 @@ void MoveListPanel::setAnnotatedReplay(
             item->setToolTip(accessibleSummary);
             item->setData(Qt::AccessibleTextRole,
                           text + QLatin1Char('\n') + accessibleSummary);
+            item->setData(Qt::UserRole, move.ply);
             m_table->setItem(row, column, item);
             continue;
         } else if (move.severity != QStringLiteral("none")) {
@@ -960,10 +1292,34 @@ void MoveListPanel::setAnnotatedReplay(
         }
         const bool current = !variationActive && currentMainlinePly == move.ply;
         const bool anchor = variationActive && variationAnchorPly == move.ply;
-        m_table->setItem(row, column, makeItem(text, current, anchor));
+        auto *item = makeItem(text, current, anchor);
+        item->setData(Qt::UserRole, move.ply);
+        m_table->setItem(row, column, item);
+    }
+
+    if (showInlineDetail) {
+        m_inlineDetailRow = selectedBaseRow + 1;
+        m_table->setSpan(m_inlineDetailRow, 0, 1, 3);
+        auto *detailCell = new QTableWidgetItem();
+        detailCell->setFlags(Qt::NoItemFlags);
+        m_table->setItem(m_inlineDetailRow, 0, detailCell);
+        const MoveCoachPresentation presentation = moveCoachPresentation(
+            pack, pack.moves().at(currentMainlinePly - 1));
+        m_inlineDetailWidget = new InlineMoveDetail(
+            presentation,
+            [this]() {
+                if (m_inlineDetailRow >= 0) {
+                    m_table->resizeRowToContents(m_inlineDetailRow);
+                }
+            },
+            m_table);
+        m_table->setCellWidget(m_inlineDetailRow, 0, m_inlineDetailWidget);
+        m_inlineDetailWidget->adjustSize();
+        m_table->resizeRowToContents(m_inlineDetailRow);
+        m_table->setRowHidden(m_inlineDetailRow, m_selectedExpansionCollapsed);
     }
     if (!variationActive && currentMainlinePly > 0) {
-        const int row = (currentMainlinePly - 1) / 2;
+        const int row = displayRowForBase((currentMainlinePly - 1) / 2);
         const int column = currentMainlinePly % 2 == 1 ? 1 : 2;
         if (QTableWidgetItem *item = m_table->item(row, column); item != nullptr) {
             m_table->scrollToItem(item, QAbstractItemView::PositionAtCenter);
@@ -977,11 +1333,10 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     , m_openingLabel(new QLabel(this))
     , m_engineLabel(new QLabel(this))
     , m_coachCard(new QFrame(this))
-    , m_moveTitleLabel(new QLabel(m_coachCard))
     , m_evidenceStatusLabel(new QLabel(m_coachCard))
     , m_evaluationChangeLabel(new QLabel(m_coachCard))
     , m_explanationLabel(new QLabel(m_coachCard))
-    , m_technicalDetailsButton(new QPushButton(QStringLiteral("Show technical details"), m_coachCard))
+    , m_technicalDetailsButton(new QPushButton(QStringLiteral("▸ Details"), m_coachCard))
     , m_focusReadButton(new QPushButton(QStringLiteral("Focus Read"), m_coachCard))
     , m_focusReadFrame(new QFrame(m_coachCard))
     , m_focusBeforeLabel(new QLabel(m_focusReadFrame))
@@ -996,13 +1351,14 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     , m_showEngineLineButton(new QPushButton(QStringLiteral("Show Supplied Engine Line"), this))
     , m_returnToGameButton(new QPushButton(QStringLiteral("Return to Game"), this))
 {
+    setObjectName(QStringLiteral("reviewEvidencePanel"));
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(10, 10, 10, 10);
-    layout->setSpacing(7);
+    layout->setContentsMargins(8, 6, 8, 6);
+    layout->setSpacing(6);
     auto *actions = new QHBoxLayout();
     actions->addWidget(m_openButton);
+    actions->addWidget(m_gameLabel, 1);
     actions->addStretch(1);
-    actions->addWidget(m_backButton);
     layout->addLayout(actions);
     for (QLabel *label : {m_gameLabel, m_openingLabel, m_engineLabel}) {
         label->setTextFormat(Qt::PlainText);
@@ -1013,36 +1369,48 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     gameFont.setBold(true);
     gameFont.setPointSizeF(gameFont.pointSizeF() + 1.0);
     m_gameLabel->setFont(gameFont);
-    layout->addWidget(m_gameLabel);
-    layout->addWidget(m_openingLabel);
-    layout->addWidget(m_engineLabel);
+    m_openingLabel->setObjectName(QStringLiteral("reviewOpeningMeta"));
+    m_engineLabel->setObjectName(QStringLiteral("reviewEngineMeta"));
+    m_openingLabel->setWordWrap(false);
+    m_engineLabel->setWordWrap(false);
+    m_openingLabel->setToolTip(QStringLiteral("Retained opening classification."));
+    QPalette metaPalette = m_openingLabel->palette();
+    metaPalette.setColor(QPalette::WindowText, QColor(156, 165, 178));
+    m_openingLabel->setPalette(metaPalette);
+    m_engineLabel->setPalette(metaPalette);
+    auto *metaRow = new QHBoxLayout();
+    metaRow->setContentsMargins(0, 0, 0, 0);
+    metaRow->setSpacing(10);
+    metaRow->addWidget(m_openingLabel, 1);
+    metaRow->addWidget(m_engineLabel);
+    metaRow->addWidget(m_backButton);
+    layout->addLayout(metaRow);
 
     m_coachCard->setObjectName(QStringLiteral("selectedMoveCoachCard"));
-    m_coachCard->setFrameShape(QFrame::StyledPanel);
+    m_coachCard->setFrameShape(QFrame::NoFrame);
     m_coachCard->setStyleSheet(QStringLiteral(
-        "QFrame#selectedMoveCoachCard { background: #20242b; border: 1px solid #343a44; border-radius: 12px; }"
-        "QLabel#moveEvidenceStatus { color: #d9bd7a; background: #2d2a24; border: 1px solid #5b4b2e; border-radius: 8px; padding: 4px 8px; }"
-        "QLabel#moveEvaluationChange { color: #b9c2cf; }"
-        "QPushButton { padding: 5px 9px; border-radius: 8px; }"));
+        "QFrame#selectedMoveCoachCard { background: #1d2127; border: 0; border-radius: 10px; }"
+        "QLabel#moveEvidenceStatus { color: #d7be83; background: transparent; border: 0; padding: 0; font-weight: 600; }"
+        "QLabel#moveEvaluationChange { color: #c3ccd8; }"
+        "QPushButton#technicalDetailsButton { background: transparent; color: #aeb8c5; border: 0; padding: 5px 2px; text-align: left; }"
+        "QPushButton#technicalDetailsButton:hover { color: #eef3fa; }"
+        "QPushButton#focusReadButton { background: #293545; color: #e7edf5; border: 1px solid #3a4a5f; border-radius: 8px; padding: 5px 9px; }"
+        "QPushButton#focusReadButton:hover { background: #324156; }"));
     auto *coachLayout = new QVBoxLayout(m_coachCard);
-    coachLayout->setContentsMargins(12, 12, 12, 12);
-    coachLayout->setSpacing(9);
-    m_moveTitleLabel->setObjectName(QStringLiteral("selectedMoveTitle"));
-    QFont moveTitleFont = m_moveTitleLabel->font();
-    moveTitleFont.setBold(true);
-    moveTitleFont.setPointSizeF(moveTitleFont.pointSizeF() + 3.0);
-    m_moveTitleLabel->setFont(moveTitleFont);
+    coachLayout->setContentsMargins(10, 9, 10, 9);
+    coachLayout->setSpacing(7);
     m_evidenceStatusLabel->setObjectName(QStringLiteral("moveEvidenceStatus"));
-    m_evidenceStatusLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    m_evidenceStatusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     m_evaluationChangeLabel->setObjectName(QStringLiteral("moveEvaluationChange"));
+    m_evaluationChangeLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_explanationLabel->setObjectName(QStringLiteral("moveCoachExplanation"));
-    for (QLabel *label : {m_moveTitleLabel, m_evidenceStatusLabel,
-                          m_evaluationChangeLabel, m_explanationLabel}) {
+    for (QLabel *label : {m_evidenceStatusLabel, m_evaluationChangeLabel,
+                          m_explanationLabel}) {
         label->setTextFormat(Qt::PlainText);
         label->setWordWrap(true);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     }
-    coachLayout->addWidget(m_moveTitleLabel);
+    m_evidenceStatusLabel->setWordWrap(false);
     coachLayout->addWidget(m_evidenceStatusLabel);
     coachLayout->addWidget(m_evaluationChangeLabel);
     coachLayout->addWidget(m_explanationLabel);
@@ -1051,6 +1419,9 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     coachActions->setSpacing(7);
     m_technicalDetailsButton->setObjectName(QStringLiteral("technicalDetailsButton"));
     m_focusReadButton->setObjectName(QStringLiteral("focusReadButton"));
+    m_technicalDetailsButton->setText(QStringLiteral("▸ Details"));
+    m_technicalDetailsButton->setAccessibleName(QStringLiteral("Show technical details"));
+    m_focusReadButton->setAccessibleName(QStringLiteral("Open Focus Read"));
     coachActions->addWidget(m_technicalDetailsButton);
     coachActions->addWidget(m_focusReadButton);
     coachActions->addStretch(1);
@@ -1115,7 +1486,8 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
 
     m_summaryView->setReadOnly(true);
     m_summaryView->setObjectName(QStringLiteral("technicalDetailsView"));
-    m_summaryView->setStyleSheet(QStringLiteral("QTextEdit { font-size: 13px; }"));
+    m_summaryView->setStyleSheet(QStringLiteral(
+        "QTextEdit { background: #14171b; border: 0; border-radius: 8px; padding: 8px; font-size: 13px; }"));
     m_summaryView->setMinimumHeight(150);
     m_summaryView->setVisible(false);
     coachLayout->addWidget(m_summaryView, 1);
@@ -1144,20 +1516,33 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
         stepFocusRead(1);
         setFocus(Qt::OtherFocusReason);
     });
+    m_backButton->setFlat(true);
+    m_backButton->setCursor(Qt::PointingHandCursor);
     setFocusPolicy(Qt::StrongFocus);
     setEmptyState();
 }
 
+void ReplayEvidencePanel::setInlineCoachMode(bool enabled)
+{
+    m_inlineCoachMode = enabled;
+    if (m_inlineCoachMode) {
+        m_coachCard->setVisible(false);
+        m_summaryView->setVisible(false);
+        setFocusReadVisible(false);
+    }
+}
+
 void ReplayEvidencePanel::setEmptyState()
 {
+    setStyleSheet(QString());
     setTitle(QStringLiteral("analysis replay"));
+    m_gameLabel->setVisible(true);
     m_gameLabel->setText(QStringLiteral("No annotated replay loaded."));
     m_openingLabel->clear();
     m_engineLabel->setText(QStringLiteral("Import is read-only and does not run Stockfish or use the network."));
     m_summaryView->setPlainText(
         QStringLiteral("Open an annotated-game-replay-v1 JSON file produced by the esports evidence pipeline."));
-    for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
-                            static_cast<QWidget *>(m_evidenceStatusLabel),
+    for (QWidget *widget : {static_cast<QWidget *>(m_evidenceStatusLabel),
                             static_cast<QWidget *>(m_evaluationChangeLabel),
                             static_cast<QWidget *>(m_explanationLabel),
                             static_cast<QWidget *>(m_technicalDetailsButton),
@@ -1175,6 +1560,10 @@ void ReplayEvidencePanel::setEmptyState()
     m_returnToGameButton->setEnabled(false);
     m_showEngineLineButton->setVisible(true);
     m_returnToGameButton->setVisible(true);
+    if (m_inlineCoachMode) {
+        m_coachCard->setVisible(false);
+        m_summaryView->setVisible(false);
+    }
 }
 
 void ReplayEvidencePanel::setReplayState(
@@ -1183,43 +1572,44 @@ void ReplayEvidencePanel::setReplayState(
     int variationAnchorPly)
 {
     if (pack.isMechanicalGameBreakdown()) {
-        setTitle(QStringLiteral("focused game review"));
+        setTitle(QString());
+        setStyleSheet(QStringLiteral(
+            "QGroupBox { border: 0; margin: 0; padding: 0; }"));
         m_openButton->setVisible(false);
-        m_backButton->setText(QStringLiteral("Back to Player Stats"));
+        m_gameLabel->setVisible(false);
+        m_backButton->setText(QStringLiteral("Back"));
         m_backButton->setEnabled(true);
         m_gameLabel->setText(
-            QStringLiteral("%1  %2  ·  %3–%4  ·  %5\n%6")
-                .arg(pack.whiteUsername(), pack.blackUsername())
+            QStringLiteral("%1 %2  ·  %3  ·  %4 %5\n%6")
+                .arg(pack.whiteUsername())
                 .arg(pack.whiteRating())
+                .arg(pack.result())
+                .arg(pack.blackUsername())
                 .arg(pack.blackRating())
-                .arg(pack.result(), pack.eventStartUtc()));
-        m_openingLabel->setText(replayOpeningText(pack));
+                .arg(compactReviewDate(pack.eventStartUtc())));
+        m_openingLabel->setText(compactOpeningText(pack));
+        m_openingLabel->setToolTip(openingBoundaryToolTip(pack));
         if (pack.selectiveDeepReview().has_value()) {
             const auto &deep = *pack.selectiveDeepReview();
             m_engineLabel->setText(
-                QStringLiteral("Retained %1 · %2-node selective deep review · %3 selected moment%4 · no process started")
-                    .arg(deep.engineName)
-                    .arg(deep.nodeLimit)
-                    .arg(deep.moments.size())
-                    .arg(deep.moments.size() == 1 ? QString() : QStringLiteral("s")));
+                QStringLiteral("%1 · %2 nodes · %3 selected")
+                    .arg(compactEngineName(deep.engineName))
+                    .arg(compactNodeCount(deep.nodeLimit))
+                    .arg(deep.moments.size()));
+            m_engineLabel->setToolTip(QStringLiteral(
+                "Retained selective deep-review evidence only. ParlAWL starts no engine process here."));
         } else if (pack.persistedEngineEvidence().has_value()) {
             const auto &engine = *pack.persistedEngineEvidence();
             m_engineLabel->setText(
-                QStringLiteral("Retained %1 · %2-node shallow screen · no process started")
-                    .arg(engine.engineName)
-                    .arg(engine.nodeLimit));
+                QStringLiteral("%1 · %2 nodes · shallow")
+                    .arg(compactEngineName(engine.engineName))
+                    .arg(compactNodeCount(engine.nodeLimit)));
+            m_engineLabel->setToolTip(QStringLiteral(
+                "Retained shallow screening evidence only. ParlAWL starts no engine process here."));
         } else {
-            m_engineLabel->setText(
-                QStringLiteral("Recorded legal replay · engine evidence not joined · no process started"));
-        }
-
-        for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
-                                static_cast<QWidget *>(m_evidenceStatusLabel),
-                                static_cast<QWidget *>(m_evaluationChangeLabel),
-                                static_cast<QWidget *>(m_explanationLabel),
-                                static_cast<QWidget *>(m_technicalDetailsButton),
-                                static_cast<QWidget *>(m_focusReadButton)}) {
-            widget->setVisible(true);
+            m_engineLabel->setText(QStringLiteral("recorded replay"));
+            m_engineLabel->setToolTip(QStringLiteral(
+                "Engine evidence is not joined. ParlAWL starts no engine process here."));
         }
 
         const int currentPly = session.currentMainlinePly();
@@ -1230,34 +1620,45 @@ void ReplayEvidencePanel::setReplayState(
         }
 
         if (currentPly == 0) {
-            m_moveTitleLabel->setText(QStringLiteral("Choose a move"));
             m_evidenceStatusLabel->clear();
             m_evidenceStatusLabel->setVisible(false);
             m_evaluationChangeLabel->clear();
             m_evaluationChangeLabel->setVisible(false);
-            m_explanationLabel->setText(
-                QStringLiteral("Use Previous, Play, Next, the mouse wheel, or the compact move timeline. The coach shows one move at a time."));
+            m_explanationLabel->clear();
+            m_explanationLabel->setVisible(false);
             m_focusReadWords.clear();
             m_focusReadButton->setEnabled(false);
-            m_technicalDetailsButton->setText(QStringLiteral("Show evidence overview"));
+            m_technicalDetailsButton->setVisible(false);
+            m_focusReadButton->setVisible(false);
+            m_coachCard->setVisible(false);
             QStringList overview = mechanicalGameReportLines(pack);
             if (overview.isEmpty()) {
                 overview << QStringLiteral("No joined engine evidence is available for this recorded legal replay.");
             }
             m_summaryView->setPlainText(overview.join(QLatin1Char('\n')));
+            m_summaryView->setVisible(false);
         } else {
             const auto &move = pack.moves().at(currentPly - 1);
             const MoveCoachPresentation presentation = moveCoachPresentation(pack, move);
-            m_moveTitleLabel->setText(
-                QStringLiteral("Ply %1 · %2").arg(move.ply).arg(move.notation.san));
             m_evidenceStatusLabel->setText(presentation.status);
             m_evaluationChangeLabel->setText(presentation.evaluationChange);
             m_explanationLabel->setText(presentation.explanation);
-            m_focusReadWords = presentation.focusReadText.split(
-                QLatin1Char(' '), Qt::SkipEmptyParts);
+            const bool showCompactCoach = presentation.hasDeepMoment
+                || presentation.hasShallowOnlyEvidence;
+            m_evidenceStatusLabel->setVisible(showCompactCoach);
+            m_evaluationChangeLabel->setVisible(
+                showCompactCoach && !presentation.evaluationChange.isEmpty());
+            m_explanationLabel->setVisible(
+                presentation.hasDeepMoment && !presentation.explanation.isEmpty());
+            m_technicalDetailsButton->setVisible(presentation.hasDeepMoment);
+            m_focusReadButton->setVisible(presentation.hasDeepMoment);
+            m_coachCard->setVisible(showCompactCoach);
+            m_focusReadWords = presentation.hasDeepMoment
+                ? presentation.focusReadText.split(QLatin1Char(' '), Qt::SkipEmptyParts)
+                : QStringList {};
             m_focusReadWordIndex = 0;
             m_focusReadButton->setEnabled(!m_focusReadWords.isEmpty());
-            m_technicalDetailsButton->setText(QStringLiteral("Show technical details"));
+            m_technicalDetailsButton->setText(QStringLiteral("▸ Details"));
             m_summaryView->setPlainText(
                 presentation.technicalDetails.join(QLatin1Char('\n')));
             updateFocusReadViewport();
@@ -1266,11 +1667,17 @@ void ReplayEvidencePanel::setReplayState(
         m_returnToGameButton->setEnabled(false);
         m_showEngineLineButton->setVisible(false);
         m_returnToGameButton->setVisible(false);
+        if (m_inlineCoachMode) {
+            m_coachCard->setVisible(false);
+            m_summaryView->setVisible(false);
+            setFocusReadVisible(false);
+        }
         return;
     }
 
-    for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
-                            static_cast<QWidget *>(m_evidenceStatusLabel),
+    setStyleSheet(QString());
+    m_gameLabel->setVisible(true);
+    for (QWidget *widget : {static_cast<QWidget *>(m_evidenceStatusLabel),
                             static_cast<QWidget *>(m_evaluationChangeLabel),
                             static_cast<QWidget *>(m_explanationLabel),
                             static_cast<QWidget *>(m_technicalDetailsButton),
@@ -1389,10 +1796,20 @@ QString ReplayEvidencePanel::focusReadAnchorText() const
     return m_focusAnchorLabel->text();
 }
 
+bool ReplayEvidencePanel::primaryCoachVisible() const
+{
+    return !m_inlineCoachMode
+        && m_coachCard->isVisible()
+        && m_evidenceStatusLabel->isVisible()
+        && m_explanationLabel->isVisible();
+}
+
 void ReplayEvidencePanel::setTechnicalDetailsVisible(bool visible)
 {
     m_summaryView->setVisible(visible);
     m_technicalDetailsButton->setText(
+        visible ? QStringLiteral("▾ Details") : QStringLiteral("▸ Details"));
+    m_technicalDetailsButton->setAccessibleName(
         visible ? QStringLiteral("Hide technical details")
                 : QStringLiteral("Show technical details"));
 }
@@ -1479,6 +1896,7 @@ void ReplayEvidencePanel::keyPressEvent(QKeyEvent *event)
 
 GameReviewPanel::GameReviewPanel(QWidget *parent)
     : QWidget(parent)
+    , m_splitter(new QSplitter(Qt::Vertical, this))
     , m_moveListPanel(new MoveListPanel(this))
     , m_evidencePanel(new ReplayEvidencePanel(this))
 {
@@ -1487,18 +1905,21 @@ GameReviewPanel::GameReviewPanel(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    auto *splitter = new QSplitter(Qt::Vertical, this);
-    splitter->setObjectName(QStringLiteral("gameReviewSplitter"));
-    splitter->setChildrenCollapsible(false);
+    m_splitter->setObjectName(QStringLiteral("gameReviewSplitter"));
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setHandleWidth(1);
     m_moveListPanel->setObjectName(QStringLiteral("gameReviewMoveList"));
-    m_moveListPanel->setTitle(QStringLiteral("move timeline"));
+    m_moveListPanel->setTitle(QString());
+    m_moveListPanel->setStyleSheet(QStringLiteral(
+        "QGroupBox#gameReviewMoveList { border: 0; margin: 0; padding: 0; }"));
     m_evidencePanel->setObjectName(QStringLiteral("gameReviewInspector"));
-    splitter->addWidget(m_evidencePanel);
-    splitter->addWidget(m_moveListPanel);
-    splitter->setStretchFactor(0, 5);
-    splitter->setStretchFactor(1, 3);
-    splitter->setSizes({500, 270});
-    layout->addWidget(splitter);
+    m_evidencePanel->setInlineCoachMode(true);
+    m_splitter->addWidget(m_evidencePanel);
+    m_splitter->addWidget(m_moveListPanel);
+    m_splitter->setStretchFactor(0, 2);
+    m_splitter->setStretchFactor(1, 5);
+    m_splitter->setSizes({220, 540});
+    layout->addWidget(m_splitter);
 
     connect(
         m_moveListPanel,
@@ -1523,6 +1944,10 @@ void GameReviewPanel::setReplayState(
         session.inVariation(),
         variationAnchorPly);
     m_evidencePanel->setReplayState(pack, session, variationAnchorPly);
+    m_splitter->setSizes(
+        m_evidencePanel->primaryCoachVisible()
+            ? QList<int> {280, 480}
+            : QList<int> {58, 702});
 }
 
 void GameReviewPanel::setEmptyState()

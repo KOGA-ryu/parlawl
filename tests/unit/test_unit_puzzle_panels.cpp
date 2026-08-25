@@ -1,9 +1,11 @@
 #include <QtTest>
 #include <algorithm>
+#include <QFrame>
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTableWidget>
+#include <QTextEdit>
 
 #include "puzzle_panels.h"
 
@@ -332,8 +334,8 @@ void TestUnitPuzzlePanels::gameBreakdownShowsClockAndOpeningBoundaryWithoutEngin
     QVERIFY(session.seekMainlinePly(3));
     evidence.setReplayState(*pack, session, 0);
     QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("evidence unavailable"));
-    QVERIFY(evidence.explanationText().contains(
-        QStringLiteral("no best-move, accuracy, or causal claim"), Qt::CaseInsensitive));
+    QVERIFY(evidence.explanationText().isEmpty());
+    QVERIFY(!evidence.primaryCoachVisible());
     QVERIFY(evidence.summaryText().contains(
         QStringLiteral("server-accounted time: 3.0s"), Qt::CaseInsensitive));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("starts no engine"), Qt::CaseInsensitive));
@@ -344,7 +346,8 @@ void TestUnitPuzzlePanels::gameBreakdownShowsClockAndOpeningBoundaryWithoutEngin
     QVERIFY(moves.truthStatusText().contains(QStringLiteral("server-accounted clock evidence")));
     const QTableWidget *table = moves.findChild<QTableWidget *>();
     QVERIFY(table != nullptr);
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("first departure")));
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("◫")));
+    QVERIFY(table->item(1, 1)->toolTip().contains(QStringLiteral("first move outside")));
 }
 
 void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStartingEngine()
@@ -359,10 +362,17 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
     QVERIFY(session.seekMainlinePly(1));
     ReplayEvidencePanel evidence;
     evidence.setReplayState(*pack, session, 0);
+    evidence.show();
+    QCoreApplication::processEvents();
     QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("not selected for deep review"));
-    QVERIFY(evidence.explanationText().contains(QStringLiteral("not selected for deep review")));
-    QVERIFY(evidence.explanationText().contains(QStringLiteral("not an accuracy claim")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow screening candidate: None")));
+    QVERIFY(evidence.explanationText().isEmpty());
+    QVERIFY(!evidence.primaryCoachVisible());
+    const auto *compactChange = evidence.findChild<QLabel *>(
+        QStringLiteral("moveEvaluationChange"));
+    QVERIFY(compactChange != nullptr);
+    QCOMPARE(compactChange->text(), QStringLiteral("◒ 75% → 74%   −1 pp"));
+    QVERIFY(!compactChange->isVisible());
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow screen label: None")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Reported PV, not played: d2d4 d7d5")));
 
     MoveListPanel moves;
@@ -408,8 +418,7 @@ void TestUnitPuzzlePanels::gameBreakdownShowsDeepSelectiveEvidenceAboveShallowSc
         if (expectedStatus == QStringLiteral("ambiguous")) {
             const auto *change = evidence.findChild<QLabel *>(QStringLiteral("moveEvaluationChange"));
             QVERIFY(change != nullptr);
-            QCOMPARE(change->text(), QStringLiteral(
-                "Evaluation change · no stable mover-expectation change was published"));
+            QCOMPARE(change->text(), QStringLiteral("◒ no stable change published"));
             QVERIFY(!change->text().contains(QStringLiteral("−not stably published")));
         }
     }
@@ -426,7 +435,11 @@ void TestUnitPuzzlePanels::gameBreakdownShowsDeepSelectiveEvidenceAboveShallowSc
     evidence.show();
     QCoreApplication::processEvents();
     QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("deep confirmed severe"));
-    QVERIFY(evidence.explanationText().contains(QStringLiteral("16.6%")));
+    QVERIFY(evidence.explanationText().contains(QStringLiteral("16.6 percentage-point")));
+    const auto *deepChange = evidence.findChild<QLabel *>(
+        QStringLiteral("moveEvaluationChange"));
+    QVERIFY(deepChange != nullptr);
+    QCOMPARE(deepChange->text(), QStringLiteral("◒ 75% → 58.4%   −16.6 pp"));
     QVERIFY(!evidence.technicalDetailsVisible());
     auto *detailsButton = evidence.findChild<QPushButton *>(QStringLiteral("technicalDetailsButton"));
     QVERIFY(detailsButton != nullptr);
@@ -460,35 +473,82 @@ void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
     QCOMPARE(evidence->evidenceStatusText(), QStringLiteral("deep confirmed severe"));
     auto *header = evidence->findChild<QLabel *>(QStringLiteral("reviewGameHeader"));
     QVERIFY(header != nullptr);
+    QVERIFY(header->text().contains(QStringLiteral("Alpha 2100")));
+    QVERIFY(header->text().contains(QStringLiteral("Beta 2050")));
+    QVERIFY(!evidence->title().contains(QStringLiteral("game review"), Qt::CaseInsensitive));
+    const auto *engineMeta = evidence->findChild<QLabel *>(QStringLiteral("reviewEngineMeta"));
+    QVERIFY(engineMeta != nullptr);
+    QCOMPARE(engineMeta->text(), QStringLiteral("SF18 · 50k nodes · 1 selected"));
     const qreal headerPointSize = header->font().pointSizeF();
     for (int refresh = 0; refresh < 12; ++refresh) {
         panel.setReplayState(*pack, session, 0);
     }
     QCOMPARE(header->font().pointSizeF(), headerPointSize);
+    QVERIFY(!evidence->primaryCoachVisible());
 
-    auto *focusButton = evidence->findChild<QPushButton *>(QStringLiteral("focusReadButton"));
+    auto *inlineDetail = moves->findChild<QFrame *>(QStringLiteral("inlineMoveDetail"));
+    QVERIFY(inlineDetail != nullptr);
+    QVERIFY(inlineDetail->isVisible());
+    const auto *inlineStatus = inlineDetail->findChild<QLabel *>(
+        QStringLiteral("inlineMoveStatus"));
+    const auto *inlineExplanation = inlineDetail->findChild<QLabel *>(
+        QStringLiteral("inlineMoveExplanation"));
+    QVERIFY(inlineStatus != nullptr);
+    QVERIFY(inlineExplanation != nullptr);
+    QCOMPARE(inlineStatus->text(), QStringLiteral("deep confirmed severe"));
+    QVERIFY(inlineExplanation->text().contains(QStringLiteral("16.6 percentage-point")));
+
+    auto *detailsButton = inlineDetail->findChild<QPushButton *>(
+        QStringLiteral("inlineDetailsButton"));
+    auto *technicalDetails = inlineDetail->findChild<QTextEdit *>(
+        QStringLiteral("inlineTechnicalDetails"));
+    QVERIFY(detailsButton != nullptr);
+    QVERIFY(technicalDetails != nullptr);
+    QVERIFY(!technicalDetails->isVisible());
+    QTest::mouseClick(detailsButton, Qt::LeftButton);
+    QVERIFY(technicalDetails->isVisible());
+    QVERIFY(technicalDetails->toPlainText().contains(
+        QStringLiteral("Alternative 1, not played: d2d4")));
+
+    auto *focusButton = inlineDetail->findChild<QPushButton *>(
+        QStringLiteral("inlineFocusButton"));
+    auto *focusFrame = inlineDetail->findChild<QFrame *>(
+        QStringLiteral("inlineFocusFrame"));
+    auto *focusAnchor = inlineDetail->findChild<QLabel *>(
+        QStringLiteral("inlineFocusAnchor"));
     QVERIFY(focusButton != nullptr);
+    QVERIFY(focusFrame != nullptr);
+    QVERIFY(focusAnchor != nullptr);
     QTest::mouseClick(focusButton, Qt::LeftButton);
-    QVERIFY(evidence->focusReadVisible());
-    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("At"));
-    QTest::keyClick(evidence, Qt::Key_Right);
-    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("ply"));
-    QTest::keyClick(evidence, Qt::Key_Space);
-    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("3,"));
-    auto *focusPrevious = evidence->findChild<QPushButton *>(
-        QStringLiteral("focusReadPreviousButton"));
-    QVERIFY(focusPrevious != nullptr);
-    QTest::mouseClick(focusPrevious, Qt::LeftButton);
-    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("ply"));
-    QTest::keyClick(evidence, Qt::Key_Space);
-    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("3,"));
-    QTest::keyClick(evidence, Qt::Key_Escape);
-    QVERIFY(!evidence->focusReadVisible());
+    QVERIFY(focusFrame->isVisible());
+    QCOMPARE(focusAnchor->text(), QStringLiteral("The"));
+    QTest::keyClick(inlineDetail, Qt::Key_Right);
+    QCOMPARE(focusAnchor->text(), QStringLiteral("retained"));
+    QTest::keyClick(inlineDetail, Qt::Key_Space);
+    QCOMPARE(focusAnchor->text(), QStringLiteral("fixed-node"));
+    QTest::keyClick(inlineDetail, Qt::Key_Escape);
+    QVERIFY(!focusFrame->isVisible());
 
     QSignalSpy seekSpy(&panel, &GameReviewPanel::replayPlyRequested);
     auto *table = moves->findChild<QTableWidget *>();
     QVERIFY(table != nullptr);
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("deep confirmed severe")));
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("●")));
+    QVERIFY(table->item(1, 1)->toolTip().contains(QStringLiteral("deep confirmed severe")));
+    QVERIFY(QMetaObject::invokeMethod(
+        table,
+        "cellClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 1),
+        Q_ARG(int, 1)));
+    QCOMPARE(seekSpy.count(), 0);
+    QVERIFY(table->isRowHidden(2));
+    QVERIFY(QMetaObject::invokeMethod(
+        table,
+        "cellClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 1),
+        Q_ARG(int, 1)));
+    QVERIFY(!table->isRowHidden(2));
     QVERIFY(QMetaObject::invokeMethod(
         table,
         "cellClicked",

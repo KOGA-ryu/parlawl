@@ -2376,6 +2376,22 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
     const bool gameBreakdown = enabled && m_annotatedReplayPack.has_value()
         && m_annotatedReplayPack->isMechanicalGameBreakdown();
 
+    if (gameBreakdown) {
+        const auto &pack = *m_annotatedReplayPack;
+        const QString date = pack.eventStartUtc().size() >= 10
+            ? pack.eventStartUtc().left(10) : pack.eventStartUtc();
+        setWindowTitle(
+            QStringLiteral("%1 %2 · %3 · %4 %5 · %6")
+                .arg(pack.whiteUsername())
+                .arg(pack.whiteRating())
+                .arg(pack.result())
+                .arg(pack.blackUsername())
+                .arg(pack.blackRating())
+                .arg(date));
+    } else {
+        setWindowTitle(QStringLiteral("parlawl"));
+    }
+
     for (int index = 0; index < m_rightTabs->count(); ++index) {
         QWidget *page = m_rightTabs->widget(index);
         const bool replayRelevant = gameBreakdown
@@ -2393,6 +2409,8 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
         m_rightTabs->setCurrentWidget(m_moveListPanel);
     }
     m_rightTabs->tabBar()->setVisible(!gameBreakdown);
+    m_rightTabs->setStyleSheet(
+        gameBreakdown ? QStringLiteral("QTabWidget::pane { border: 0; }") : QString());
 
     for (int index = 0; index < m_infoTabs->count(); ++index) {
         const bool replayControls = m_infoTabs->widget(index) == m_settingsPage;
@@ -2411,6 +2429,8 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
         m_infoTabs->setCurrentIndex(m_preReplayInfoTabIndex);
     }
     m_infoTabs->tabBar()->setVisible(!enabled);
+    m_infoTabs->setStyleSheet(
+        gameBreakdown ? QStringLiteral("QTabWidget::pane { border: 0; }") : QString());
     m_infoTabs->setMaximumHeight(enabled ? 112 : QWIDGETSIZE_MAX);
     m_evaluationBarWidget->setVisible(!gameBreakdown);
     m_boardWidget->setMinimumSize(
