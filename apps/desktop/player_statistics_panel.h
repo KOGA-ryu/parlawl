@@ -145,6 +145,7 @@ private:
     void selectTypedPlayer();
     void rebuildView();
     void rebuildBoardStructureView();
+    void refreshBoardStructureComparisonPlayers();
     void populatePhaseTable(const QJsonArray &groups);
     void populateDecisionContextTable(
         const QJsonArray &colors,
@@ -178,6 +179,11 @@ private:
     QLabel *m_structureStatusLabel;
     QLabel *m_structureSummaryLabel;
     QLabel *m_structureConcentrationLabel;
+    QWidget *m_structureComparisonPanel;
+    QComboBox *m_structureComparisonPlayerCombo;
+    QComboBox *m_structureComparisonCategoryCombo;
+    QLabel *m_structureComparisonSummaryLabel;
+    QTableWidget *m_structureComparisonTable;
     QLabel *m_structureHeadToHeadLabel;
     QWidget *m_structureHeadToHeadFilterPanel;
     QLineEdit *m_structureOpponentSearch;
@@ -196,6 +202,7 @@ private:
     QHash<QString, QJsonObject> m_playersById;
     QJsonObject m_structureSnapshot;
     QHash<QString, QJsonObject> m_structurePlayersById;
+    QString m_structureComparisonSourcePlayerId;
     QHash<QString, QString> m_explorerMetadata;
     QString m_explorerConnectionName;
     bool m_updatingExplorerFilters;

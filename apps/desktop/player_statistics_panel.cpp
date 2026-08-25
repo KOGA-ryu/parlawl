@@ -18,6 +18,7 @@
 #include <QLocale>
 #include <QPushButton>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -525,6 +526,90 @@ QStringList boardStructureMetricCodes()
     return codes;
 }
 
+struct BoardStructureComparisonMetricRow {
+    QString code;
+    QString label;
+    QString category;
+};
+
+const QVector<BoardStructureComparisonMetricRow> &boardStructureComparisonMetricRows()
+{
+    static const QVector<BoardStructureComparisonMetricRow> rows = [] {
+        QVector<BoardStructureComparisonMetricRow> output;
+        struct Phase {
+            QString code;
+            QString label;
+        };
+        const QVector<Phase> phases {
+            {QStringLiteral("all"), QStringLiteral("Overall")},
+            {QStringLiteral("opening"), QStringLiteral("Opening")},
+            {QStringLiteral("middlegame"), QStringLiteral("Middlegame")},
+            {QStringLiteral("endgame"), QStringLiteral("Endgame")},
+        };
+        struct Predicate {
+            QString code;
+            QString label;
+            QString category;
+        };
+        const QVector<Predicate> predicates {
+            {QStringLiteral("both_queens_absent"), QStringLiteral("Queens off"),
+             QStringLiteral("position")},
+            {QStringLiteral("own_passed_pawn_present"), QStringLiteral("Passed pawn present"),
+             QStringLiteral("pawns")},
+            {QStringLiteral("own_isolated_pawn_present"), QStringLiteral("Isolated pawn present"),
+             QStringLiteral("pawns")},
+            {QStringLiteral("own_doubled_pawn_excess_present"), QStringLiteral("Doubled pawn present"),
+             QStringLiteral("pawns")},
+            {QStringLiteral("own_two_or_more_bishops_present"), QStringLiteral("Bishop pair present"),
+             QStringLiteral("position")},
+        };
+        for (const Predicate &predicate : predicates) {
+            for (const Phase &phase : phases) {
+                output.append({
+                    QStringLiteral("binary.%1.%2.share").arg(predicate.code, phase.code),
+                    QStringLiteral("%1 · %2").arg(predicate.label, phase.label),
+                    predicate.category,
+                });
+            }
+        }
+        for (const QString &state : {
+                 QStringLiteral("ahead"),
+                 QStringLiteral("equal"),
+                 QStringLiteral("behind"),
+             }) {
+            QString stateLabel = state;
+            stateLabel[0] = stateLabel.at(0).toUpper();
+            for (const Phase &phase : phases) {
+                output.append({
+                    QStringLiteral("material_relation.%1.%2.share").arg(state, phase.code),
+                    QStringLiteral("Material %1 · %2").arg(stateLabel.toLower(), phase.label),
+                    QStringLiteral("material"),
+                });
+            }
+        }
+        for (const Phase &phase : phases) {
+            output.append({
+                QStringLiteral("material_delta_mean.%1").arg(phase.code),
+                QStringLiteral("Mean material edge · %1").arg(phase.label),
+                QStringLiteral("material"),
+            });
+        }
+        for (const auto &[code, label] : QVector<QPair<QString, QString>> {
+                 {QStringLiteral("any"), QStringLiteral("Any castle")},
+                 {QStringLiteral("kingside"), QStringLiteral("Kingside castle")},
+                 {QStringLiteral("queenside"), QStringLiteral("Queenside castle")},
+             }) {
+            output.append({
+                QStringLiteral("focal_castling.%1").arg(code),
+                label,
+                QStringLiteral("castling"),
+            });
+        }
+        return output;
+    }();
+    return rows;
+}
+
 qint64 roundedSignedPpm(qint64 numerator, qint64 denominator)
 {
     const qint64 magnitude = (std::abs(numerator) * kPpm + denominator / 2)
@@ -1021,6 +1106,48 @@ QString boardStructureValueText(const QJsonObject &metric)
         QString::number(static_cast<double>(ppm) / 10'000.0, 'f', 1));
 }
 
+QString boardStructureDifferenceText(
+    const QJsonObject &left,
+    const QJsonObject &right)
+{
+    const QJsonValue leftValue = left.value(QStringLiteral("aggregate_value_ppm"));
+    const QJsonValue rightValue = right.value(QStringLiteral("aggregate_value_ppm"));
+    if (!leftValue.isDouble() || !rightValue.isDouble()) {
+        return QStringLiteral("N/A");
+    }
+    const qint64 difference = static_cast<qint64>(leftValue.toDouble())
+        - static_cast<qint64>(rightValue.toDouble());
+    if (left.value(QStringLiteral("metric_code")).toString().startsWith(
+            QStringLiteral("material_delta_mean."))) {
+        return signedFixedPointText(
+            difference, static_cast<double>(kPpm), QString());
+    }
+    return signedFixedPointText(difference, 10'000.0, QStringLiteral(" pp"));
+}
+
+QString boardStructureObservationText(const QJsonObject &metric)
+{
+    return QStringLiteral("%1 / %2")
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("observed_player_game_count")).toDouble())))
+        .arg(numberText(static_cast<qint64>(metric.value(
+            QStringLiteral("not_applicable_player_game_count")).toDouble())));
+}
+
+QJsonObject boardStructureHeadToHeadRow(
+    const QJsonObject &player,
+    const QString &opponentId)
+{
+    for (const QJsonValue &value : player.value(
+             QStringLiteral("head_to_head")).toArray()) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("opponent_id")).toString() == opponentId) {
+            return row;
+        }
+    }
+    return {};
+}
+
 QString boardStructurePairedText(const QJsonObject &metric)
 {
     const QJsonValue value = metric.value(
@@ -1369,6 +1496,11 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_structureStatusLabel(new QLabel(this))
     , m_structureSummaryLabel(new QLabel(this))
     , m_structureConcentrationLabel(new QLabel(this))
+    , m_structureComparisonPanel(new QWidget(this))
+    , m_structureComparisonPlayerCombo(new QComboBox(m_structureComparisonPanel))
+    , m_structureComparisonCategoryCombo(new QComboBox(m_structureComparisonPanel))
+    , m_structureComparisonSummaryLabel(new QLabel(this))
+    , m_structureComparisonTable(new QTableWidget(this))
     , m_structureHeadToHeadLabel(new QLabel(QStringLiteral("Head-to-head results"), this))
     , m_structureHeadToHeadFilterPanel(new QWidget(this))
     , m_structureOpponentSearch(new QLineEdit(m_structureHeadToHeadFilterPanel))
@@ -1507,6 +1639,11 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         {QStringLiteral("Castling"), QStringLiteral("Rate"),
          QStringLiteral("Observed / N/A"), QStringLiteral("Paired vs opponent")});
     configureTable(
+        m_structureComparisonTable,
+        {QStringLiteral("Measure"), QStringLiteral("Player A"),
+         QStringLiteral("Player B"), QStringLiteral("A \u2212 B"),
+         QStringLiteral("A obs / N/A"), QStringLiteral("B obs / N/A")});
+    configureTable(
         m_structureHeadToHeadTable,
         {QStringLiteral("Opponent"), QStringLiteral("Games"),
          QStringLiteral("White games"), QStringLiteral("Black games"),
@@ -1630,6 +1767,57 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     structureHint->setTextFormat(Qt::PlainText);
     structureHint->setWordWrap(true);
     structureLayout->addWidget(structureHint);
+    auto *structureComparisonLayout = new QHBoxLayout(m_structureComparisonPanel);
+    structureComparisonLayout->setContentsMargins(0, 0, 0, 0);
+    structureComparisonLayout->addWidget(new QLabel(
+        QStringLiteral("Compare with"), m_structureComparisonPanel));
+    m_structureComparisonPlayerCombo->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureComparePlayer"));
+    m_structureComparisonPlayerCombo->setEditable(true);
+    m_structureComparisonPlayerCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_structureComparisonPlayerCombo->setMaxVisibleItems(20);
+    m_structureComparisonPlayerCombo->completer()->setCaseSensitivity(
+        Qt::CaseInsensitive);
+    m_structureComparisonPlayerCombo->completer()->setFilterMode(
+        Qt::MatchContains);
+    structureComparisonLayout->addWidget(m_structureComparisonPlayerCombo, 1);
+    structureComparisonLayout->addWidget(new QLabel(
+        QStringLiteral("Category"), m_structureComparisonPanel));
+    m_structureComparisonCategoryCombo->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureCompareCategory"));
+    m_structureComparisonCategoryCombo->addItem(
+        QStringLiteral("All metrics"), QString());
+    m_structureComparisonCategoryCombo->addItem(
+        QStringLiteral("Position & pieces"), QStringLiteral("position"));
+    m_structureComparisonCategoryCombo->addItem(
+        QStringLiteral("Pawns"), QStringLiteral("pawns"));
+    m_structureComparisonCategoryCombo->addItem(
+        QStringLiteral("Material"), QStringLiteral("material"));
+    m_structureComparisonCategoryCombo->addItem(
+        QStringLiteral("Castling"), QStringLiteral("castling"));
+    structureComparisonLayout->addWidget(m_structureComparisonCategoryCombo);
+    m_structureComparisonPanel->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureComparisonPanel"));
+    m_structureComparisonPanel->setVisible(false);
+    structureLayout->addWidget(m_structureComparisonPanel);
+    m_structureComparisonSummaryLabel->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureComparisonSummary"));
+    m_structureComparisonSummaryLabel->setTextFormat(Qt::PlainText);
+    m_structureComparisonSummaryLabel->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    m_structureComparisonSummaryLabel->setWordWrap(true);
+    m_structureComparisonSummaryLabel->setVisible(false);
+    structureLayout->addWidget(m_structureComparisonSummaryLabel);
+    m_structureComparisonTable->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureComparisonTable"));
+    m_structureComparisonTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::Stretch);
+    for (int column = 1; column < m_structureComparisonTable->columnCount(); ++column) {
+        m_structureComparisonTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
+    }
+    m_structureComparisonTable->setVisible(false);
+    structureLayout->addWidget(m_structureComparisonTable, 1);
     m_structureMetricTable->setObjectName(
         QStringLiteral("playerStatisticsBoardStructureTable"));
     m_structureMetricTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -1707,6 +1895,16 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     connect(
         m_structureMinimumGamesSpin,
         &QSpinBox::valueChanged,
+        this,
+        [this](int) { rebuildBoardStructureView(); });
+    connect(
+        m_structureComparisonPlayerCombo,
+        &QComboBox::currentIndexChanged,
+        this,
+        [this](int) { rebuildBoardStructureView(); });
+    connect(
+        m_structureComparisonCategoryCombo,
+        &QComboBox::currentIndexChanged,
         this,
         [this](int) { rebuildBoardStructureView(); });
     connect(m_gameTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
@@ -2189,6 +2387,7 @@ bool PlayerStatisticsPanel::loadBoardStructureSnapshot(
         || !m_explorerConnectionName.isEmpty();
     m_structureSnapshot = root;
     m_structurePlayersById = playersById;
+    m_structureComparisonSourcePlayerId.clear();
     if (!primaryDataLoaded) {
         m_playerCombo->blockSignals(true);
         m_playerCombo->clear();
@@ -2223,6 +2422,17 @@ void PlayerStatisticsPanel::clearSnapshot()
     m_playersById.clear();
     m_structureSnapshot = {};
     m_structurePlayersById.clear();
+    m_structureComparisonSourcePlayerId.clear();
+    {
+        const QSignalBlocker comparisonBlocker(m_structureComparisonPlayerCombo);
+        m_structureComparisonPlayerCombo->clear();
+        m_structureComparisonPlayerCombo->addItem(
+            QStringLiteral("No comparison"), QString());
+    }
+    {
+        const QSignalBlocker categoryBlocker(m_structureComparisonCategoryCombo);
+        m_structureComparisonCategoryCombo->setCurrentIndex(0);
+    }
     m_explorerFilterPanel->setVisible(false);
     m_detailTabs->setTabEnabled(1, false);
     m_detailTabs->setTabEnabled(2, false);
@@ -2265,6 +2475,11 @@ void PlayerStatisticsPanel::clearSnapshot()
         QStringLiteral("Concentration information will appear after a BoardStructure snapshot is loaded."));
     m_structureMetricTable->setRowCount(0);
     m_structureCastlingTable->setRowCount(0);
+    m_structureComparisonTable->setRowCount(0);
+    m_structureComparisonPanel->setVisible(false);
+    m_structureComparisonSummaryLabel->clear();
+    m_structureComparisonSummaryLabel->setVisible(false);
+    m_structureComparisonTable->setVisible(false);
     m_structureHeadToHeadTable->setRowCount(0);
     m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
     m_structureHeadToHeadLabel->setVisible(false);
@@ -3179,6 +3394,38 @@ std::optional<PlayerStatisticsGameBreakdown> PlayerStatisticsPanel::gameBreakdow
     return output;
 }
 
+void PlayerStatisticsPanel::refreshBoardStructureComparisonPlayers()
+{
+    const QString primaryPlayerId = selectedPlayerId();
+    if (m_structureComparisonSourcePlayerId == primaryPlayerId
+        && m_structureComparisonPlayerCombo->count() > 0) {
+        return;
+    }
+
+    const QString preferredPlayerId =
+        m_structureComparisonPlayerCombo->currentData().toString();
+    const QSignalBlocker blocker(m_structureComparisonPlayerCombo);
+    m_structureComparisonPlayerCombo->clear();
+    m_structureComparisonPlayerCombo->addItem(
+        QStringLiteral("No comparison"), QString());
+    if (!primaryPlayerId.isEmpty()
+        && m_structurePlayersById.contains(primaryPlayerId)) {
+        QStringList playerIds = m_structurePlayersById.keys();
+        std::sort(playerIds.begin(), playerIds.end());
+        for (const QString &playerId : playerIds) {
+            if (playerId != primaryPlayerId) {
+                m_structureComparisonPlayerCombo->addItem(playerId, playerId);
+            }
+        }
+    }
+    const int preferredIndex = preferredPlayerId == primaryPlayerId
+        ? -1
+        : m_structureComparisonPlayerCombo->findData(preferredPlayerId);
+    m_structureComparisonPlayerCombo->setCurrentIndex(
+        preferredIndex > 0 ? preferredIndex : 0);
+    m_structureComparisonSourcePlayerId = primaryPlayerId;
+}
+
 void PlayerStatisticsPanel::rebuildBoardStructureView()
 {
     if (m_structureSnapshot.isEmpty()) {
@@ -3188,6 +3435,10 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             QStringLiteral("Concentration information will appear after a BoardStructure snapshot is loaded."));
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
+        m_structureComparisonTable->setRowCount(0);
+        m_structureComparisonPanel->setVisible(false);
+        m_structureComparisonSummaryLabel->setVisible(false);
+        m_structureComparisonTable->setVisible(false);
         m_structureHeadToHeadTable->setRowCount(0);
         m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
         m_structureHeadToHeadLabel->setVisible(false);
@@ -3196,6 +3447,7 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         return;
     }
     const QString playerId = selectedPlayerId();
+    refreshBoardStructureComparisonPlayers();
     const bool globalView = playerId.isEmpty();
     if (!globalView && !m_structurePlayersById.contains(playerId)) {
         m_structureStatusLabel->setText(
@@ -3206,6 +3458,10 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             QStringLiteral("No opponent concentration is available for this player."));
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
+        m_structureComparisonTable->setRowCount(0);
+        m_structureComparisonPanel->setVisible(false);
+        m_structureComparisonSummaryLabel->setVisible(false);
+        m_structureComparisonTable->setVisible(false);
         m_structureHeadToHeadTable->setRowCount(0);
         m_structureHeadToHeadLabel->setText(QStringLiteral("Head-to-head results"));
         m_structureHeadToHeadLabel->setVisible(false);
@@ -3227,6 +3483,11 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         + m_structureSnapshot.value(
             QStringLiteral("descriptive_metric_registry_id")).toString());
     if (globalView) {
+        m_structureComparisonPanel->setVisible(false);
+        m_structureComparisonSummaryLabel->setVisible(false);
+        m_structureComparisonTable->setVisible(false);
+        m_structureMetricTable->setVisible(true);
+        m_structureCastlingTable->setVisible(true);
         m_structureSummaryLabel->setText(
             QStringLiteral("%1 games · %2 player rows · %3 players · White wins %4 · draws %5 · Black wins %6")
                 .arg(numberText(static_cast<qint64>(view.value(
@@ -3273,6 +3534,7 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
         m_structureHeadToHeadFilterPanel->setVisible(false);
         m_structureHeadToHeadTable->setVisible(false);
     } else {
+        m_structureComparisonPanel->setVisible(true);
         m_structureSummaryLabel->setText(
             QStringLiteral("%1 · %2 games · %3 White / %4 Black · %5-%6-%7 · score %8% · %9 opponents")
                 .arg(playerId)
@@ -3302,6 +3564,150 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
                     QStringLiteral("largest_opponent_game_share_ppm"))))
                 .arg(coverageText(view.value(QStringLiteral("opponent_hhi_ppm")))));
         m_structureConcentrationLabel->setToolTip(QString());
+
+        const QString comparisonPlayerId =
+            m_structureComparisonPlayerCombo->currentData().toString();
+        const bool comparisonView = !comparisonPlayerId.isEmpty()
+            && comparisonPlayerId != playerId
+            && m_structurePlayersById.contains(comparisonPlayerId);
+        if (comparisonView) {
+            const QJsonObject comparisonViewData =
+                m_structurePlayersById.value(comparisonPlayerId);
+            const QJsonArray comparisonMetrics = comparisonViewData.value(
+                QStringLiteral("metrics")).toArray();
+            const QJsonObject directRecord = boardStructureHeadToHeadRow(
+                view, comparisonPlayerId);
+
+            QSet<QString> primaryOpponents;
+            for (const QJsonValue &value : view.value(
+                     QStringLiteral("head_to_head")).toArray()) {
+                primaryOpponents.insert(value.toObject().value(
+                    QStringLiteral("opponent_id")).toString());
+            }
+            QSet<QString> comparisonOpponents;
+            for (const QJsonValue &value : comparisonViewData.value(
+                     QStringLiteral("head_to_head")).toArray()) {
+                comparisonOpponents.insert(value.toObject().value(
+                    QStringLiteral("opponent_id")).toString());
+            }
+            QSet<QString> sharedOpponents = primaryOpponents;
+            sharedOpponents.intersect(comparisonOpponents);
+
+            const auto profileSummary = [](const QString &profilePlayerId,
+                                            const QJsonObject &profile) {
+                return QStringLiteral("%1 profile: %2 games · %3 White / %4 Black · W-D-L %5-%6-%7 · score %8")
+                    .arg(profilePlayerId)
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("white_game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("black_game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("win_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("draw_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(profile.value(
+                        QStringLiteral("loss_count")).toDouble())))
+                    .arg(coverageText(profile.value(
+                        QStringLiteral("score_rate_ppm"))));
+            };
+            QString directSummary;
+            if (directRecord.isEmpty()) {
+                directSummary = QStringLiteral(
+                    "No direct games between %1 and %2 are present in this snapshot.")
+                    .arg(playerId, comparisonPlayerId);
+            } else {
+                directSummary = QStringLiteral(
+                    "Direct record from %1 perspective: %2 games · %3 White / %4 Black · W-D-L %5-%6-%7 · score %8")
+                    .arg(playerId)
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("white_game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("black_game_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("win_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("draw_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(directRecord.value(
+                        QStringLiteral("loss_count")).toDouble())))
+                    .arg(coverageText(directRecord.value(
+                        QStringLiteral("score_rate_ppm"))));
+            }
+            m_structureComparisonSummaryLabel->setText(
+                profileSummary(playerId, view) + QLatin1Char('\n')
+                + profileSummary(comparisonPlayerId, comparisonViewData)
+                + QLatin1Char('\n') + directSummary
+                + QLatin1Char('\n')
+                + QStringLiteral(
+                    "%1 shared opponents · full-profile mechanical comparison; not opponent-adjusted and not restricted to direct games. Differences do not imply better or worse play.")
+                      .arg(numberText(sharedOpponents.size())));
+
+            const QString category =
+                m_structureComparisonCategoryCombo->currentData().toString();
+            QVector<BoardStructureComparisonMetricRow> visibleMetrics;
+            for (const BoardStructureComparisonMetricRow &metricRow :
+                 boardStructureComparisonMetricRows()) {
+                if (category.isEmpty() || metricRow.category == category) {
+                    visibleMetrics.append(metricRow);
+                }
+            }
+            m_structureComparisonTable->setHorizontalHeaderLabels({
+                QStringLiteral("Measure"),
+                playerId,
+                comparisonPlayerId,
+                QStringLiteral("%1 \u2212 %2").arg(playerId, comparisonPlayerId),
+                QStringLiteral("%1 obs / N/A").arg(playerId),
+                QStringLiteral("%1 obs / N/A").arg(comparisonPlayerId),
+            });
+            m_structureComparisonTable->clearContents();
+            m_structureComparisonTable->setRowCount(visibleMetrics.size());
+            for (qsizetype row = 0; row < visibleMetrics.size(); ++row) {
+                const BoardStructureComparisonMetricRow &metricRow =
+                    visibleMetrics.at(row);
+                const QJsonObject primaryMetric = boardStructureMetric(
+                    metrics, metricRow.code);
+                const QJsonObject comparisonMetric = boardStructureMetric(
+                    comparisonMetrics, metricRow.code);
+                auto *labelItem = readOnlyItem(metricRow.label);
+                labelItem->setToolTip(metricRow.code);
+                m_structureComparisonTable->setItem(row, 0, labelItem);
+                const QStringList cellTexts {
+                    boardStructureValueText(primaryMetric),
+                    boardStructureValueText(comparisonMetric),
+                    boardStructureDifferenceText(primaryMetric, comparisonMetric),
+                    boardStructureObservationText(primaryMetric),
+                    boardStructureObservationText(comparisonMetric),
+                };
+                for (qsizetype column = 0; column < cellTexts.size(); ++column) {
+                    auto *item = readOnlyItem(cellTexts.at(column));
+                    item->setTextAlignment(Qt::AlignCenter);
+                    if (column < 3) {
+                        item->setToolTip(
+                            boardStructureTooltip(column == 1
+                                ? comparisonMetric
+                                : primaryMetric));
+                    }
+                    m_structureComparisonTable->setItem(row, column + 1, item);
+                }
+            }
+            m_structureComparisonSummaryLabel->setVisible(true);
+            m_structureComparisonTable->setVisible(true);
+            m_structureMetricTable->setVisible(false);
+            m_structureCastlingTable->setVisible(false);
+            m_structureHeadToHeadTable->setRowCount(0);
+            m_structureHeadToHeadLabel->setVisible(false);
+            m_structureHeadToHeadFilterPanel->setVisible(false);
+            m_structureHeadToHeadTable->setVisible(false);
+            return;
+        }
+
+        m_structureComparisonSummaryLabel->setVisible(false);
+        m_structureComparisonTable->setVisible(false);
+        m_structureMetricTable->setVisible(true);
+        m_structureCastlingTable->setVisible(true);
 
         const QJsonArray headToHead = view.value(
             QStringLiteral("head_to_head")).toArray();

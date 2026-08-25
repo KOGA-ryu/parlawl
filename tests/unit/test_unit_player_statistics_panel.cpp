@@ -988,6 +988,54 @@ void TestUnitPlayerStatisticsPanel::loadsBoardStructureAlongsideExplorerAndSwitc
     headToHead->sortItems(5, Qt::AscendingOrder);
     QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("gamma"));
 
+    QComboBox *comparisonPlayer = panel.findChild<QComboBox *>(
+        QStringLiteral("playerStatisticsBoardStructureComparePlayer"));
+    QComboBox *comparisonCategory = panel.findChild<QComboBox *>(
+        QStringLiteral("playerStatisticsBoardStructureCompareCategory"));
+    const QLabel *comparisonSummary = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsBoardStructureComparisonSummary"));
+    QTableWidget *comparisonTable = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureComparisonTable"));
+    QVERIFY(comparisonPlayer != nullptr);
+    QVERIFY(comparisonCategory != nullptr);
+    QVERIFY(comparisonSummary != nullptr);
+    QVERIFY(comparisonTable != nullptr);
+    const int gammaIndex = comparisonPlayer->findData(QStringLiteral("gamma"));
+    QVERIFY(gammaIndex > 0);
+    comparisonPlayer->setCurrentIndex(gammaIndex);
+    QCOMPARE(comparisonTable->rowCount(), 39);
+    QVERIFY(!comparisonTable->isHidden());
+    QVERIFY(headToHead->isHidden());
+    QVERIFY(comparisonSummary->text().contains(QStringLiteral("alpha profile: 3 games")));
+    QVERIFY(comparisonSummary->text().contains(QStringLiteral("gamma profile: 2 games")));
+    QVERIFY(comparisonSummary->text().contains(
+        QStringLiteral("Direct record from alpha perspective: 2 games")));
+    QVERIFY(comparisonSummary->text().contains(QStringLiteral("not opponent-adjusted")));
+    QCOMPARE(comparisonTable->horizontalHeaderItem(1)->text(), QStringLiteral("alpha"));
+    QCOMPARE(comparisonTable->horizontalHeaderItem(2)->text(), QStringLiteral("gamma"));
+    int queensOverallRow = -1;
+    for (int row = 0; row < comparisonTable->rowCount(); ++row) {
+        if (comparisonTable->item(row, 0)->text()
+            == QStringLiteral("Queens off \u00b7 Overall")) {
+            queensOverallRow = row;
+            break;
+        }
+    }
+    QVERIFY(queensOverallRow >= 0);
+    QCOMPARE(comparisonTable->item(queensOverallRow, 1)->text(), QStringLiteral("100.0%"));
+    QCOMPARE(comparisonTable->item(queensOverallRow, 2)->text(), QStringLiteral("0.0%"));
+    QCOMPARE(comparisonTable->item(queensOverallRow, 3)->text(), QStringLiteral("+100.0 pp"));
+    QCOMPARE(comparisonTable->item(queensOverallRow, 4)->text(), QStringLiteral("3 / 0"));
+    QCOMPARE(comparisonTable->item(queensOverallRow, 5)->text(), QStringLiteral("2 / 0"));
+    const int pawnsIndex = comparisonCategory->findData(QStringLiteral("pawns"));
+    QVERIFY(pawnsIndex > 0);
+    comparisonCategory->setCurrentIndex(pawnsIndex);
+    QCOMPARE(comparisonTable->rowCount(), 12);
+    comparisonCategory->setCurrentIndex(0);
+    comparisonPlayer->setCurrentIndex(0);
+    QVERIFY(comparisonTable->isHidden());
+    QVERIFY(!headToHead->isHidden());
+
     QVERIFY(panel.selectPlayer(QStringLiteral("beta")));
     QVERIFY(summary->text().contains(QStringLiteral("beta · 3 games")));
     QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("0.0%")));
@@ -1178,10 +1226,19 @@ void TestUnitPlayerStatisticsPanel::loadsRealSnapshotWhenProvided()
             QStringLiteral("playerStatisticsBoardStructureOpponentSearch"));
         QSpinBox *minimumGames = panel.findChild<QSpinBox *>(
             QStringLiteral("playerStatisticsBoardStructureMinimumGames"));
+        QComboBox *comparisonPlayer = panel.findChild<QComboBox *>(
+            QStringLiteral("playerStatisticsBoardStructureComparePlayer"));
+        const QLabel *comparisonSummary = panel.findChild<QLabel *>(
+            QStringLiteral("playerStatisticsBoardStructureComparisonSummary"));
+        QTableWidget *comparisonTable = panel.findChild<QTableWidget *>(
+            QStringLiteral("playerStatisticsBoardStructureComparisonTable"));
         QVERIFY(summary != nullptr);
         QVERIFY(headToHead != nullptr);
         QVERIFY(search != nullptr);
         QVERIFY(minimumGames != nullptr);
+        QVERIFY(comparisonPlayer != nullptr);
+        QVERIFY(comparisonSummary != nullptr);
+        QVERIFY(comparisonTable != nullptr);
         QVERIFY(summary->text().contains(QStringLiteral("caesar · 588 games")));
         QCOMPARE(headToHead->rowCount(), 164);
         search->setText(QStringLiteral("TURBOPLOMBIR"));
@@ -1190,6 +1247,14 @@ void TestUnitPlayerStatisticsPanel::loadsRealSnapshotWhenProvided()
         QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("28"));
         minimumGames->setValue(29);
         QCOMPARE(headToHead->rowCount(), 0);
+        const int turboplombirIndex = comparisonPlayer->findData(
+            QStringLiteral("turboplombir"));
+        QVERIFY(turboplombirIndex > 0);
+        comparisonPlayer->setCurrentIndex(turboplombirIndex);
+        QCOMPARE(comparisonTable->rowCount(), 39);
+        QVERIFY(comparisonSummary->text().contains(
+            QStringLiteral("Direct record from caesar perspective: 28 games")));
+        QVERIFY(comparisonSummary->text().contains(QStringLiteral("not opponent-adjusted")));
     }
 }
 
