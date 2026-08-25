@@ -5,6 +5,8 @@ This document describes ParlAWL's multi-game study presentation. It changes how 
 ## Window model
 
 - The dedicated `Player Explorer` window is the source for opening a local read-only game breakdown. The older puzzle shell is reserved for puzzle launches and is not surfaced anywhere in the game-study workflow.
+- Player Explorer opens on its game library rather than the statistics overview. Filters remain directly above the table; one row can be activated by double-click or Return, while the explicit `Open Game Review` button remains available after selection.
+- Its visible source state stays compact (`Local read-only library` plus evidence availability). Exact source-plan, coverage, and engine-configuration lineage remains in the status tooltip rather than occupying a second technical header.
 - Opening a game switches from Player Explorer to one separate review window and one floating board window for that game. Player Explorer is hidden while studying rather than remaining as a competing host. The review window title follows the selected game's player names, ratings, result, and date. Opening another game does not replace the first game.
 - Each open game owns an independent replay position, playback state, notation expansion, board appearance, and notes document.
 - Activating a floating board selects the matching Review Hub tab. Selecting a Review Hub tab restores and raises the matching board.

@@ -14,11 +14,13 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QJsonValue>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
 #include <QPushButton>
 #include <QSet>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -1518,6 +1520,7 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_openingFilter(new QComboBox(this))
     , m_resetFiltersButton(new QPushButton(QStringLiteral("Reset"), this))
     , m_replayGameButton(new QPushButton(QStringLiteral("Replay Selected Game"), this))
+    , m_gamesHintLabel(nullptr)
     , m_statusLabel(new QLabel(this))
     , m_summaryLabel(new QLabel(this))
     , m_gameMetricLabel(nullptr)
@@ -1554,6 +1557,7 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_structureCastlingTable(new QTableWidget(this))
     , m_structureHeadToHeadTable(new QTableWidget(this))
     , m_updatingExplorerFilters(false)
+    , m_dedicatedExplorerMode(false)
 {
     setMinimumWidth(520);
     auto *layout = new QVBoxLayout(this);
@@ -1732,13 +1736,13 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     auto *gamesPage = new QWidget(m_detailTabs);
     auto *gamesLayout = new QVBoxLayout(gamesPage);
     gamesLayout->setContentsMargins(8, 8, 8, 8);
-    auto *gamesHint = new QLabel(
+    m_gamesHintLabel = new QLabel(
         QStringLiteral("One row per filtered game. Double-click a row to replay it. Ratings are source-observed postgame ratings."),
         gamesPage);
-    gamesHint->setTextFormat(Qt::PlainText);
-    gamesHint->setWordWrap(true);
+    m_gamesHintLabel->setTextFormat(Qt::PlainText);
+    m_gamesHintLabel->setWordWrap(true);
     auto *gamesHeader = new QHBoxLayout();
-    gamesHeader->addWidget(gamesHint, 1);
+    gamesHeader->addWidget(m_gamesHintLabel, 1);
     m_replayGameButton->setObjectName(QStringLiteral("playerStatisticsReplayGame"));
     m_replayGameButton->setEnabled(false);
     gamesHeader->addWidget(m_replayGameButton);
@@ -2034,6 +2038,15 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
             emit gameBreakdownRequested(sourceGameId);
         }
     });
+    auto *openGameShortcut = new QShortcut(QKeySequence(Qt::Key_Return), m_gameTable);
+    openGameShortcut->setObjectName(
+        QStringLiteral("playerStatisticsOpenSelectedGameShortcut"));
+    openGameShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(openGameShortcut, &QShortcut::activated, m_replayGameButton, [this] {
+        if (m_replayGameButton->isEnabled()) {
+            m_replayGameButton->click();
+        }
+    });
     connect(m_gameTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const int row = m_gameTable->currentRow();
         const QTableWidgetItem *item = row >= 0 ? m_gameTable->item(row, 0) : nullptr;
@@ -2085,12 +2098,28 @@ PlayerStatisticsPanel::~PlayerStatisticsPanel()
 
 void PlayerStatisticsPanel::setDedicatedExplorerMode(bool enabled)
 {
+    m_dedicatedExplorerMode = enabled;
     setTitle(enabled ? QString() : QStringLiteral("player statistics"));
     m_openButton->setVisible(!enabled);
     m_openStructureButton->setVisible(!enabled);
     m_replayGameButton->setText(
         enabled ? QStringLiteral("Open Game Review")
                 : QStringLiteral("Replay Selected Game"));
+    m_gamesHintLabel->setText(enabled
+        ? QStringLiteral(
+              "Double-click a game to open or switch its Review tab. Return here to add another game.")
+        : QStringLiteral(
+              "One row per filtered game. Double-click a row to replay it. Ratings are source-observed postgame ratings."));
+    m_gameTable->setAccessibleName(
+        enabled ? QStringLiteral("Game library") : QStringLiteral("Filtered games"));
+    m_gameTable->setAccessibleDescription(
+        enabled
+            ? QStringLiteral("Filtered games. Double-click a row or press Return to open Game Review.")
+            : QStringLiteral("Filtered player games."));
+    m_replayGameButton->setAccessibleDescription(
+        enabled
+            ? QStringLiteral("Open the selected game in the Review window")
+            : QStringLiteral("Replay the selected game"));
     setStyleSheet(enabled
         ? QStringLiteral("QGroupBox { border: 0; margin: 0; padding: 0; }")
         : QString());
@@ -2563,6 +2592,9 @@ bool PlayerStatisticsPanel::loadExplorerDatabase(
                 ? QStringLiteral("Replace Structure Stats")
                 : QStringLiteral("Open Structure Stats")));
     rebuildExplorerView();
+    if (m_dedicatedExplorerMode && m_detailTabs->isTabEnabled(1)) {
+        m_detailTabs->setCurrentIndex(1);
+    }
     return true;
 }
 
@@ -3044,27 +3076,36 @@ void PlayerStatisticsPanel::rebuildExplorerView()
     const bool hasAnalysisCatalog = m_analysisCatalog != nullptr
         && m_analysisCatalog->isOpen();
     if (hasPersistedEngine) {
-        m_statusLabel->setText(
+        const QString fullStatus =
             QStringLiteral("Read-only game explorer · source %1 · persisted fixed-node engine coverage %2/%3 games · no engine process")
                 .arg(compactSourcePlan(sourcePlan))
                 .arg(m_explorerMetadata.value(QStringLiteral("engine_analyzed_game_count")))
-                .arg(m_explorerMetadata.value(QStringLiteral("game_count"))));
+                .arg(m_explorerMetadata.value(QStringLiteral("game_count")));
+        m_statusLabel->setText(m_dedicatedExplorerMode
+            ? QStringLiteral("Local read-only library · stored engine evidence · no engine running")
+            : fullStatus);
         m_statusLabel->setToolTip(
-            sourcePlan + QLatin1Char('\n')
+            fullStatus + QLatin1Char('\n') + sourcePlan + QLatin1Char('\n')
             + m_explorerMetadata.value(QStringLiteral("engine_config_id")));
     } else if (hasAnalysisCatalog) {
-        m_statusLabel->setText(
+        const QString fullStatus =
             QStringLiteral("Read-only analysis catalog · source %1 · games, moves, openings, outcomes, and BoardStructure rows · no engine evidence")
-                .arg(compactSourcePlan(sourcePlan)));
+                .arg(compactSourcePlan(sourcePlan));
+        m_statusLabel->setText(m_dedicatedExplorerMode
+            ? QStringLiteral("Local read-only library · descriptive structure data · no engine evidence")
+            : fullStatus);
         m_statusLabel->setToolTip(
-            sourcePlan + QLatin1Char('\n')
+            fullStatus + QLatin1Char('\n') + sourcePlan + QLatin1Char('\n')
             + m_explorerMetadata.value(
                 QStringLiteral("descriptive_metric_registry_id")));
     } else {
-        m_statusLabel->setText(
+        const QString fullStatus =
             QStringLiteral("Read-only game explorer · source %1 · retrospective results/openings · no engine evidence")
-                .arg(compactSourcePlan(sourcePlan)));
-        m_statusLabel->setToolTip(sourcePlan);
+                .arg(compactSourcePlan(sourcePlan));
+        m_statusLabel->setText(m_dedicatedExplorerMode
+            ? QStringLiteral("Local read-only library · results and openings · no engine evidence")
+            : fullStatus);
+        m_statusLabel->setToolTip(fullStatus + QLatin1Char('\n') + sourcePlan);
     }
     m_gameMetricLabel->setText(numberText(games.size()));
     m_moveMetricLabel->setText(numberText(decisions.size()));
@@ -3152,10 +3193,6 @@ void PlayerStatisticsPanel::rebuildExplorerView()
         m_gameTable->setItem(row, 8, new NumericTableWidgetItem(game.opponentRating));
     }
     m_gameTable->setSortingEnabled(true);
-    if (m_gameTable->rowCount() > 0) {
-        m_gameTable->setCurrentCell(0, 0);
-        m_gameTable->selectRow(0);
-    }
 
     struct OpeningSummary {
         QString label;

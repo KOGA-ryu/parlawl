@@ -175,6 +175,7 @@ private:
     QComboBox *m_openingFilter;
     QPushButton *m_resetFiltersButton;
     QPushButton *m_replayGameButton;
+    QLabel *m_gamesHintLabel;
     QLabel *m_statusLabel;
     QLabel *m_summaryLabel;
     QLabel *m_gameMetricLabel;
@@ -222,4 +223,5 @@ private:
     QHash<QString, QString> m_explorerMetadata;
     QString m_explorerConnectionName;
     bool m_updatingExplorerFilters;
+    bool m_dedicatedExplorerMode;
 };

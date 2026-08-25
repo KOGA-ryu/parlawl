@@ -1157,6 +1157,19 @@ void TestUnitPlayerStatisticsPanel::dedicatedExplorerSeparatesStudyFromLegacyShe
     PlayerStatisticsPanel *panel = explorer.panel();
     QVERIFY(panel != nullptr);
     QCOMPARE(panel->title(), QString());
+    auto *tabs = panel->findChild<QTabWidget *>(
+        QStringLiteral("playerStatisticsDetailTabs"));
+    auto *status = panel->findChild<QLabel *>(
+        QStringLiteral("playerStatisticsSourceStatus"));
+    auto *gameTable = panel->findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsGamesTable"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(status != nullptr);
+    QVERIFY(gameTable != nullptr);
+    QCOMPARE(tabs->currentIndex(), 1);
+    QCOMPARE(status->text(),
+        QStringLiteral("Local read-only library · results and openings · no engine evidence"));
+    QCOMPARE(gameTable->accessibleName(), QStringLiteral("Game library"));
     auto *openReview = panel->findChild<QPushButton *>(
         QStringLiteral("playerStatisticsReplayGame"));
     QVERIFY(openReview != nullptr);
@@ -1166,16 +1179,29 @@ void TestUnitPlayerStatisticsPanel::dedicatedExplorerSeparatesStudyFromLegacyShe
         + QString(64, QLatin1Char('1'));
     QVERIFY2(explorer.gameBreakdown(gameId, &error).has_value(), qPrintable(error));
     QSignalSpy spy(&explorer, &GameExplorerWindow::gameBreakdownRequested);
-    QVERIFY(QMetaObject::invokeMethod(
-        panel,
-        "gameBreakdownRequested",
-        Qt::DirectConnection,
-        Q_ARG(QString, gameId)));
-    QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.first().at(0).toString(), gameId);
-
     explorer.surface();
     QVERIFY(explorer.isVisible());
+    gameTable->selectRow(0);
+    const QString selectedGameId = gameTable->item(0, 0)->data(
+        Qt::UserRole + 1).toString();
+    QVERIFY(QMetaObject::invokeMethod(
+        gameTable,
+        "cellDoubleClicked",
+        Qt::DirectConnection,
+        Q_ARG(int, 0),
+        Q_ARG(int, 0)));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toString(), selectedGameId);
+    spy.clear();
+    QObject *openShortcut = panel->findChild<QObject *>(
+        QStringLiteral("playerStatisticsOpenSelectedGameShortcut"));
+    QVERIFY(openShortcut != nullptr);
+    QVERIFY(QMetaObject::invokeMethod(
+        openShortcut,
+        "activated",
+        Qt::DirectConnection));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toString(), selectedGameId);
     explorer.close();
 }
 
