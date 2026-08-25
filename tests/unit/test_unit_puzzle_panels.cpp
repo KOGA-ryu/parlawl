@@ -329,14 +329,15 @@ void TestUnitPuzzlePanels::gameBreakdownShowsClockAndOpeningBoundaryWithoutEngin
     session.load(*pack);
 
     ReplayEvidencePanel evidence;
-    evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Longest server-recorded decision")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("No best-move, blunder")));
-    QVERIFY(!evidence.canShowEngineLine());
     QVERIFY(session.seekMainlinePly(3));
     evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("first recorded departure")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Server-accounted move time: 3.0s")));
+    QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("evidence unavailable"));
+    QVERIFY(evidence.explanationText().contains(
+        QStringLiteral("no best-move, accuracy, or causal claim"), Qt::CaseInsensitive));
+    QVERIFY(evidence.summaryText().contains(
+        QStringLiteral("server-accounted time: 3.0s"), Qt::CaseInsensitive));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("starts no engine"), Qt::CaseInsensitive));
+    QVERIFY(!evidence.canShowEngineLine());
 
     MoveListPanel moves;
     moves.setAnnotatedReplay(*pack, 3, false, 0);
@@ -350,78 +351,95 @@ void TestUnitPuzzlePanels::gameBreakdownShowsPersistedEngineEvidenceWithoutStart
 {
     QString error;
     const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
-        mechanicalGameWithEngineFixture(), &error);
+        mechanicalGameWithDeepFixture(), &error);
     QVERIFY2(pack.has_value(), qPrintable(error));
     parlawl::puzzle_runner::ReplaySession session;
     session.load(*pack);
 
+    QVERIFY(session.seekMainlinePly(1));
     ReplayEvidencePanel evidence;
     evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("GAME REPORT V1")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow screen coverage: persisted fixed-node evidence for 4/4 recorded moves")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow candidate labels: Severe 1 · Mistake 0 · Inaccuracy 0")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("1. Ply 3 Nf3 — Alpha — Severe — 16.6% mover expectation loss")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("best d2d4")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("do not prove cause, intent, or a unique best move")));
-
-    QVERIFY(session.seekMainlinePly(3));
-
-    evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("SHALLOW FIXED-NODE SCREEN")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow candidate label: Severe")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Engine-reported best move before play: d2d4")));
+    QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("not selected for deep review"));
+    QVERIFY(evidence.explanationText().contains(QStringLiteral("not selected for deep review")));
+    QVERIFY(evidence.explanationText().contains(QStringLiteral("not an accuracy claim")));
+    QVERIFY(evidence.summaryText().contains(QStringLiteral("Shallow screening candidate: None")));
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Reported PV, not played: d2d4 d7d5")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("not an objective verdict")));
 
     MoveListPanel moves;
-    moves.setAnnotatedReplay(*pack, 3, false, 0);
-    QVERIFY(moves.truthStatusText().contains(QStringLiteral("starts no engine")));
+    moves.setAnnotatedReplay(*pack, 1, false, 0);
+    QVERIFY(moves.truthStatusText().contains(QStringLiteral("not selected for deep review")));
     const QTableWidget *table = moves.findChild<QTableWidget *>();
     QVERIFY(table != nullptr);
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("severe")));
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("+0.60")));
+    QVERIFY(table->item(0, 1)->toolTip().contains(QStringLiteral("Not selected for deep review")));
 }
 
 void TestUnitPuzzlePanels::gameBreakdownShowsDeepSelectiveEvidenceAboveShallowScreen()
 {
+    const QList<QPair<QString, QString>> statuses {
+        {QStringLiteral("confirmed_severe_error"), QStringLiteral("deep confirmed severe")},
+        {QStringLiteral("confirmed_missed_opportunity"), QStringLiteral("confirmed missed opportunity")},
+        {QStringLiteral("ambiguous_engine_instability"), QStringLiteral("ambiguous")},
+        {QStringLiteral("below_confirmation_threshold"), QStringLiteral("below threshold")},
+    };
+    for (const auto &[sourceStatus, expectedStatus] : statuses) {
+        auto game = mechanicalGameWithDeepFixture();
+        auto &moment = game.selectiveDeepReview->moments[0];
+        moment.status = sourceStatus;
+        if (sourceStatus == QStringLiteral("confirmed_missed_opportunity")) {
+            moment.severity = QStringLiteral("mistake");
+        } else if (sourceStatus == QStringLiteral("ambiguous_engine_instability")) {
+            moment.severity.reset();
+            moment.wdlLossMillionths.reset();
+            moment.pairStability = QStringLiteral("exact_duplicate_mismatch");
+        } else if (sourceStatus == QStringLiteral("below_confirmation_threshold")) {
+            moment.playedExpectationMillionths = 740'000;
+            moment.signedExpectationDeltaMillionths = 10'000;
+            moment.wdlLossMillionths = 10'000;
+        }
+        QString error;
+        const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(game, &error);
+        QVERIFY2(pack.has_value(), qPrintable(sourceStatus + QStringLiteral(": ") + error));
+        parlawl::puzzle_runner::ReplaySession session;
+        session.load(*pack);
+        QVERIFY(session.seekMainlinePly(3));
+        ReplayEvidencePanel evidence;
+        evidence.setReplayState(*pack, session, 0);
+        QCOMPARE(evidence.evidenceStatusText(), expectedStatus);
+        if (expectedStatus == QStringLiteral("ambiguous")) {
+            const auto *change = evidence.findChild<QLabel *>(QStringLiteral("moveEvaluationChange"));
+            QVERIFY(change != nullptr);
+            QCOMPARE(change->text(), QStringLiteral(
+                "Evaluation change · no stable mover-expectation change was published"));
+            QVERIFY(!change->text().contains(QStringLiteral("−not stably published")));
+        }
+    }
+
     QString error;
     const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
         mechanicalGameWithDeepFixture(), &error);
     QVERIFY2(pack.has_value(), qPrintable(error));
     parlawl::puzzle_runner::ReplaySession session;
     session.load(*pack);
-
+    QVERIFY(session.seekMainlinePly(3));
     ReplayEvidencePanel evidence;
     evidence.setReplayState(*pack, session, 0);
-    const QString gameSummary = evidence.summaryText();
-    QVERIFY(gameSummary.indexOf(QStringLiteral("DEEP SELECTIVE REVIEW"))
-        < gameSummary.indexOf(QStringLiteral("GAME REPORT V1")));
-    QVERIFY(gameSummary.contains(QStringLiteral("50000-NODE POLICY")));
-    QVERIFY(gameSummary.contains(QStringLiteral("confirmed severe 1")));
-    QVERIFY(gameSummary.contains(QStringLiteral("Unselected moves are not certified accurate")));
-    QVERIFY(gameSummary.contains(QStringLiteral("Rank 1 alternative, not played")));
-
-    QVERIFY(session.seekMainlinePly(3));
-    evidence.setReplayState(*pack, session, 0);
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("DEEP SELECTIVE ASSESSMENT · 50000 NODES")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("stable loss 16.6%")));
+    evidence.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(evidence.evidenceStatusText(), QStringLiteral("deep confirmed severe"));
+    QVERIFY(evidence.explanationText().contains(QStringLiteral("16.6%")));
+    QVERIFY(!evidence.technicalDetailsVisible());
+    auto *detailsButton = evidence.findChild<QPushButton *>(QStringLiteral("technicalDetailsButton"));
+    QVERIFY(detailsButton != nullptr);
+    QTest::mouseClick(detailsButton, Qt::LeftButton);
+    QVERIFY(evidence.technicalDetailsVisible());
     QVERIFY(evidence.summaryText().contains(QStringLiteral("Alternative 1, not played: d2d4")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("Played-move constrained line: g1f3")));
-    QVERIFY(evidence.summaryText().contains(QStringLiteral("SHALLOW FIXED-NODE SCREEN")));
-
-    MoveListPanel moves;
-    moves.setAnnotatedReplay(*pack, 3, false, 0);
-    const QTableWidget *table = moves.findChild<QTableWidget *>();
-    QVERIFY(table != nullptr);
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("deep severe")));
-    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("screen severe")));
 }
 
 void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
 {
     QString error;
     const auto pack = parlawl::puzzle_runner::AnnotatedReplayPack::fromMechanicalGame(
-        mechanicalGameFixture(), &error);
+        mechanicalGameWithDeepFixture(), &error);
     QVERIFY2(pack.has_value(), qPrintable(error));
     parlawl::puzzle_runner::ReplaySession session;
     session.load(*pack);
@@ -439,11 +457,38 @@ void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
     QVERIFY(evidence != nullptr);
     QVERIFY(moves->isVisible());
     QVERIFY(evidence->isVisible());
-    QVERIFY(evidence->summaryText().contains(QStringLiteral("first recorded departure")));
+    QCOMPARE(evidence->evidenceStatusText(), QStringLiteral("deep confirmed severe"));
+    auto *header = evidence->findChild<QLabel *>(QStringLiteral("reviewGameHeader"));
+    QVERIFY(header != nullptr);
+    const qreal headerPointSize = header->font().pointSizeF();
+    for (int refresh = 0; refresh < 12; ++refresh) {
+        panel.setReplayState(*pack, session, 0);
+    }
+    QCOMPARE(header->font().pointSizeF(), headerPointSize);
+
+    auto *focusButton = evidence->findChild<QPushButton *>(QStringLiteral("focusReadButton"));
+    QVERIFY(focusButton != nullptr);
+    QTest::mouseClick(focusButton, Qt::LeftButton);
+    QVERIFY(evidence->focusReadVisible());
+    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("At"));
+    QTest::keyClick(evidence, Qt::Key_Right);
+    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("ply"));
+    QTest::keyClick(evidence, Qt::Key_Space);
+    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("3,"));
+    auto *focusPrevious = evidence->findChild<QPushButton *>(
+        QStringLiteral("focusReadPreviousButton"));
+    QVERIFY(focusPrevious != nullptr);
+    QTest::mouseClick(focusPrevious, Qt::LeftButton);
+    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("ply"));
+    QTest::keyClick(evidence, Qt::Key_Space);
+    QCOMPARE(evidence->focusReadAnchorText(), QStringLiteral("3,"));
+    QTest::keyClick(evidence, Qt::Key_Escape);
+    QVERIFY(!evidence->focusReadVisible());
 
     QSignalSpy seekSpy(&panel, &GameReviewPanel::replayPlyRequested);
     auto *table = moves->findChild<QTableWidget *>();
     QVERIFY(table != nullptr);
+    QVERIFY(table->item(1, 1)->text().contains(QStringLiteral("deep confirmed severe")));
     QVERIFY(QMetaObject::invokeMethod(
         table,
         "cellClicked",
@@ -452,6 +497,11 @@ void TestUnitPuzzlePanels::gameReviewPanelKeepsMovesAndEvidenceTogether()
         Q_ARG(int, 2)));
     QCOMPARE(seekSpy.count(), 1);
     QCOMPARE(seekSpy.at(0).at(0).toInt(), 4);
+    table->setCurrentCell(0, 1);
+    table->setFocus();
+    QTest::keyClick(table, Qt::Key_Return);
+    QCOMPARE(seekSpy.count(), 2);
+    QCOMPARE(seekSpy.at(1).at(0).toInt(), 1);
 }
 
 void TestUnitPuzzlePanels::settingsCardShowsSupplyStatusText()

@@ -37,6 +37,7 @@ class QPushButton;
 class QTabWidget;
 class QTextEdit;
 class QThread;
+class QTimer;
 class StockfishReviewController;
 class TransportControls;
 class SettingsCard;
@@ -137,6 +138,7 @@ private:
     QString m_attemptSessionId;
     AnalysisOrchestrator *m_orchestrator;
     QThread *m_orchestratorThread;
+    QTimer *m_replayPlaybackTimer;
     parlawl::puzzle_runner::SessionController m_sessionController;
     StockfishReviewController *m_stockfishReviewController;
     PuzzleSupplyCoordinator *m_puzzleSupplyCoordinator;

@@ -6,18 +6,23 @@
 #include <QColor>
 #include <QComboBox>
 #include <QFontDatabase>
+#include <QFrame>
 #include <QAbstractItemView>
 #include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QNativeGestureEvent>
 #include <QLabel>
 #include <QPalette>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -25,6 +30,62 @@
 #include "pgn_utils.h"
 
 namespace {
+
+class FixedScaleTextEdit final : public QTextEdit
+{
+public:
+    explicit FixedScaleTextEdit(QWidget *parent = nullptr)
+        : QTextEdit(parent)
+    {
+    }
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::NativeGesture) {
+            auto *gesture = static_cast<QNativeGestureEvent *>(event);
+            if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+                event->accept();
+                return true;
+            }
+        }
+        return QTextEdit::event(event);
+    }
+
+    void wheelEvent(QWheelEvent *event) override
+    {
+        if (event->modifiers().testFlag(Qt::ControlModifier)
+            || event->modifiers().testFlag(Qt::MetaModifier)) {
+            const int delta = !event->pixelDelta().isNull()
+                ? event->pixelDelta().y() : event->angleDelta().y() / 3;
+            verticalScrollBar()->setValue(verticalScrollBar()->value() - delta);
+            event->accept();
+            return;
+        }
+        QTextEdit::wheelEvent(event);
+    }
+};
+
+class ReplayMoveTable final : public QTableWidget
+{
+public:
+    explicit ReplayMoveTable(QWidget *parent = nullptr)
+        : QTableWidget(parent)
+    {
+    }
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && currentRow() >= 0 && currentColumn() >= 0) {
+            emit cellActivated(currentRow(), currentColumn());
+            event->accept();
+            return;
+        }
+        QTableWidget::keyPressEvent(event);
+    }
+};
 
 QString ratingText(int rating, bool hidden)
 {
@@ -230,6 +291,231 @@ QString deepLineSummary(const parlawl::puzzle_runner::SelectiveDeepEngineLine &l
         .arg(pv);
 }
 
+QString deepEvidenceStatusText(const QString &sourceStatus)
+{
+    if (sourceStatus == QStringLiteral("confirmed_severe_error")) {
+        return QStringLiteral("deep confirmed severe");
+    }
+    if (sourceStatus == QStringLiteral("confirmed_missed_opportunity")) {
+        return QStringLiteral("confirmed missed opportunity");
+    }
+    if (sourceStatus == QStringLiteral("ambiguous_engine_instability")
+        || sourceStatus == QStringLiteral("incomplete_deep_evidence")) {
+        return QStringLiteral("ambiguous");
+    }
+    if (sourceStatus == QStringLiteral("below_confirmation_threshold")) {
+        return QStringLiteral("below threshold");
+    }
+    // Fail closed instead of silently recategorizing an unknown retained token.
+    return QStringLiteral("evidence unavailable");
+}
+
+bool deepEvidenceStatusIsRecognized(const QString &sourceStatus)
+{
+    return sourceStatus == QStringLiteral("confirmed_severe_error")
+        || sourceStatus == QStringLiteral("confirmed_missed_opportunity")
+        || sourceStatus == QStringLiteral("ambiguous_engine_instability")
+        || sourceStatus == QStringLiteral("incomplete_deep_evidence")
+        || sourceStatus == QStringLiteral("below_confirmation_threshold");
+}
+
+bool deepEvidenceStatusAllowsStableChange(const QString &sourceStatus)
+{
+    return sourceStatus == QStringLiteral("confirmed_severe_error")
+        || sourceStatus == QStringLiteral("confirmed_missed_opportunity")
+        || sourceStatus == QStringLiteral("below_confirmation_threshold");
+}
+
+struct MoveCoachPresentation {
+    QString status;
+    QString evaluationChange;
+    QString explanation;
+    QString focusReadText;
+    QStringList technicalDetails;
+};
+
+MoveCoachPresentation moveCoachPresentation(
+    const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
+    const parlawl::puzzle_runner::ReplayMove &move)
+{
+    MoveCoachPresentation presentation;
+    const QString mover = move.ply % 2 == 1
+        ? pack.whiteUsername() : pack.blackUsername();
+    const auto *moment = move.selectiveDeepMoments.isEmpty()
+        ? nullptr : &move.selectiveDeepMoments.first();
+    const bool deepReviewAvailable = pack.selectiveDeepReview().has_value();
+    const bool shallowAvailable = move.persistedEngineEvidence.has_value();
+
+    presentation.technicalDetails
+        << QStringLiteral("RECORDED MOVE")
+        << QStringLiteral("Ply %1 · %2 played %3 (%4)")
+               .arg(move.ply)
+               .arg(mover, move.notation.san, move.notation.uci)
+        << QStringLiteral("Phase: %1 · %2 legal moves · %3")
+               .arg(humanizedToken(move.positionPhase))
+               .arg(move.legalMoveCount)
+               .arg(humanizedToken(move.forcednessStatus))
+        << QStringLiteral("Server-accounted time: %1 · clock %2 → %3 · %4")
+               .arg(
+                   moveTimeText(move.elapsedMoveMs),
+                   clockText(move.decisionStartClockMs),
+                   clockText(move.clockRemainingAfterMoveMs),
+                   humanizedToken(move.elapsedStatus));
+
+    if (moment != nullptr) {
+        presentation.status = deepEvidenceStatusText(moment->status);
+        const QString bestMove = moment->bestMoveUci.value_or(QStringLiteral("unavailable"));
+        const QString loss = moment->wdlLossMillionths.has_value()
+            ? percentageText(*moment->wdlLossMillionths) : QStringLiteral("not stably published");
+        const bool stableChangeAvailable = deepEvidenceStatusAllowsStableChange(moment->status)
+            && moment->bestExpectationMillionths.has_value()
+            && moment->playedExpectationMillionths.has_value()
+            && moment->wdlLossMillionths.has_value();
+        if (stableChangeAvailable) {
+            presentation.evaluationChange = QStringLiteral(
+                "Mover expectation · retained alternative %1 → recorded move %2 · change −%3")
+                .arg(
+                    percentageText(*moment->bestExpectationMillionths),
+                    percentageText(*moment->playedExpectationMillionths),
+                    loss);
+        } else {
+            presentation.evaluationChange = QStringLiteral(
+                "Evaluation change · no stable mover-expectation change was published");
+        }
+
+        if (!deepEvidenceStatusIsRecognized(moment->status)) {
+            presentation.explanation = QStringLiteral(
+                "The retained source status for %1 is not recognized by this view, so no firm move-quality claim is available.")
+                .arg(move.notation.san);
+        } else if (presentation.status == QStringLiteral("deep confirmed severe")
+                   && stableChangeAvailable) {
+            presentation.explanation = QStringLiteral(
+                "The retained deep comparison measured a stable %1 mover-expectation loss after %2; its leading alternative was %3.")
+                .arg(loss, move.notation.san, bestMove);
+        } else if (presentation.status == QStringLiteral("confirmed missed opportunity")
+                   && stableChangeAvailable) {
+            presentation.explanation = QStringLiteral(
+                "The retained deep comparison measured a stable %1 missed opportunity after %2; its leading alternative was %3.")
+                .arg(loss, move.notation.san, bestMove);
+        } else if (presentation.status == QStringLiteral("deep confirmed severe")
+                   || presentation.status == QStringLiteral("confirmed missed opportunity")) {
+            presentation.explanation = QStringLiteral(
+                "Retained deep evidence labels %1 %2, but no complete stable mover-expectation change was published in the joined record.")
+                .arg(move.notation.san, presentation.status);
+        } else if (presentation.status == QStringLiteral("below threshold")) {
+            presentation.explanation = QStringLiteral(
+                "Deep review assessed %1, but the retained comparison stayed below its confirmation threshold.")
+                .arg(move.notation.san);
+        } else {
+            presentation.explanation = QStringLiteral(
+                "Deep review did not retain a stable comparison for %1, so no firm move-quality claim is available.")
+                .arg(move.notation.san);
+        }
+
+        presentation.focusReadText = QStringLiteral(
+            "At ply %1, %2 played %3. The retained %4-node deep review labels this evidence %5. %6 This is a contract-bounded comparison of the recorded move and retained alternatives. It does not prove player intent, a causal explanation, or a uniquely correct move.")
+            .arg(move.ply)
+            .arg(mover, move.notation.san)
+            .arg(pack.selectiveDeepReview()->nodeLimit)
+            .arg(presentation.status, presentation.explanation);
+        presentation.technicalDetails
+            << QStringLiteral("DEEP SELECTIVE EVIDENCE")
+            << QStringLiteral("Evidence status: %1").arg(presentation.status)
+            << QStringLiteral("Retained source status: %1").arg(moment->status)
+            << presentation.evaluationChange
+            << QStringLiteral("Retained leading alternative: %1 · recorded move: %2")
+                   .arg(bestMove, moment->playedMoveUci)
+            << QStringLiteral("Pair stability: %1 · mate comparison: %2")
+                   .arg(humanizedToken(moment->pairStability), humanizedToken(moment->mateComparison));
+        for (int index = 0; index < moment->alternativeLines.size(); ++index) {
+            presentation.technicalDetails
+                << QStringLiteral("Alternative %1, not played: %2")
+                       .arg(index + 1)
+                       .arg(deepLineSummary(moment->alternativeLines.at(index)));
+        }
+        if (moment->playedLine.has_value()) {
+            presentation.technicalDetails
+                << QStringLiteral("Recorded-move constrained line: %1")
+                       .arg(deepLineSummary(*moment->playedLine));
+        }
+    } else if (deepReviewAvailable) {
+        presentation.status = QStringLiteral("not selected for deep review");
+        presentation.explanation = shallowAvailable
+            ? QStringLiteral(
+                  "This move was not selected for deep review. Its complete-move evidence remains a shallow screening candidate, not an accuracy claim.")
+            : QStringLiteral(
+                  "This move was not selected for deep review. No move-quality claim is available, and the move is not certified accurate.");
+        presentation.focusReadText = QStringLiteral(
+            "At ply %1, %2 played %3. This move was not selected for deep review by the bounded outcome-blind policy. %4 Unselected moves are not certified accurate, and no result or postgame rating was used to select them.")
+            .arg(move.ply)
+            .arg(mover, move.notation.san, presentation.explanation);
+        presentation.technicalDetails
+            << QStringLiteral("DEEP SELECTIVE EVIDENCE")
+            << QStringLiteral("Evidence status: not selected for deep review")
+            << QStringLiteral("Unselected moves are not certified accurate.");
+    } else if (shallowAvailable) {
+        presentation.status = QStringLiteral("shallow screening candidate");
+        presentation.explanation = QStringLiteral(
+            "Only the persisted shallow fixed-node screen covers this move; it is a screening candidate, not a deep verdict or accuracy claim.");
+        presentation.focusReadText = QStringLiteral(
+            "At ply %1, %2 played %3. Only persisted shallow fixed-node evidence is available. It is a screening candidate rather than an objective verdict, a causal explanation, or proof of a uniquely correct move.")
+            .arg(move.ply)
+            .arg(mover, move.notation.san);
+    } else {
+        presentation.status = QStringLiteral("evidence unavailable");
+        presentation.evaluationChange = QStringLiteral("Evaluation change · unavailable");
+        presentation.explanation = QStringLiteral(
+            "No joined move evidence is available, so no best-move, accuracy, or causal claim is shown.");
+        presentation.focusReadText = QStringLiteral(
+            "At ply %1, %2 played %3. No joined move evidence is available. The recorded legal replay does not establish move accuracy, a best move, or a causal explanation.")
+            .arg(move.ply)
+            .arg(mover, move.notation.san);
+    }
+
+    if (shallowAvailable) {
+        const auto &engine = *move.persistedEngineEvidence;
+        if (presentation.evaluationChange.isEmpty()) {
+            presentation.evaluationChange = QStringLiteral(
+                "shallow screening candidate · mover expectation %1 → %2 · change −%3")
+                .arg(
+                    percentageText(engine.expectedBeforeMillionths),
+                    percentageText(engine.expectedAfterMillionths),
+                    percentageText(engine.wdlLossMillionths));
+        }
+        presentation.technicalDetails
+            << QStringLiteral("SHALLOW SCREENING CONTEXT")
+            << QStringLiteral("Shallow screening candidate: %1 · mover expectation %2 → %3 · loss %4")
+                   .arg(
+                       humanizedToken(engine.severity),
+                       percentageText(engine.expectedBeforeMillionths),
+                       percentageText(engine.expectedAfterMillionths),
+                       percentageText(engine.wdlLossMillionths))
+            << QStringLiteral("White evaluation: %1 before · %2 after")
+                   .arg(
+                       engineScoreText(
+                           engine.beforeScoreKind,
+                           engine.beforeCentipawnsWhite,
+                           engine.beforeMateForWhite),
+                       engineScoreText(
+                           engine.afterScoreKind,
+                           engine.afterCentipawnsWhite,
+                           engine.afterMateForWhite))
+            << QStringLiteral("Reported PV, not played: %1")
+                   .arg(engine.beforePvUci.isEmpty()
+                            ? QStringLiteral("unavailable") : engine.beforePvUci)
+            << QStringLiteral("Search: depth %1/%2 · %3 nodes")
+                   .arg(engine.beforeDepth)
+                   .arg(engine.beforeSelectiveDepth)
+                   .arg(engine.beforeNodes);
+    }
+
+    presentation.technicalDetails
+        << QStringLiteral("CLAIM BOUNDARY")
+        << QStringLiteral(
+               "ParlAWL displays retained evidence only. It starts no engine, replays no producer source, makes no causal claim, and never certifies an unselected move as accurate.");
+    return presentation;
+}
+
 QStringList selectiveDeepReportLines(
     const parlawl::puzzle_runner::AnnotatedReplayPack &pack)
 {
@@ -249,29 +535,29 @@ QStringList selectiveDeepReportLines(
                  .arg(review.moments.size())
                  .arg(review.moments.size() == 1 ? QString() : QStringLiteral("s"))
                  .arg(pack.moves().size() - review.moments.size())
-          << QStringLiteral("Deep statuses: confirmed severe %1 · confirmed missed opportunity %2 · ambiguous %3 · below threshold %4")
+          << QStringLiteral("Deep statuses: deep confirmed severe %1 · confirmed missed opportunity %2 · ambiguous %3 · below threshold %4")
                  .arg(statusCounts.value(QStringLiteral("confirmed_severe_error")))
                  .arg(statusCounts.value(QStringLiteral("confirmed_missed_opportunity")))
-                 .arg(statusCounts.value(QStringLiteral("ambiguous_engine_instability")))
+                 .arg(statusCounts.value(QStringLiteral("ambiguous_engine_instability"))
+                      + statusCounts.value(QStringLiteral("incomplete_deep_evidence")))
                  .arg(statusCounts.value(QStringLiteral("below_confirmation_threshold")))
           << QStringLiteral("Selected moments");
     for (const auto &moment : review.moments) {
         const QString player = moment.mover == QStringLiteral("white")
             ? pack.whiteUsername() : pack.blackUsername();
-        const QString classification = moment.severity.has_value()
-            ? humanizedToken(*moment.severity)
-            : humanizedToken(moment.status);
+        const QString evidenceStatus = deepEvidenceStatusText(moment.status);
         const QString loss = moment.wdlLossMillionths.has_value()
             ? percentageText(*moment.wdlLossMillionths)
                 + QStringLiteral(" mover expectation loss")
             : QStringLiteral("no stable loss published");
-        lines << QStringLiteral("%1. Ply %2 %3 — %4 — %5 — %6 · played %7 · deep best %8")
+        lines << QStringLiteral("%1. Ply %2 %3 — %4 — %5 — %6 · retained source status %7 · played %8 · retained leading alternative %9")
                      .arg(moment.presentationOrder)
                      .arg(moment.ply)
                      .arg(moment.san)
                      .arg(player)
-                     .arg(classification)
+                     .arg(evidenceStatus)
                      .arg(loss)
+                     .arg(moment.status)
                      .arg(moment.playedMoveUci)
                      .arg(moment.bestMoveUci.value_or(QStringLiteral("unavailable")));
         if (!moment.alternativeLines.isEmpty()) {
@@ -451,7 +737,7 @@ QString mechanicalSummaryHtml(const QStringList &lines)
 MoveListPanel::MoveListPanel(QWidget *parent)
     : QGroupBox(QStringLiteral("move list"), parent)
     , m_truthStatusLabel(new QLabel(this))
-    , m_table(new QTableWidget(this))
+    , m_table(new ReplayMoveTable(this))
 {
     auto *layout = new QVBoxLayout(this);
     m_truthStatusLabel->setTextFormat(Qt::PlainText);
@@ -468,10 +754,16 @@ MoveListPanel::MoveListPanel(QWidget *parent)
     m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     m_table->verticalHeader()->setVisible(false);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSelectionMode(QAbstractItemView::NoSelection);
-    m_table->setFocusPolicy(Qt::NoFocus);
-    m_table->setAlternatingRowColors(true);
-    connect(m_table, &QTableWidget::cellClicked, this, [this](int row, int column) {
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setFocusPolicy(Qt::StrongFocus);
+    m_table->setShowGrid(false);
+    m_table->setAlternatingRowColors(false);
+    m_table->verticalHeader()->setDefaultSectionSize(30);
+    m_table->setStyleSheet(QStringLiteral(
+        "QTableWidget { background: #171a1f; alternate-background-color: #171a1f; border: 0; font-size: 13px; }"
+        "QTableWidget::item { padding: 5px 7px; border-bottom: 1px solid #272c34; }"
+        "QHeaderView::section { background: #20242b; color: #aeb6c2; border: 0; padding: 5px; font-size: 12px; }"));
+    const auto requestReplayPly = [this](int row, int column) {
         if (!m_showingAnnotatedReplay || column < 1 || column > 2) {
             return;
         }
@@ -479,7 +771,9 @@ MoveListPanel::MoveListPanel(QWidget *parent)
         if (ply >= 1 && ply <= m_replayMoveCount) {
             emit replayPlyRequested(ply);
         }
-    });
+    };
+    connect(m_table, &QTableWidget::cellClicked, this, requestReplayPly);
+    connect(m_table, &QTableWidget::cellActivated, this, requestReplayPly);
 }
 
 QString MoveListPanel::truthStatusText() const
@@ -581,9 +875,9 @@ void MoveListPanel::setAnnotatedReplay(
     m_truthStatusLabel->setText(
         pack.isMechanicalGameBreakdown()
             ? pack.selectiveDeepReview().has_value()
-                ? QStringLiteral("Recorded legal game replay with a retained outcome-blind selective deep report. Unselected moves are not certified accurate; ParlAWL starts no engine and does not replay producer sources.")
+                ? QStringLiteral("Selective deep review · moves not selected for deep review are not certified accurate.")
                 : pack.persistedEngineEvidence().has_value()
-                ? QStringLiteral("Recorded legal game replay with persisted shallow fixed-node screening. ParlAWL starts no engine; labels are candidates, not objective verdicts.")
+                ? QStringLiteral("Persisted shallow screening candidates · no deep verdicts or accuracy claims.")
                 : QStringLiteral("Recorded legal game replay. Times are server-accounted clock evidence, not direct thinking time. Engine analysis is not joined.")
             : variationActive
             ? QStringLiteral("Supplied engine line active: moves are legally checked, but engine claims are not verified. It was not played; Return restores the real game.")
@@ -619,32 +913,48 @@ void MoveListPanel::setAnnotatedReplay(
         const int column = move.ply % 2 == 1 ? 1 : 2;
         QString text = move.notation.san;
         if (pack.isMechanicalGameBreakdown()) {
-            text += QStringLiteral(" · %1").arg(moveTimeText(move.elapsedMoveMs));
+            QStringList annotations;
+            QStringList tooltips;
+            tooltips << QStringLiteral("Ply %1 · %2 · server-accounted time %3")
+                            .arg(move.ply)
+                            .arg(move.notation.uci, moveTimeText(move.elapsedMoveMs));
             if (pack.openingLastBookPly().has_value()) {
                 if (move.ply == *pack.openingLastBookPly()) {
-                    text += QStringLiteral(" · book end");
+                    annotations << QStringLiteral("book end");
                 } else if (move.ply == *pack.openingLastBookPly() + 1) {
-                    text += QStringLiteral(" · first departure");
+                    annotations << QStringLiteral("first departure");
                 }
             }
             if (move.elapsedMoveMs.has_value() && *move.elapsedMoveMs == longestElapsed) {
-                text += QStringLiteral(" · longest");
+                annotations << QStringLiteral("longest");
             }
             if (!move.selectiveDeepMoments.isEmpty()) {
                 const auto &deep = move.selectiveDeepMoments.first();
-                text += QStringLiteral(" · deep %1")
-                    .arg(deep.severity.has_value()
-                        ? *deep.severity : humanizedToken(deep.status));
+                annotations << deepEvidenceStatusText(deep.status);
+                tooltips << QStringLiteral("Deep evidence status: %1")
+                                .arg(deepEvidenceStatusText(deep.status));
+            } else if (pack.selectiveDeepReview().has_value()) {
+                tooltips << QStringLiteral(
+                    "Not selected for deep review; this does not certify the move as accurate.");
+                if (move.persistedEngineEvidence.has_value()
+                    && move.persistedEngineEvidence->severity != QStringLiteral("none")) {
+                    annotations << QStringLiteral("shallow screening candidate");
+                }
+            } else if (move.persistedEngineEvidence.has_value()
+                       && move.persistedEngineEvidence->severity != QStringLiteral("none")) {
+                annotations << QStringLiteral("shallow screening candidate");
             }
-            if (move.persistedEngineEvidence.has_value()) {
-                const auto &engine = *move.persistedEngineEvidence;
-                text += QStringLiteral(" · screen %1 · %2")
-                    .arg(engine.severity,
-                         engineScoreText(
-                             engine.afterScoreKind,
-                             engine.afterCentipawnsWhite,
-                             engine.afterMateForWhite));
+            if (!annotations.isEmpty()) {
+                text += QStringLiteral(" · ") + annotations.join(QStringLiteral(" · "));
             }
+            auto *item = makeItem(text, !variationActive && currentMainlinePly == move.ply,
+                                  variationActive && variationAnchorPly == move.ply);
+            const QString accessibleSummary = tooltips.join(QLatin1Char('\n'));
+            item->setToolTip(accessibleSummary);
+            item->setData(Qt::AccessibleTextRole,
+                          text + QLatin1Char('\n') + accessibleSummary);
+            m_table->setItem(row, column, item);
+            continue;
         } else if (move.severity != QStringLiteral("none")) {
             text += QStringLiteral("  [%1]").arg(move.severity);
         }
@@ -666,27 +976,150 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     , m_gameLabel(new QLabel(this))
     , m_openingLabel(new QLabel(this))
     , m_engineLabel(new QLabel(this))
-    , m_summaryView(new QTextEdit(this))
+    , m_coachCard(new QFrame(this))
+    , m_moveTitleLabel(new QLabel(m_coachCard))
+    , m_evidenceStatusLabel(new QLabel(m_coachCard))
+    , m_evaluationChangeLabel(new QLabel(m_coachCard))
+    , m_explanationLabel(new QLabel(m_coachCard))
+    , m_technicalDetailsButton(new QPushButton(QStringLiteral("Show technical details"), m_coachCard))
+    , m_focusReadButton(new QPushButton(QStringLiteral("Focus Read"), m_coachCard))
+    , m_focusReadFrame(new QFrame(m_coachCard))
+    , m_focusBeforeLabel(new QLabel(m_focusReadFrame))
+    , m_focusAnchorLabel(new QLabel(m_focusReadFrame))
+    , m_focusAfterLabel(new QLabel(m_focusReadFrame))
+    , m_focusProgressLabel(new QLabel(m_focusReadFrame))
+    , m_focusPreviousButton(new QPushButton(QStringLiteral("←"), m_focusReadFrame))
+    , m_focusNextButton(new QPushButton(QStringLiteral("→"), m_focusReadFrame))
+    , m_summaryView(new FixedScaleTextEdit(this))
     , m_openButton(new QPushButton(QStringLiteral("Open Analysis Replay"), this))
     , m_backButton(new QPushButton(QStringLiteral("Back to Puzzles"), this))
     , m_showEngineLineButton(new QPushButton(QStringLiteral("Show Supplied Engine Line"), this))
     , m_returnToGameButton(new QPushButton(QStringLiteral("Return to Game"), this))
 {
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(7);
     auto *actions = new QHBoxLayout();
     actions->addWidget(m_openButton);
-    actions->addWidget(m_backButton);
     actions->addStretch(1);
+    actions->addWidget(m_backButton);
     layout->addLayout(actions);
     for (QLabel *label : {m_gameLabel, m_openingLabel, m_engineLabel}) {
         label->setTextFormat(Qt::PlainText);
         label->setWordWrap(true);
     }
+    m_gameLabel->setObjectName(QStringLiteral("reviewGameHeader"));
+    QFont gameFont = m_gameLabel->font();
+    gameFont.setBold(true);
+    gameFont.setPointSizeF(gameFont.pointSizeF() + 1.0);
+    m_gameLabel->setFont(gameFont);
     layout->addWidget(m_gameLabel);
     layout->addWidget(m_openingLabel);
     layout->addWidget(m_engineLabel);
+
+    m_coachCard->setObjectName(QStringLiteral("selectedMoveCoachCard"));
+    m_coachCard->setFrameShape(QFrame::StyledPanel);
+    m_coachCard->setStyleSheet(QStringLiteral(
+        "QFrame#selectedMoveCoachCard { background: #20242b; border: 1px solid #343a44; border-radius: 12px; }"
+        "QLabel#moveEvidenceStatus { color: #d9bd7a; background: #2d2a24; border: 1px solid #5b4b2e; border-radius: 8px; padding: 4px 8px; }"
+        "QLabel#moveEvaluationChange { color: #b9c2cf; }"
+        "QPushButton { padding: 5px 9px; border-radius: 8px; }"));
+    auto *coachLayout = new QVBoxLayout(m_coachCard);
+    coachLayout->setContentsMargins(12, 12, 12, 12);
+    coachLayout->setSpacing(9);
+    m_moveTitleLabel->setObjectName(QStringLiteral("selectedMoveTitle"));
+    QFont moveTitleFont = m_moveTitleLabel->font();
+    moveTitleFont.setBold(true);
+    moveTitleFont.setPointSizeF(moveTitleFont.pointSizeF() + 3.0);
+    m_moveTitleLabel->setFont(moveTitleFont);
+    m_evidenceStatusLabel->setObjectName(QStringLiteral("moveEvidenceStatus"));
+    m_evidenceStatusLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    m_evaluationChangeLabel->setObjectName(QStringLiteral("moveEvaluationChange"));
+    m_explanationLabel->setObjectName(QStringLiteral("moveCoachExplanation"));
+    for (QLabel *label : {m_moveTitleLabel, m_evidenceStatusLabel,
+                          m_evaluationChangeLabel, m_explanationLabel}) {
+        label->setTextFormat(Qt::PlainText);
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    }
+    coachLayout->addWidget(m_moveTitleLabel);
+    coachLayout->addWidget(m_evidenceStatusLabel);
+    coachLayout->addWidget(m_evaluationChangeLabel);
+    coachLayout->addWidget(m_explanationLabel);
+    auto *coachActions = new QHBoxLayout();
+    coachActions->setContentsMargins(0, 0, 0, 0);
+    coachActions->setSpacing(7);
+    m_technicalDetailsButton->setObjectName(QStringLiteral("technicalDetailsButton"));
+    m_focusReadButton->setObjectName(QStringLiteral("focusReadButton"));
+    coachActions->addWidget(m_technicalDetailsButton);
+    coachActions->addWidget(m_focusReadButton);
+    coachActions->addStretch(1);
+    coachLayout->addLayout(coachActions);
+
+    m_focusReadFrame->setObjectName(QStringLiteral("focusReadFrame"));
+    m_focusReadFrame->setStyleSheet(QStringLiteral(
+        "QFrame#focusReadFrame { background: #111419; border: 1px solid #3b424d; border-radius: 14px; }"
+        "QLabel#focusReadAnchor { background: #f0e4cf; color: #202020; border: 1px solid #c7a96f; border-radius: 11px; padding: 8px 10px; }"
+        "QLabel#focusReadContext { color: #9ca5b2; }"
+        "QLabel#focusReadProgress { color: #747e8b; }"));
+    auto *focusLayout = new QVBoxLayout(m_focusReadFrame);
+    focusLayout->setContentsMargins(10, 10, 10, 8);
+    focusLayout->setSpacing(7);
+    auto *focusTape = new QHBoxLayout();
+    focusTape->setContentsMargins(0, 0, 0, 0);
+    focusTape->setSpacing(7);
+    m_focusBeforeLabel->setObjectName(QStringLiteral("focusReadContext"));
+    m_focusAnchorLabel->setObjectName(QStringLiteral("focusReadAnchor"));
+    m_focusAfterLabel->setObjectName(QStringLiteral("focusReadContext"));
+    for (QLabel *label : {m_focusBeforeLabel, m_focusAnchorLabel, m_focusAfterLabel}) {
+        label->setTextFormat(Qt::PlainText);
+    }
+    m_focusBeforeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_focusAnchorLabel->setAlignment(Qt::AlignCenter);
+    m_focusAfterLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_focusBeforeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_focusAfterLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_focusAnchorLabel->setFixedWidth(122);
+    m_focusAnchorLabel->setMinimumHeight(38);
+    QFont focusAnchorFont = m_focusAnchorLabel->font();
+    focusAnchorFont.setBold(true);
+    focusAnchorFont.setPointSizeF(focusAnchorFont.pointSizeF() + 1.0);
+    m_focusAnchorLabel->setFont(focusAnchorFont);
+    focusTape->addWidget(m_focusBeforeLabel, 1);
+    focusTape->addWidget(m_focusAnchorLabel);
+    focusTape->addWidget(m_focusAfterLabel, 1);
+    focusLayout->addLayout(focusTape);
+    auto *focusControls = new QHBoxLayout();
+    focusControls->setContentsMargins(0, 0, 0, 0);
+    m_focusProgressLabel->setObjectName(QStringLiteral("focusReadProgress"));
+    m_focusProgressLabel->setTextFormat(Qt::PlainText);
+    m_focusPreviousButton->setObjectName(QStringLiteral("focusReadPreviousButton"));
+    m_focusNextButton->setObjectName(QStringLiteral("focusReadNextButton"));
+    m_focusPreviousButton->setAccessibleName(QStringLiteral("Previous Focus Read word"));
+    m_focusNextButton->setAccessibleName(QStringLiteral("Next Focus Read word"));
+    m_focusPreviousButton->setToolTip(QStringLiteral("Previous Focus Read word (Left Arrow)"));
+    m_focusNextButton->setToolTip(QStringLiteral("Next Focus Read word (Right Arrow or Space)"));
+    m_focusPreviousButton->setFocusPolicy(Qt::NoFocus);
+    m_focusNextButton->setFocusPolicy(Qt::NoFocus);
+    focusControls->addWidget(m_focusPreviousButton);
+    focusControls->addWidget(m_focusNextButton);
+    focusControls->addWidget(m_focusProgressLabel);
+    focusControls->addStretch(1);
+    auto *focusHint = new QLabel(
+        QStringLiteral("←/→ step · Space advances · Esc closes"), m_focusReadFrame);
+    focusHint->setTextFormat(Qt::PlainText);
+    focusControls->addWidget(focusHint);
+    focusLayout->addLayout(focusControls);
+    m_focusReadFrame->setVisible(false);
+    coachLayout->addWidget(m_focusReadFrame);
+
     m_summaryView->setReadOnly(true);
-    layout->addWidget(m_summaryView, 1);
+    m_summaryView->setObjectName(QStringLiteral("technicalDetailsView"));
+    m_summaryView->setStyleSheet(QStringLiteral("QTextEdit { font-size: 13px; }"));
+    m_summaryView->setMinimumHeight(150);
+    m_summaryView->setVisible(false);
+    coachLayout->addWidget(m_summaryView, 1);
+    layout->addWidget(m_coachCard, 1);
     auto *variationActions = new QHBoxLayout();
     variationActions->addWidget(m_showEngineLineButton);
     variationActions->addWidget(m_returnToGameButton);
@@ -697,6 +1130,21 @@ ReplayEvidencePanel::ReplayEvidencePanel(QWidget *parent)
     connect(m_backButton, &QPushButton::clicked, this, &ReplayEvidencePanel::backToPuzzlesRequested);
     connect(m_showEngineLineButton, &QPushButton::clicked, this, &ReplayEvidencePanel::showEngineLineRequested);
     connect(m_returnToGameButton, &QPushButton::clicked, this, &ReplayEvidencePanel::returnToGameRequested);
+    connect(m_technicalDetailsButton, &QPushButton::clicked, this, [this]() {
+        setTechnicalDetailsVisible(!technicalDetailsVisible());
+    });
+    connect(m_focusReadButton, &QPushButton::clicked, this, [this]() {
+        setFocusReadVisible(!focusReadVisible());
+    });
+    connect(m_focusPreviousButton, &QPushButton::clicked, this, [this]() {
+        stepFocusRead(-1);
+        setFocus(Qt::OtherFocusReason);
+    });
+    connect(m_focusNextButton, &QPushButton::clicked, this, [this]() {
+        stepFocusRead(1);
+        setFocus(Qt::OtherFocusReason);
+    });
+    setFocusPolicy(Qt::StrongFocus);
     setEmptyState();
 }
 
@@ -708,6 +1156,18 @@ void ReplayEvidencePanel::setEmptyState()
     m_engineLabel->setText(QStringLiteral("Import is read-only and does not run Stockfish or use the network."));
     m_summaryView->setPlainText(
         QStringLiteral("Open an annotated-game-replay-v1 JSON file produced by the esports evidence pipeline."));
+    for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
+                            static_cast<QWidget *>(m_evidenceStatusLabel),
+                            static_cast<QWidget *>(m_evaluationChangeLabel),
+                            static_cast<QWidget *>(m_explanationLabel),
+                            static_cast<QWidget *>(m_technicalDetailsButton),
+                            static_cast<QWidget *>(m_focusReadButton)}) {
+        widget->setVisible(false);
+    }
+    m_coachCard->setVisible(true);
+    m_summaryView->setVisible(true);
+    setFocusReadVisible(false);
+    m_lastMechanicalPly = -1;
     m_openButton->setVisible(true);
     m_backButton->setText(QStringLiteral("Back to Puzzles"));
     m_backButton->setEnabled(false);
@@ -723,231 +1183,85 @@ void ReplayEvidencePanel::setReplayState(
     int variationAnchorPly)
 {
     if (pack.isMechanicalGameBreakdown()) {
-        setTitle(QStringLiteral("game breakdown"));
+        setTitle(QStringLiteral("focused game review"));
         m_openButton->setVisible(false);
         m_backButton->setText(QStringLiteral("Back to Player Stats"));
+        m_backButton->setEnabled(true);
         m_gameLabel->setText(
-            QStringLiteral("%1 (%2) vs %3 (%4) — %5\n%6")
-                .arg(pack.whiteUsername())
+            QStringLiteral("%1  %2  ·  %3–%4  ·  %5\n%6")
+                .arg(pack.whiteUsername(), pack.blackUsername())
                 .arg(pack.whiteRating())
-                .arg(pack.blackUsername())
                 .arg(pack.blackRating())
                 .arg(pack.result(), pack.eventStartUtc()));
         m_openingLabel->setText(replayOpeningText(pack));
         if (pack.selectiveDeepReview().has_value()) {
             const auto &deep = *pack.selectiveDeepReview();
-            const QString shallow = pack.persistedEngineEvidence().has_value()
-                ? QStringLiteral(" · SHALLOW %1 ALL MOVES")
-                      .arg(pack.persistedEngineEvidence()->nodeLimit)
-                : QString();
             m_engineLabel->setText(
-                QStringLiteral("PERSISTED %1 · DEEP %2 SELECTED MOMENTS%3 · NO PROCESS STARTED")
-                    .arg(deep.engineName.toUpper())
+                QStringLiteral("Retained %1 · %2-node selective deep review · %3 selected moment%4 · no process started")
+                    .arg(deep.engineName)
                     .arg(deep.nodeLimit)
-                    .arg(shallow));
+                    .arg(deep.moments.size())
+                    .arg(deep.moments.size() == 1 ? QString() : QStringLiteral("s")));
         } else if (pack.persistedEngineEvidence().has_value()) {
             const auto &engine = *pack.persistedEngineEvidence();
             m_engineLabel->setText(
-                QStringLiteral("PERSISTED %1 · SHALLOW SCREEN %2 NODES/POSITION · %3 LINEAGE%4 · NO PROCESS STARTED")
-                    .arg(engine.engineName.toUpper())
-                    .arg(engine.nodeLimit)
-                    .arg(engine.lineageCount)
-                    .arg(engine.lineageCount == 1 ? QString() : QStringLiteral("S")));
+                QStringLiteral("Retained %1 · %2-node shallow screen · no process started")
+                    .arg(engine.engineName)
+                    .arg(engine.nodeLimit));
         } else {
             m_engineLabel->setText(
-                QStringLiteral("MECHANICAL REPLAY · ENGINE EVIDENCE NOT JOINED · NO PROCESS STARTED"));
+                QStringLiteral("Recorded legal replay · engine evidence not joined · no process started"));
         }
 
-        QStringList lines;
-        const parlawl::puzzle_runner::ChessPosition &finalPosition = pack.mainlinePositions().last();
-        const bool noFinalMoves = finalPosition.legalMoves().isEmpty();
-        const bool finalCheck = finalPosition.isInCheck(finalPosition.sideToMove());
-        QString finish;
-        if (noFinalMoves && finalCheck) {
-            finish = QStringLiteral("The final recorded position is checkmate.");
-        } else if (noFinalMoves) {
-            finish = QStringLiteral("The final recorded position is stalemate.");
-        } else {
-            finish = QStringLiteral("The explorer records the result but does not distinguish resignation, timeout, or another non-board termination.");
+        for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
+                                static_cast<QWidget *>(m_evidenceStatusLabel),
+                                static_cast<QWidget *>(m_evaluationChangeLabel),
+                                static_cast<QWidget *>(m_explanationLabel),
+                                static_cast<QWidget *>(m_technicalDetailsButton),
+                                static_cast<QWidget *>(m_focusReadButton)}) {
+            widget->setVisible(true);
         }
 
-        const parlawl::puzzle_runner::ReplayMove *longest = nullptr;
-        for (const auto &move : pack.moves()) {
-            if (move.elapsedMoveMs.has_value()
-                && (longest == nullptr || *move.elapsedMoveMs > *longest->elapsedMoveMs)) {
-                longest = &move;
-            }
+        const int currentPly = session.currentMainlinePly();
+        if (currentPly != m_lastMechanicalPly) {
+            setTechnicalDetailsVisible(false);
+            setFocusReadVisible(false);
+            m_lastMechanicalPly = currentPly;
         }
-        if (session.currentMainlinePly() == 0) {
-            lines << QStringLiteral("START POSITION")
-                  << QStringLiteral("%1 recorded plies. Board orientation follows the selected player (%2).")
-                         .arg(pack.moves().size())
-                         .arg(humanizedToken(pack.viewedPlayerColor()))
-                  << QStringLiteral("Retrospective result: %1. %2").arg(pack.result(), finish)
-                  << QStringLiteral("Use Next, the mouse wheel, or the move list to replay the game.");
-            if (longest != nullptr) {
-                lines << QStringLiteral("Longest server-recorded decision: ply %1, %2, %3.")
-                             .arg(longest->ply)
-                             .arg(longest->notation.san, moveTimeText(longest->elapsedMoveMs));
+
+        if (currentPly == 0) {
+            m_moveTitleLabel->setText(QStringLiteral("Choose a move"));
+            m_evidenceStatusLabel->clear();
+            m_evidenceStatusLabel->setVisible(false);
+            m_evaluationChangeLabel->clear();
+            m_evaluationChangeLabel->setVisible(false);
+            m_explanationLabel->setText(
+                QStringLiteral("Use Previous, Play, Next, the mouse wheel, or the compact move timeline. The coach shows one move at a time."));
+            m_focusReadWords.clear();
+            m_focusReadButton->setEnabled(false);
+            m_technicalDetailsButton->setText(QStringLiteral("Show evidence overview"));
+            QStringList overview = mechanicalGameReportLines(pack);
+            if (overview.isEmpty()) {
+                overview << QStringLiteral("No joined engine evidence is available for this recorded legal replay.");
             }
-            if (pack.persistedEngineEvidence().has_value()
-                && !pack.moves().isEmpty()
-                && pack.moves().first().persistedEngineEvidence.has_value()) {
-                const auto &engine = *pack.moves().first().persistedEngineEvidence;
-                lines << QStringLiteral("Persisted start evaluation: %1 · %2")
-                             .arg(engineScoreText(
-                                      engine.beforeScoreKind,
-                                      engine.beforeCentipawnsWhite,
-                                      engine.beforeMateForWhite),
-                                  engineWdlText(engine.beforeWdlWhite));
-            }
-            if (pack.persistedEngineEvidence().has_value()
-                || pack.selectiveDeepReview().has_value()) {
-                lines << QString();
-                lines.append(mechanicalGameReportLines(pack));
-            }
+            m_summaryView->setPlainText(overview.join(QLatin1Char('\n')));
         } else {
-            const auto &move = pack.moves().at(session.currentMainlinePly() - 1);
-            const QString mover = move.ply % 2 == 1
-                ? pack.whiteUsername() : pack.blackUsername();
-            lines << QStringLiteral("PLY %1 · %2").arg(move.ply).arg(move.notation.san)
-                  << QStringLiteral("%1 played %2 (%3).")
-                         .arg(mover, move.notation.san, move.notation.uci)
-                  << QStringLiteral("Phase: %1 · decision context: %2 legal move%3 · %4")
-                         .arg(humanizedToken(move.positionPhase))
-                         .arg(move.legalMoveCount)
-                         .arg(move.legalMoveCount == 1 ? QString() : QStringLiteral("s"))
-                         .arg(humanizedToken(move.forcednessStatus))
-                  << QStringLiteral("Server-accounted move time: %1 · clock before: %2 · clock after: %3")
-                         .arg(moveTimeText(move.elapsedMoveMs),
-                              clockText(move.decisionStartClockMs),
-                              clockText(move.clockRemainingAfterMoveMs))
-                  << QStringLiteral("Timing status: %1").arg(humanizedToken(move.elapsedStatus));
-            if (pack.openingLastBookPly().has_value()) {
-                if (move.ply <= *pack.openingLastBookPly()) {
-                    lines << QStringLiteral("Opening path: inside the pinned known line.");
-                } else if (move.ply == *pack.openingLastBookPly() + 1) {
-                    lines << QStringLiteral("Opening path: this is the first recorded departure from the pinned known line.");
-                } else {
-                    lines << QStringLiteral("Opening path: beyond the pinned known line.");
-                }
-            }
-            if (longest == &move) {
-                lines << QStringLiteral("This is the longest server-recorded decision in the game.");
-            }
-            if (!move.selectiveDeepMoments.isEmpty()) {
-                for (const auto &moment : move.selectiveDeepMoments) {
-                    lines << QStringLiteral("DEEP SELECTIVE ASSESSMENT · %1 NODES")
-                                 .arg(pack.selectiveDeepReview()->nodeLimit)
-                          << QStringLiteral("Status: %1%2")
-                                 .arg(
-                                     humanizedToken(moment.status),
-                                     moment.severity.has_value()
-                                         ? QStringLiteral(" · frozen severity %1")
-                                               .arg(humanizedToken(*moment.severity))
-                                         : QStringLiteral(" · no stable severity published"));
-                    if (moment.bestExpectationMillionths.has_value()
-                        && moment.playedExpectationMillionths.has_value()) {
-                        lines << QStringLiteral("Mover expectation: deep best %1 · played %2%3")
-                                     .arg(
-                                         percentageText(*moment.bestExpectationMillionths),
-                                         percentageText(*moment.playedExpectationMillionths),
-                                         moment.wdlLossMillionths.has_value()
-                                             ? QStringLiteral(" · stable loss %1")
-                                                   .arg(percentageText(*moment.wdlLossMillionths))
-                                             : QStringLiteral(" · no stable loss published"));
-                    }
-                    lines << QStringLiteral("Deep best move: %1 · recorded move: %2")
-                                 .arg(
-                                     moment.bestMoveUci.value_or(QStringLiteral("unavailable")),
-                                     moment.playedMoveUci)
-                          << QStringLiteral("Pair stability: %1 · mate comparison: %2")
-                                 .arg(
-                                     humanizedToken(moment.pairStability),
-                                     humanizedToken(moment.mateComparison));
-                    for (int lineIndex = 0; lineIndex < moment.alternativeLines.size(); ++lineIndex) {
-                        lines << QStringLiteral("Alternative %1, not played: %2")
-                                     .arg(lineIndex + 1)
-                                     .arg(deepLineSummary(moment.alternativeLines.at(lineIndex)));
-                    }
-                    if (moment.playedLine.has_value()) {
-                        lines << QStringLiteral("Played-move constrained line: %1")
-                                     .arg(deepLineSummary(*moment.playedLine));
-                    }
-                }
-            } else if (pack.selectiveDeepReview().has_value()) {
-                lines << QStringLiteral("Deep assessment: not selected by the bounded outcome-blind policy. This does not mean the move was accurate or engine-approved.");
-            }
-            if (move.persistedEngineEvidence.has_value()) {
-                const auto &engine = *move.persistedEngineEvidence;
-                lines << QStringLiteral("SHALLOW FIXED-NODE SCREEN")
-                      << QStringLiteral("White evaluation: %1 before · %2 after")
-                             .arg(engineScoreText(
-                                      engine.beforeScoreKind,
-                                      engine.beforeCentipawnsWhite,
-                                      engine.beforeMateForWhite),
-                                  engineScoreText(
-                                      engine.afterScoreKind,
-                                      engine.afterCentipawnsWhite,
-                                      engine.afterMateForWhite))
-                      << QStringLiteral("Before: %1 · after: %2")
-                             .arg(engineWdlText(engine.beforeWdlWhite),
-                                  engineWdlText(engine.afterWdlWhite))
-                      << QStringLiteral("Mover expectation: %1 → %2 · loss %3")
-                             .arg(percentageText(engine.expectedBeforeMillionths),
-                                  percentageText(engine.expectedAfterMillionths),
-                                  percentageText(engine.wdlLossMillionths))
-                      << QStringLiteral("Shallow candidate label: %1%2")
-                             .arg(humanizedToken(engine.severity),
-                                  engine.centipawnLoss.has_value()
-                                      ? QStringLiteral(" · centipawn loss %1").arg(*engine.centipawnLoss)
-                                      : QStringLiteral(" · centipawn loss N/A"));
-                if (engine.beforeBestMoveUci.has_value()) {
-                    lines << QStringLiteral("Engine-reported best move before play: %1 · recorded move: %2")
-                                 .arg(*engine.beforeBestMoveUci, move.notation.uci);
-                } else {
-                    lines << QStringLiteral("Engine-reported best move before play: unavailable");
-                }
-                lines << QStringLiteral("Reported PV, not played: %1")
-                             .arg(engine.beforePvUci.isEmpty()
-                                      ? QStringLiteral("unavailable") : engine.beforePvUci)
-                      << QStringLiteral("Search: depth %1 · selective depth %2 · %3 nodes")
-                             .arg(engine.beforeDepth)
-                             .arg(engine.beforeSelectiveDepth)
-                             .arg(engine.beforeNodes);
-                if (engine.missedWinningAdvantage) {
-                    lines << QStringLiteral("Shallow threshold event: winning advantage was lost under the frozen screen policy.");
-                }
-                if (engine.missedForcedMate) {
-                    lines << QStringLiteral("Shallow threshold event: a forced mate was lost under the frozen screen policy.");
-                }
-            }
-            if (move.ply == pack.moves().size()) {
-                lines << QString() << QStringLiteral("RECORDED FINISH")
-                      << QStringLiteral("Result: %1. %2").arg(pack.result(), finish);
-            }
+            const auto &move = pack.moves().at(currentPly - 1);
+            const MoveCoachPresentation presentation = moveCoachPresentation(pack, move);
+            m_moveTitleLabel->setText(
+                QStringLiteral("Ply %1 · %2").arg(move.ply).arg(move.notation.san));
+            m_evidenceStatusLabel->setText(presentation.status);
+            m_evaluationChangeLabel->setText(presentation.evaluationChange);
+            m_explanationLabel->setText(presentation.explanation);
+            m_focusReadWords = presentation.focusReadText.split(
+                QLatin1Char(' '), Qt::SkipEmptyParts);
+            m_focusReadWordIndex = 0;
+            m_focusReadButton->setEnabled(!m_focusReadWords.isEmpty());
+            m_technicalDetailsButton->setText(QStringLiteral("Show technical details"));
+            m_summaryView->setPlainText(
+                presentation.technicalDetails.join(QLatin1Char('\n')));
+            updateFocusReadViewport();
         }
-        lines << QString();
-        if (pack.selectiveDeepReview().has_value()) {
-            const auto &deep = *pack.selectiveDeepReview();
-            lines << QStringLiteral("Deep evidence is limited to %1 outcome-blind selected moment%2 under a %3-node contract. Unselected moves are not certified accurate. ParlAWL exact-joined the retained report but did not rerun its source replay or Stockfish.")
-                         .arg(deep.moments.size())
-                         .arg(deep.moments.size() == 1 ? QString() : QStringLiteral("s"))
-                         .arg(deep.nodeLimit);
-            if (pack.persistedEngineEvidence().has_value()) {
-                lines << QStringLiteral("The complete-move %1-node layer is shallow screening context, not a final verdict.")
-                             .arg(pack.persistedEngineEvidence()->nodeLimit);
-            }
-        } else if (pack.persistedEngineEvidence().has_value()) {
-            const auto &engine = *pack.persistedEngineEvidence();
-            lines << QStringLiteral("This is persisted %1-node shallow screening recorded at %2. It is not an objective verdict, proof of a unique best move, causal explanation, or live analysis.")
-                         .arg(engine.nodeLimit)
-                         .arg(engine.analysisRecordedAtUtc);
-        } else {
-            lines << QStringLiteral("No best-move, blunder, missed-win, or causal claim is available without joined engine evidence.");
-        }
-        m_summaryView->setHtml(mechanicalSummaryHtml(lines));
-        m_backButton->setEnabled(true);
         m_showEngineLineButton->setEnabled(false);
         m_returnToGameButton->setEnabled(false);
         m_showEngineLineButton->setVisible(false);
@@ -955,6 +1269,17 @@ void ReplayEvidencePanel::setReplayState(
         return;
     }
 
+    for (QWidget *widget : {static_cast<QWidget *>(m_moveTitleLabel),
+                            static_cast<QWidget *>(m_evidenceStatusLabel),
+                            static_cast<QWidget *>(m_evaluationChangeLabel),
+                            static_cast<QWidget *>(m_explanationLabel),
+                            static_cast<QWidget *>(m_technicalDetailsButton),
+                            static_cast<QWidget *>(m_focusReadButton)}) {
+        widget->setVisible(false);
+    }
+    setFocusReadVisible(false);
+    m_summaryView->setVisible(true);
+    m_lastMechanicalPly = -1;
     setTitle(QStringLiteral("analysis replay"));
     m_openButton->setVisible(true);
     m_backButton->setText(QStringLiteral("Back to Puzzles"));
@@ -1039,6 +1364,119 @@ bool ReplayEvidencePanel::canReturnToGame() const
     return m_returnToGameButton->isEnabled();
 }
 
+QString ReplayEvidencePanel::evidenceStatusText() const
+{
+    return m_evidenceStatusLabel->text();
+}
+
+QString ReplayEvidencePanel::explanationText() const
+{
+    return m_explanationLabel->text();
+}
+
+bool ReplayEvidencePanel::technicalDetailsVisible() const
+{
+    return m_summaryView->isVisible();
+}
+
+bool ReplayEvidencePanel::focusReadVisible() const
+{
+    return m_focusReadFrame->isVisible();
+}
+
+QString ReplayEvidencePanel::focusReadAnchorText() const
+{
+    return m_focusAnchorLabel->text();
+}
+
+void ReplayEvidencePanel::setTechnicalDetailsVisible(bool visible)
+{
+    m_summaryView->setVisible(visible);
+    m_technicalDetailsButton->setText(
+        visible ? QStringLiteral("Hide technical details")
+                : QStringLiteral("Show technical details"));
+}
+
+void ReplayEvidencePanel::setFocusReadVisible(bool visible)
+{
+    const bool show = visible && !m_focusReadWords.isEmpty();
+    m_focusReadFrame->setVisible(show);
+    m_focusReadButton->setText(
+        show ? QStringLiteral("Close Focus Read") : QStringLiteral("Focus Read"));
+    if (show) {
+        updateFocusReadViewport();
+        setFocus(Qt::OtherFocusReason);
+    }
+}
+
+void ReplayEvidencePanel::updateFocusReadViewport()
+{
+    if (m_focusReadWords.isEmpty()) {
+        m_focusBeforeLabel->clear();
+        m_focusAnchorLabel->clear();
+        m_focusAfterLabel->clear();
+        m_focusProgressLabel->clear();
+        return;
+    }
+    m_focusReadWordIndex = std::clamp(
+        m_focusReadWordIndex, 0, static_cast<int>(m_focusReadWords.size()) - 1);
+    constexpr int contextWords = 5;
+    const int beforeStart = std::max(0, m_focusReadWordIndex - contextWords);
+    const int afterCount = std::min(
+        contextWords, static_cast<int>(m_focusReadWords.size()) - m_focusReadWordIndex - 1);
+    QString before = m_focusReadWords.mid(
+        beforeStart, m_focusReadWordIndex - beforeStart).join(QLatin1Char(' '));
+    QString after = m_focusReadWords.mid(
+        m_focusReadWordIndex + 1, afterCount).join(QLatin1Char(' '));
+    if (beforeStart > 0) {
+        before.prepend(QStringLiteral("… "));
+    }
+    if (m_focusReadWordIndex + 1 + afterCount < m_focusReadWords.size()) {
+        after.append(QStringLiteral(" …"));
+    }
+    m_focusBeforeLabel->setText(before);
+    m_focusAnchorLabel->setText(m_focusReadWords.at(m_focusReadWordIndex));
+    m_focusAfterLabel->setText(after);
+    m_focusProgressLabel->setText(
+        QStringLiteral("%1 / %2")
+            .arg(m_focusReadWordIndex + 1)
+            .arg(m_focusReadWords.size()));
+    m_focusPreviousButton->setEnabled(m_focusReadWordIndex > 0);
+    m_focusNextButton->setEnabled(m_focusReadWordIndex + 1 < m_focusReadWords.size());
+}
+
+void ReplayEvidencePanel::stepFocusRead(int delta)
+{
+    if (m_focusReadWords.isEmpty() || delta == 0) {
+        return;
+    }
+    m_focusReadWordIndex = std::clamp(
+        m_focusReadWordIndex + delta, 0, static_cast<int>(m_focusReadWords.size()) - 1);
+    updateFocusReadViewport();
+}
+
+void ReplayEvidencePanel::keyPressEvent(QKeyEvent *event)
+{
+    if (focusReadVisible()) {
+        if (event->key() == Qt::Key_Left) {
+            stepFocusRead(-1);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Right || event->key() == Qt::Key_Space) {
+            stepFocusRead(1);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            setFocusReadVisible(false);
+            event->accept();
+            return;
+        }
+    }
+    QGroupBox::keyPressEvent(event);
+}
+
 GameReviewPanel::GameReviewPanel(QWidget *parent)
     : QWidget(parent)
     , m_moveListPanel(new MoveListPanel(this))
@@ -1053,13 +1491,13 @@ GameReviewPanel::GameReviewPanel(QWidget *parent)
     splitter->setObjectName(QStringLiteral("gameReviewSplitter"));
     splitter->setChildrenCollapsible(false);
     m_moveListPanel->setObjectName(QStringLiteral("gameReviewMoveList"));
-    m_moveListPanel->setTitle(QStringLiteral("recorded moves and events"));
+    m_moveListPanel->setTitle(QStringLiteral("move timeline"));
     m_evidencePanel->setObjectName(QStringLiteral("gameReviewInspector"));
-    splitter->addWidget(m_moveListPanel);
     splitter->addWidget(m_evidencePanel);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 4);
-    splitter->setSizes({320, 420});
+    splitter->addWidget(m_moveListPanel);
+    splitter->setStretchFactor(0, 5);
+    splitter->setStretchFactor(1, 3);
+    splitter->setSizes({500, 270});
     layout->addWidget(splitter);
 
     connect(
@@ -1375,9 +1813,12 @@ TransportControls::TransportControls(QWidget *parent)
 {
     auto *layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    m_previousButton->setObjectName(QStringLiteral("previousMoveButton"));
+    m_retryButton->setObjectName(QStringLiteral("playMovesButton"));
+    m_nextButton->setObjectName(QStringLiteral("nextMoveButton"));
     layout->addWidget(m_previousButton);
-    layout->addWidget(m_nextButton);
     layout->addWidget(m_retryButton);
+    layout->addWidget(m_nextButton);
     m_retryButton->setToolTip(QStringLiteral("reset the current puzzle attempt to the starting position"));
 
     connect(m_previousButton, &QPushButton::clicked, this, &TransportControls::previousRequested);
@@ -1408,11 +1849,18 @@ void TransportControls::setEnabledState(
 
 void TransportControls::setReplayMode(bool enabled)
 {
-    m_retryButton->setText(enabled ? QStringLiteral("Start") : QStringLiteral("Retry"));
+    m_previousButton->setText(enabled ? QStringLiteral("Previous") : QStringLiteral("Prev"));
+    m_nextButton->setText(QStringLiteral("Next"));
+    m_retryButton->setText(enabled ? QStringLiteral("▶ Play") : QStringLiteral("Retry"));
     m_retryButton->setToolTip(
         enabled
-            ? QStringLiteral("return to the annotated game's start position")
+            ? QStringLiteral("play or pause the recorded legal move sequence")
             : QStringLiteral("reset the current puzzle attempt to the starting position"));
+}
+
+void TransportControls::setPlaying(bool playing)
+{
+    m_retryButton->setText(playing ? QStringLiteral("❚❚ Pause") : QStringLiteral("▶ Play"));
 }
 
 EnginePanel::EnginePanel(QWidget *parent)

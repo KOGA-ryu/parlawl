@@ -29,6 +29,7 @@
 #include <QTextEdit>
 #include <QTextStream>
 #include <QThread>
+#include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -500,6 +501,7 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_attemptSessionId(newOpaqueUuid(QStringLiteral("parlawl-session-v1:")))
     , m_orchestrator(new AnalysisOrchestrator())
     , m_orchestratorThread(new QThread(this))
+    , m_replayPlaybackTimer(new QTimer(this))
     , m_sessionController(this)
     , m_stockfishReviewController(new StockfishReviewController(this))
     , m_puzzleSupplyCoordinator(new PuzzleSupplyCoordinator(this))
@@ -671,6 +673,8 @@ bool PuzzleRunnerWindow::loadAnnotatedReplayFile(const QString &path, QString *e
     }
 
     m_annotatedReplayPack = *parsed;
+    m_replayPlaybackTimer->stop();
+    m_transportControls->setPlaying(false);
     m_replaySession.load(*m_annotatedReplayPack);
     m_replayVariationAnchorPly = 0;
     m_workspaceMode = WorkspaceMode::AnnotatedReplay;
@@ -1017,6 +1021,8 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     }
 
     m_annotatedReplayPack = *replay;
+    m_replayPlaybackTimer->stop();
+    m_transportControls->setPlaying(false);
     m_replaySession.load(*m_annotatedReplayPack);
     m_replayVariationAnchorPly = 0;
     m_workspaceMode = WorkspaceMode::AnnotatedReplay;
@@ -1120,6 +1126,8 @@ void PuzzleRunnerWindow::onBackToPuzzlesRequested()
     }
     const bool returnToPlayerStatistics = m_annotatedReplayPack.has_value()
         && m_annotatedReplayPack->isMechanicalGameBreakdown();
+    m_replayPlaybackTimer->stop();
+    m_transportControls->setPlaying(false);
     if (m_stockfishReviewController != nullptr) {
         m_stockfishReviewController->resetCurrentReview(
             QStringLiteral("review the current puzzle position"));
@@ -1181,6 +1189,8 @@ void PuzzleRunnerWindow::onReplayPlyRequested(int ply)
     if (!m_annotatedReplayPack.has_value()) {
         return;
     }
+    m_replayPlaybackTimer->stop();
+    m_transportControls->setPlaying(false);
     if (m_replaySession.inVariation()) {
         QString errorMessage;
         if (!m_replaySession.exitVariation(&errorMessage)) {
@@ -2403,6 +2413,9 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
     m_infoTabs->tabBar()->setVisible(!enabled);
     m_infoTabs->setMaximumHeight(enabled ? 112 : QWIDGETSIZE_MAX);
     m_evaluationBarWidget->setVisible(!gameBreakdown);
+    m_boardWidget->setMinimumSize(
+        gameBreakdown ? QSize(560, 560) : QSize(360, 360));
+    m_rightTabs->setMaximumWidth(gameBreakdown ? 500 : QWIDGETSIZE_MAX);
 
     m_settingsCard->setVisible(!enabled);
     m_settingsCard->setEnabled(!enabled);
@@ -2425,7 +2438,7 @@ void PuzzleRunnerWindow::setAnnotatedReplayWorkspaceUi(bool enabled)
 void PuzzleRunnerWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("parlawl"));
-    resize(924, 867);
+    resize(1280, 860);
 
     auto *central = new QWidget(this);
     auto *rootLayout = new QHBoxLayout(central);
@@ -2605,10 +2618,10 @@ void PuzzleRunnerWindow::buildUi()
     leftColumn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     leftColumn->setMinimumWidth(360);
     rightColumn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-    rightColumn->setMinimumWidth(320);
+    rightColumn->setMinimumWidth(400);
     rightLayout->addWidget(m_rightTabs, 1);
-    rootLayout->addWidget(leftColumn, 1);
-    rootLayout->addWidget(rightColumn, 0);
+    rootLayout->addWidget(leftColumn, 5);
+    rootLayout->addWidget(rightColumn, 3);
 
     setCentralWidget(central);
 
@@ -2618,6 +2631,8 @@ void PuzzleRunnerWindow::buildUi()
             return;
         }
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            m_replayPlaybackTimer->stop();
+            m_transportControls->setPlaying(false);
             bool changed = false;
             if (stepDelta < 0) {
                 for (int i = 0; i < -stepDelta; ++i) {
@@ -2662,6 +2677,8 @@ void PuzzleRunnerWindow::buildUi()
     connect(m_gameReviewPanel, &GameReviewPanel::backToPlayerStatisticsRequested, this, &PuzzleRunnerWindow::onBackToPuzzlesRequested);
     connect(m_transportControls, &TransportControls::previousRequested, this, [this]() {
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            m_replayPlaybackTimer->stop();
+            m_transportControls->setPlaying(false);
             if (m_replaySession.stepBackward()) {
                 refreshReplayUi();
             }
@@ -2676,6 +2693,8 @@ void PuzzleRunnerWindow::buildUi()
     });
     connect(m_transportControls, &TransportControls::nextRequested, this, [this]() {
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            m_replayPlaybackTimer->stop();
+            m_transportControls->setPlaying(false);
             if (m_replaySession.stepForward()) {
                 refreshReplayUi();
             }
@@ -2690,15 +2709,42 @@ void PuzzleRunnerWindow::buildUi()
     });
     connect(m_transportControls, &TransportControls::retryRequested, this, [this]() {
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {
+            if (m_replayPlaybackTimer->isActive()) {
+                m_replayPlaybackTimer->stop();
+                m_transportControls->setPlaying(false);
+                return;
+            }
             if (m_replaySession.inVariation()) {
                 m_replaySession.exitVariation();
                 m_replayVariationAnchorPly = 0;
             }
-            m_replaySession.seekMainlinePly(0);
+            if (m_annotatedReplayPack.has_value()
+                && m_replaySession.currentMainlinePly()
+                    >= m_annotatedReplayPack->moves().size()) {
+                m_replaySession.seekMainlinePly(0);
+            }
+            m_replayPlaybackTimer->start();
+            m_transportControls->setPlaying(true);
             refreshReplayUi();
             return;
         }
         m_sessionController.retryPuzzle();
+    });
+    m_replayPlaybackTimer->setInterval(650);
+    connect(m_replayPlaybackTimer, &QTimer::timeout, this, [this]() {
+        if (m_workspaceMode != WorkspaceMode::AnnotatedReplay
+            || !m_annotatedReplayPack.has_value()
+            || !m_replaySession.stepForward()) {
+            m_replayPlaybackTimer->stop();
+            m_transportControls->setPlaying(false);
+            return;
+        }
+        refreshReplayUi();
+        if (m_replaySession.currentMainlinePly()
+            >= m_annotatedReplayPack->moves().size()) {
+            m_replayPlaybackTimer->stop();
+            m_transportControls->setPlaying(false);
+        }
     });
     connect(m_settingsCard, &SettingsCard::autoAdvanceChanged, this, [this](bool enabled) {
         if (m_workspaceMode == WorkspaceMode::AnnotatedReplay) {

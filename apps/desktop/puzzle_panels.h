@@ -9,6 +9,8 @@
 #include "replay_session.h"
 
 class QLabel;
+class QFrame;
+class QKeyEvent;
 class QTableWidget;
 class QPushButton;
 class QCheckBox;
@@ -60,6 +62,11 @@ public:
     [[nodiscard]] QString summaryText() const;
     [[nodiscard]] bool canShowEngineLine() const;
     [[nodiscard]] bool canReturnToGame() const;
+    [[nodiscard]] QString evidenceStatusText() const;
+    [[nodiscard]] QString explanationText() const;
+    [[nodiscard]] bool technicalDetailsVisible() const;
+    [[nodiscard]] bool focusReadVisible() const;
+    [[nodiscard]] QString focusReadAnchorText() const;
 
 signals:
     void openReplayRequested();
@@ -67,15 +74,40 @@ signals:
     void showEngineLineRequested();
     void returnToGameRequested();
 
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
+    void setTechnicalDetailsVisible(bool visible);
+    void setFocusReadVisible(bool visible);
+    void updateFocusReadViewport();
+    void stepFocusRead(int delta);
+
     QLabel *m_gameLabel;
     QLabel *m_openingLabel;
     QLabel *m_engineLabel;
+    QFrame *m_coachCard;
+    QLabel *m_moveTitleLabel;
+    QLabel *m_evidenceStatusLabel;
+    QLabel *m_evaluationChangeLabel;
+    QLabel *m_explanationLabel;
+    QPushButton *m_technicalDetailsButton;
+    QPushButton *m_focusReadButton;
+    QFrame *m_focusReadFrame;
+    QLabel *m_focusBeforeLabel;
+    QLabel *m_focusAnchorLabel;
+    QLabel *m_focusAfterLabel;
+    QLabel *m_focusProgressLabel;
+    QPushButton *m_focusPreviousButton;
+    QPushButton *m_focusNextButton;
     QTextEdit *m_summaryView;
     QPushButton *m_openButton;
     QPushButton *m_backButton;
     QPushButton *m_showEngineLineButton;
     QPushButton *m_returnToGameButton;
+    QStringList m_focusReadWords;
+    int m_focusReadWordIndex = 0;
+    int m_lastMechanicalPly = -1;
 };
 
 class GameReviewPanel : public QWidget
@@ -178,6 +210,7 @@ public:
         bool canGoToPreviousPuzzle,
         bool canGoToNextPuzzle);
     void setReplayMode(bool enabled);
+    void setPlaying(bool playing);
 
 signals:
     void previousRequested();
