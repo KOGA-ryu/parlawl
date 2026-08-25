@@ -280,6 +280,7 @@ PlayerAnalysisCatalog::compareMetrics(
         return output;
     }
     QSqlDatabase database = catalogDatabase(m_connectionName);
+    const QString categoryFilter = category.isNull() ? QStringLiteral("") : category;
     QHash<QString, PlayerAnalysisCatalogMetricSide> aggregates;
     QSqlQuery values(database);
     values.prepare(QStringLiteral(
@@ -296,8 +297,8 @@ PlayerAnalysisCatalog::compareMetrics(
         "GROUP BY pg.player_id, m.metric_code"));
     values.addBindValue(firstPlayerId);
     values.addBindValue(secondPlayerId);
-    values.addBindValue(category);
-    values.addBindValue(category);
+    values.addBindValue(categoryFilter);
+    values.addBindValue(categoryFilter);
     if (!values.exec()) {
         setError(errorMessage, QStringLiteral("analysis catalog metric query failed"));
         return {};
@@ -322,8 +323,8 @@ PlayerAnalysisCatalog::compareMetrics(
         "SELECT metric_code, category, phase, value_semantics "
         "FROM board_structure_metric_definitions "
         "WHERE (? = '' OR category = ?) ORDER BY ordinal"));
-    definitions.addBindValue(category);
-    definitions.addBindValue(category);
+    definitions.addBindValue(categoryFilter);
+    definitions.addBindValue(categoryFilter);
     if (!definitions.exec()) {
         setError(errorMessage, QStringLiteral("analysis catalog metric definitions failed"));
         return {};

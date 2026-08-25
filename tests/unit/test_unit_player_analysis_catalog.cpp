@@ -128,6 +128,8 @@ void TestUnitPlayerAnalysisCatalog::opensReadOnlyAndQueriesExactRows()
     QCOMPARE(comparisons[0].metricCode, QStringLiteral("focal_castling.any"));
     QCOMPARE(comparisons[0].first.aggregateValuePpm, std::optional<qint64>(500'000));
     QCOMPARE(comparisons[0].second.aggregateValuePpm, std::optional<qint64>(500'000));
+    QCOMPARE(catalog.compareMetrics(
+        QStringLiteral("alpha"), QStringLiteral("beta")).size(), 2);
 
     const auto games = catalog.measurementGames(
         QStringLiteral("alpha"), QStringLiteral("focal_castling.any"), 10, &error);
