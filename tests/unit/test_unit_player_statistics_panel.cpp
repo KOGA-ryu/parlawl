@@ -22,6 +22,7 @@
 #include <QTemporaryDir>
 #include <QUuid>
 
+#include "game_explorer_window.h"
 #include "player_statistics_panel.h"
 
 namespace {
@@ -890,6 +891,7 @@ private slots:
     void exposesOneExplicitOpenAction();
     void loadsExplorerAndAppliesSharedFilters();
     void exposesExactGameBreakdownAndActivation();
+    void dedicatedExplorerSeparatesStudyFromLegacyShell();
     void loadsPartialPersistedEngineEvidenceWithoutFabricatingMissingGame();
     void loadsBoardStructureAlongsideExplorerAndSwitchesPerspective();
     void rejectsBrokenBoardStructureWithoutReplacingState();
@@ -1137,6 +1139,44 @@ void TestUnitPlayerStatisticsPanel::exposesExactGameBreakdownAndActivation()
     QVERIFY(emittedId == gameId
         || emittedId == QStringLiteral(
             "chesscom-game-v1:2222222222222222222222222222222222222222222222222222222222222222"));
+}
+
+void TestUnitPlayerStatisticsPanel::dedicatedExplorerSeparatesStudyFromLegacyShell()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = createExplorerDatabase(&directory);
+    QVERIFY(!path.isEmpty());
+
+    GameExplorerWindow explorer;
+    QString error;
+    QVERIFY2(explorer.loadExplorerDatabase(path, &error), qPrintable(error));
+    QVERIFY(explorer.selectPlayer(QStringLiteral("alpha")));
+    QCOMPARE(explorer.windowTitle(), QStringLiteral("Player Explorer"));
+
+    PlayerStatisticsPanel *panel = explorer.panel();
+    QVERIFY(panel != nullptr);
+    QCOMPARE(panel->title(), QString());
+    auto *openReview = panel->findChild<QPushButton *>(
+        QStringLiteral("playerStatisticsReplayGame"));
+    QVERIFY(openReview != nullptr);
+    QCOMPARE(openReview->text(), QStringLiteral("Open Game Review"));
+
+    const QString gameId = QStringLiteral("chesscom-game-v1:")
+        + QString(64, QLatin1Char('1'));
+    QVERIFY2(explorer.gameBreakdown(gameId, &error).has_value(), qPrintable(error));
+    QSignalSpy spy(&explorer, &GameExplorerWindow::gameBreakdownRequested);
+    QVERIFY(QMetaObject::invokeMethod(
+        panel,
+        "gameBreakdownRequested",
+        Qt::DirectConnection,
+        Q_ARG(QString, gameId)));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toString(), gameId);
+
+    explorer.surface();
+    QVERIFY(explorer.isVisible());
+    explorer.close();
 }
 
 void TestUnitPlayerStatisticsPanel::loadsPartialPersistedEngineEvidenceWithoutFabricatingMissingGame()

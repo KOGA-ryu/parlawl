@@ -114,6 +114,7 @@ public:
     bool loadExplorerDatabase(const QString &path, QString *errorMessage = nullptr);
     void clearSnapshot();
     bool selectPlayer(const QString &playerId);
+    void setDedicatedExplorerMode(bool enabled);
 
     [[nodiscard]] bool hasSnapshot() const;
     [[nodiscard]] bool hasBoardStructureSnapshot() const;

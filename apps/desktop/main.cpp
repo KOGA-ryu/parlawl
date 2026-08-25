@@ -210,8 +210,10 @@ int main(int argc, char *argv[])
             return 2;
         }
     }
-    if (sourceGameId.isEmpty()) {
+    if (explorerPath.isEmpty()) {
         window.show();
+    } else if (sourceGameId.isEmpty()) {
+        QTimer::singleShot(0, &window, &PuzzleRunnerWindow::surfaceGameExplorerWorkspace);
     } else {
         QTimer::singleShot(0, &window, &PuzzleRunnerWindow::surfaceGameStudyWorkspace);
     }

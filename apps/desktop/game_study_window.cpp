@@ -170,7 +170,7 @@ GameBoardWindow::GameBoardWindow(
 
     m_boardWidget = new BoardWidget(boardPage);
     m_boardWidget->setObjectName(QStringLiteral("floatingBoardWidget"));
-    m_boardWidget->setMinimumSize(520, 520);
+    m_boardWidget->setMinimumSize(320, 320);
     boardLayout->addWidget(m_boardWidget, 1);
 
     auto *transportRow = new QHBoxLayout();
@@ -427,6 +427,10 @@ QString GameBoardWindow::studyContextText() const
 GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
     : QMainWindow(parent, Qt::Window)
     , m_gameTabs(new QTabWidget(this))
+    , m_boardActions(new QWidget(this))
+    , m_arrangeBoardsButton(new QPushButton(QStringLiteral("Tile boards"), m_boardActions))
+    , m_showAllBoardsButton(new QPushButton(QStringLiteral("Show all"), m_boardActions))
+    , m_focusBoardButton(new QPushButton(QStringLiteral("Focus current"), m_boardActions))
 {
     setObjectName(QStringLiteral("gameReviewHubWindow"));
     setAttribute(Qt::WA_DeleteOnClose, false);
@@ -445,7 +449,31 @@ GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
     m_gameTabs->setMovable(true);
     m_gameTabs->setDocumentMode(true);
     m_gameTabs->tabBar()->hide();
-    setCentralWidget(m_gameTabs);
+    auto *workspace = new QWidget(this);
+    auto *workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceLayout->setSpacing(0);
+    m_boardActions->setObjectName(QStringLiteral("multiBoardActions"));
+    auto *boardActionsLayout = new QHBoxLayout(m_boardActions);
+    boardActionsLayout->setContentsMargins(8, 5, 8, 5);
+    boardActionsLayout->setSpacing(6);
+    m_arrangeBoardsButton->setObjectName(QStringLiteral("arrangeBoardsButton"));
+    m_showAllBoardsButton->setObjectName(QStringLiteral("showAllBoardsButton"));
+    m_focusBoardButton->setObjectName(QStringLiteral("focusCurrentBoardButton"));
+    m_arrangeBoardsButton->setToolTip(
+        QStringLiteral("Arrange every open board on this screen"));
+    m_showAllBoardsButton->setToolTip(
+        QStringLiteral("Restore every open board window"));
+    m_focusBoardButton->setToolTip(
+        QStringLiteral("Show only the board for the selected game"));
+    boardActionsLayout->addStretch(1);
+    boardActionsLayout->addWidget(m_arrangeBoardsButton);
+    boardActionsLayout->addWidget(m_showAllBoardsButton);
+    boardActionsLayout->addWidget(m_focusBoardButton);
+    m_boardActions->hide();
+    workspaceLayout->addWidget(m_boardActions);
+    workspaceLayout->addWidget(m_gameTabs, 1);
+    setCentralWidget(workspace);
 
     connect(m_gameTabs, &QTabWidget::currentChanged, this, [this](int) {
         updateWindowTitleForCurrentTab();
@@ -458,6 +486,12 @@ GameReviewHubWindow::GameReviewHubWindow(QWidget *parent)
     });
     connect(m_gameTabs, &QTabWidget::tabCloseRequested,
             this, &GameReviewHubWindow::closeGameAt);
+    connect(m_arrangeBoardsButton, &QPushButton::clicked,
+            this, &GameReviewHubWindow::arrangeBoards);
+    connect(m_showAllBoardsButton, &QPushButton::clicked,
+            this, &GameReviewHubWindow::showAllBoards);
+    connect(m_focusBoardButton, &QPushButton::clicked,
+            this, &GameReviewHubWindow::focusActiveBoard);
 }
 
 GameReviewHubWindow::~GameReviewHubWindow()
@@ -646,10 +680,7 @@ bool GameReviewHubWindow::seekGame(const QString &sourceGameId, int ply)
 
 void GameReviewHubWindow::surfaceActiveGame()
 {
-    if (OpenGame *openGame = currentGame(); openGame != nullptr) {
-        openGame->boardWindow->showNormal();
-        openGame->boardWindow->raise();
-    }
+    applyBoardVisibility();
     showNormal();
     raise();
     activateWindow();
@@ -794,6 +825,9 @@ void GameReviewHubWindow::activateBoardForCurrentTab()
     if (openGame == nullptr) {
         return;
     }
+    if (m_focusActiveBoardOnly) {
+        applyBoardVisibility();
+    }
     openGame->boardWindow->showNormal();
     openGame->boardWindow->raise();
     openGame->boardWindow->activateWindow();
@@ -809,5 +843,90 @@ void GameReviewHubWindow::updateWindowTitleForCurrentTab()
 
 void GameReviewHubWindow::updateGameTabBarVisibility()
 {
-    m_gameTabs->tabBar()->setVisible(m_gameTabs->count() > 1);
+    const bool comparing = m_gameTabs->count() > 1;
+    m_gameTabs->tabBar()->setVisible(comparing);
+    m_boardActions->setVisible(comparing);
+    if (!comparing) {
+        m_focusActiveBoardOnly = false;
+    }
+}
+
+void GameReviewHubWindow::arrangeBoards()
+{
+    const int gameCount = m_gameTabs->count();
+    QScreen *screen = this->screen();
+    if (gameCount < 1 || screen == nullptr) {
+        return;
+    }
+    m_focusActiveBoardOnly = false;
+    const QRect available = screen->availableGeometry().adjusted(24, 24, -24, -24);
+    int columns = 1;
+    while (columns * columns < gameCount) {
+        ++columns;
+    }
+    const int rows = (gameCount + columns - 1) / columns;
+    constexpr int gap = 14;
+    const int tileWidth = std::max(
+        360,
+        (available.width() - gap * (columns - 1)) / columns);
+    const int tileHeight = std::max(
+        410,
+        (available.height() - gap * (rows - 1)) / rows);
+    for (int index = 0; index < gameCount; ++index) {
+        OpenGame *openGame = nullptr;
+        QWidget *page = m_gameTabs->widget(index);
+        for (OpenGame *candidate : m_games) {
+            if (candidate->reviewPanel == page) {
+                openGame = candidate;
+                break;
+            }
+        }
+        if (openGame == nullptr) {
+            continue;
+        }
+        const int row = index / columns;
+        const int column = index % columns;
+        openGame->boardWindow->resize(tileWidth, tileHeight);
+        const int targetLeft = available.left() + column * (tileWidth + gap);
+        const int targetTop = available.top() + row * (tileHeight + gap);
+        openGame->boardWindow->move(
+            std::min(targetLeft, available.right() - openGame->boardWindow->width() + 1),
+            std::min(targetTop, available.bottom() - openGame->boardWindow->height() + 1));
+        openGame->boardWindow->showNormal();
+        openGame->boardWindow->raise();
+    }
+    raise();
+    activateWindow();
+}
+
+void GameReviewHubWindow::showAllBoards()
+{
+    m_focusActiveBoardOnly = false;
+    applyBoardVisibility();
+    raise();
+    activateWindow();
+}
+
+void GameReviewHubWindow::focusActiveBoard()
+{
+    m_focusActiveBoardOnly = true;
+    applyBoardVisibility();
+    raise();
+    activateWindow();
+}
+
+void GameReviewHubWindow::applyBoardVisibility()
+{
+    OpenGame *active = currentGame();
+    for (OpenGame *openGame : m_games) {
+        const bool visible = !m_focusActiveBoardOnly || openGame == active;
+        if (visible) {
+            openGame->boardWindow->showNormal();
+        } else {
+            openGame->boardWindow->hide();
+        }
+    }
+    if (active != nullptr) {
+        active->boardWindow->raise();
+    }
 }

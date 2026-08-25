@@ -762,6 +762,15 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
     QVERIFY(hub.openGame(*second, &error));
     QCOMPARE(hub.openGameCount(), 2);
     QVERIFY(!gameTabs->tabBar()->isHidden());
+    auto *boardActions = hub.findChild<QWidget *>(QStringLiteral("multiBoardActions"));
+    auto *arrangeBoards = hub.findChild<QPushButton *>(QStringLiteral("arrangeBoardsButton"));
+    auto *showAllBoards = hub.findChild<QPushButton *>(QStringLiteral("showAllBoardsButton"));
+    auto *focusBoard = hub.findChild<QPushButton *>(QStringLiteral("focusCurrentBoardButton"));
+    QVERIFY(boardActions != nullptr);
+    QVERIFY(arrangeBoards != nullptr);
+    QVERIFY(showAllBoards != nullptr);
+    QVERIFY(focusBoard != nullptr);
+    QVERIFY(boardActions->isVisible());
     QCOMPARE(hub.activeGameId(), second->sourceGameId());
     QVERIFY(hub.boardWindowForGame(first->sourceGameId()) != nullptr);
     QVERIFY(hub.boardWindowForGame(second->sourceGameId()) != nullptr);
@@ -773,7 +782,9 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
     QVERIFY(hub.windowTitle().contains(QStringLiteral("Beta 2050")));
     QVERIFY(!hub.windowTitle().contains(QStringLiteral("Review Hub")));
     auto *firstBoard = hub.boardWindowForGame(first->sourceGameId());
+    auto *secondBoard = hub.boardWindowForGame(second->sourceGameId());
     QVERIFY(firstBoard != nullptr);
+    QVERIFY(secondBoard != nullptr);
     const auto *boardIdentity = firstBoard->findChild<QLabel *>(
         QStringLiteral("boardGameIdentity"));
     QVERIFY(boardIdentity != nullptr);
@@ -804,6 +815,17 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
     QVERIFY(hub.isVisible());
     QVERIFY(firstBoard->isVisible());
 
+    QTest::mouseClick(focusBoard, Qt::LeftButton);
+    QVERIFY(firstBoard->isVisible());
+    QVERIFY(!secondBoard->isVisible());
+    QTest::mouseClick(showAllBoards, Qt::LeftButton);
+    QVERIFY(firstBoard->isVisible());
+    QVERIFY(secondBoard->isVisible());
+    QTest::mouseClick(arrangeBoards, Qt::LeftButton);
+    QVERIFY(firstBoard->isVisible());
+    QVERIFY(secondBoard->isVisible());
+    QVERIFY(firstBoard->pos() != secondBoard->pos());
+
     QSignalSpy explorerSpy(&hub, &GameReviewHubWindow::playerExplorerRequested);
     QVERIFY(QMetaObject::invokeMethod(
         gameTabs,
@@ -812,6 +834,7 @@ void TestUnitPuzzlePanels::gameReviewHubKeepsMultipleBoardsAndTabsSynchronized()
         Q_ARG(int, 0)));
     QCOMPARE(hub.openGameCount(), 1);
     QVERIFY(gameTabs->tabBar()->isHidden());
+    QVERIFY(!boardActions->isVisible());
     QCOMPARE(explorerSpy.count(), 0);
     QVERIFY(QMetaObject::invokeMethod(
         gameTabs,

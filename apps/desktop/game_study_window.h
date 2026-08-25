@@ -124,7 +124,16 @@ private:
     void activateBoardForCurrentTab();
     void updateWindowTitleForCurrentTab();
     void updateGameTabBarVisibility();
+    void arrangeBoards();
+    void showAllBoards();
+    void focusActiveBoard();
+    void applyBoardVisibility();
 
     QTabWidget *m_gameTabs;
+    QWidget *m_boardActions;
+    QPushButton *m_arrangeBoardsButton;
+    QPushButton *m_showAllBoardsButton;
+    QPushButton *m_focusBoardButton;
     QHash<QString, OpenGame *> m_games;
+    bool m_focusActiveBoardOnly = false;
 };

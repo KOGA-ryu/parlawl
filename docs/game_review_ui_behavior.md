@@ -4,16 +4,23 @@ This document describes ParlAWL's multi-game study presentation. It changes how 
 
 ## Window model
 
-- The player explorer remains the source for opening a local read-only game breakdown.
-- Opening a game switches from the Explorer shell to one separate review window and one floating board window for that game. The Explorer shell is hidden while studying rather than remaining as a competing host. The review window title follows the selected game's player names, ratings, result, and date. Opening another game does not replace the first game.
+- The dedicated `Player Explorer` window is the source for opening a local read-only game breakdown. The older puzzle shell is reserved for puzzle launches and is not surfaced anywhere in the game-study workflow.
+- Opening a game switches from Player Explorer to one separate review window and one floating board window for that game. Player Explorer is hidden while studying rather than remaining as a competing host. The review window title follows the selected game's player names, ratings, result, and date. Opening another game does not replace the first game.
 - Each open game owns an independent replay position, playback state, notation expansion, board appearance, and notes document.
 - Activating a floating board selects the matching Review Hub tab. Selecting a Review Hub tab restores and raises the matching board.
 - Closing a floating board hides it without closing its Review Hub tab. Selecting the tab shows the board again. Closing a Review Hub tab closes that game and its board; closing the final game tab returns to Explorer instead of leaving an empty review host.
-- `Explorer` pauses hidden playback, saves local board state, hides the entire study workspace, and returns attention to the player explorer without discarding open studies.
+- `Explorer` pauses hidden playback, saves local board state, hides the entire study workspace, and returns attention to the dedicated Player Explorer without discarding open studies.
 
 ## Review Hub
 
 The Review Hub contains one movable, closable tab per open game. The outer tab row is hidden for one game because the native title already carries its identity, and appears automatically for two or more games. Player names identify each visible tab; the tooltip retains ratings, result, and date. A tab accent and the floating board's letter and palette provide redundant identity so games are not distinguished by color alone.
+
+When two or more games are open, a compact comparison bar appears beside the game tabs:
+
+- `Tile boards` places every floating board in a bounded grid on the Review window's current screen.
+- `Show all` restores any hidden comparison boards without changing the active game.
+- `Focus current` hides the other boards while preserving their tabs, position, notes, and replay state. Changing tabs in this mode swaps the one visible board.
+- Returning to a single open game removes the comparison bar with the now-redundant outer tab row.
 
 ### Visual housekeeping rules
 

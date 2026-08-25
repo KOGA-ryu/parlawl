@@ -41,6 +41,7 @@
 #include "database_manager.h"
 #include "evaluation_bar_widget.h"
 #include "engine_validated_puzzle_pack.h"
+#include "game_explorer_window.h"
 #include "game_study_window.h"
 #include "lichess_client.h"
 #include "parlawl_config.h"
@@ -519,6 +520,7 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_replayEvidencePanel(nullptr)
     , m_gameReviewPanel(nullptr)
     , m_gameReviewHubWindow(nullptr)
+    , m_gameExplorerWindow(nullptr)
     , m_rightTabs(nullptr)
     , m_infoTabs(nullptr)
     , m_settingsPage(nullptr)
@@ -554,19 +556,19 @@ PuzzleRunnerWindow::PuzzleRunnerWindow(QWidget *parent)
     , m_preserveAnalyzedSetting(true)
 {
     buildUi();
+    m_gameExplorerWindow = new GameExplorerWindow(this);
     m_gameReviewHubWindow = new GameReviewHubWindow(this);
+    connect(
+        m_gameExplorerWindow,
+        &GameExplorerWindow::gameBreakdownRequested,
+        this,
+        &PuzzleRunnerWindow::onPlayerGameBreakdownRequested);
     connect(
         m_gameReviewHubWindow,
         &GameReviewHubWindow::playerExplorerRequested,
         this,
         [this]() {
-            m_gameReviewHubWindow->hideWorkspace();
-            showNormal();
-            raise();
-            activateWindow();
-            if (m_rightTabs != nullptr && m_playerStatisticsPanel != nullptr) {
-                m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
-            }
+            surfaceGameExplorerWorkspace();
         });
     loadSettings();
     loadDatabase();
@@ -817,7 +819,9 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
         if (!openPlayerGameExplorer(
                 path, QString(), QString(), QString(), QString(), &errorMessage)) {
             QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
+            return;
         }
+        surfaceGameExplorerWorkspace();
         return;
     }
 
@@ -906,13 +910,14 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
             return false;
         }
     }
-    if (!m_playerStatisticsPanel->loadExplorerDatabase(
+    if (m_gameExplorerWindow == nullptr
+        || !m_gameExplorerWindow->loadExplorerDatabase(
             absoluteSqlitePath,
             errorMessage)) {
         return false;
     }
-    if (!playerId.isEmpty() && !m_playerStatisticsPanel->selectPlayer(playerId)) {
-        m_playerStatisticsPanel->clearSnapshot();
+    if (!playerId.isEmpty() && !m_gameExplorerWindow->selectPlayer(playerId)) {
+        m_gameExplorerWindow->clearExplorer();
         return fail(QStringLiteral("player explorer does not contain the exact requested player ID"));
     }
     m_selectiveDeepReports = std::move(deepReports);
@@ -938,7 +943,6 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
         }
     }
 
-    m_rightTabs->setCurrentWidget(m_playerStatisticsPanel);
     appendLogMessage(timestamped(
         m_selectiveDeepReports.has_value()
             ? QStringLiteral(
@@ -963,7 +967,21 @@ void PuzzleRunnerWindow::surfaceGameStudyWorkspace()
     if (m_gameReviewHubWindow != nullptr
         && m_gameReviewHubWindow->openGameCount() > 0) {
         hide();
+        if (m_gameExplorerWindow != nullptr) {
+            m_gameExplorerWindow->hide();
+        }
         m_gameReviewHubWindow->surfaceActiveGame();
+    }
+}
+
+void PuzzleRunnerWindow::surfaceGameExplorerWorkspace()
+{
+    hide();
+    if (m_gameReviewHubWindow != nullptr) {
+        m_gameReviewHubWindow->hideWorkspace();
+    }
+    if (m_gameExplorerWindow != nullptr) {
+        m_gameExplorerWindow->surface();
     }
 }
 
@@ -986,7 +1004,9 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     }
 
     QString details;
-    const auto breakdown = m_playerStatisticsPanel->gameBreakdown(sourceGameId, &details);
+    const auto breakdown = m_gameExplorerWindow != nullptr
+        ? m_gameExplorerWindow->gameBreakdown(sourceGameId, &details)
+        : std::nullopt;
     if (!breakdown.has_value()) {
         return fail(details);
     }

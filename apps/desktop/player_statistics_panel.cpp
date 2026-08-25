@@ -2083,6 +2083,19 @@ PlayerStatisticsPanel::~PlayerStatisticsPanel()
     closeExplorerDatabase();
 }
 
+void PlayerStatisticsPanel::setDedicatedExplorerMode(bool enabled)
+{
+    setTitle(enabled ? QString() : QStringLiteral("player statistics"));
+    m_openButton->setVisible(!enabled);
+    m_openStructureButton->setVisible(!enabled);
+    m_replayGameButton->setText(
+        enabled ? QStringLiteral("Open Game Review")
+                : QStringLiteral("Replay Selected Game"));
+    setStyleSheet(enabled
+        ? QStringLiteral("QGroupBox { border: 0; margin: 0; padding: 0; }")
+        : QString());
+}
+
 void PlayerStatisticsPanel::closeExplorerDatabase()
 {
     m_analysisCatalog.reset();
