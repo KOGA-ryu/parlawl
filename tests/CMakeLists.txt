@@ -106,6 +106,14 @@ target_include_directories(test_unit_player_statistics_panel PRIVATE ../apps/des
 target_link_libraries(test_unit_player_statistics_panel PRIVATE Qt6::Core Qt6::Sql Qt6::Widgets Qt6::Test)
 add_test(NAME test_unit_player_statistics_panel COMMAND test_unit_player_statistics_panel)
 
+add_executable(test_unit_player_analysis_catalog
+    unit/test_unit_player_analysis_catalog.cpp
+    ../apps/desktop/player_analysis_catalog.cpp
+)
+target_include_directories(test_unit_player_analysis_catalog PRIVATE ../apps/desktop)
+target_link_libraries(test_unit_player_analysis_catalog PRIVATE Qt6::Core Qt6::Sql Qt6::Test)
+add_test(NAME test_unit_player_analysis_catalog COMMAND test_unit_player_analysis_catalog)
+
 add_executable(test_unit_puzzle_supply_coordinator
     unit/test_unit_puzzle_supply_coordinator.cpp
 )
