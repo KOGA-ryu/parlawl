@@ -57,6 +57,8 @@ The worded view uses a fixed plain-text section order so every selected move sca
 7. Retained alternative summaries.
 8. Source and claim boundary.
 
+When an exact mechanical-explanation companion is joined, a final `MECHANICAL EXPLANATION` block preserves its headline, comparison status, mechanical-fact status, scope-grouped fact text, exact structured values, contract, source-report lineage, and claim boundary. This block is an enhancement to the retained selected moment, not a replacement for its evidence status.
+
 The view uses fixed-scale text and preserves scrolling without zooming. It remains copyable and does not replace SAN with icons.
 
 ### Coach Review
@@ -64,7 +66,8 @@ The view uses fixed-scale text and preserves scrolling without zooming. It remai
 - Coach Review is available only when the caller supplies a matching `chess-game-review-display-v1` sidecar through `--game-review-directory`. ParlAWL joins it by the exact `game.source_game_id` and checks its source report ID and full SAN/UCI move sequence against the already joined Report-v2 replay.
 - A missing sidecar leaves this mode in the plain `Review summary not generated` state. Visual Map, Detailed Evidence, and Notes continue to work.
 - Clicking notation with a non-empty `selected_moment_indexes` opens the corresponding Coach Review card. Unselected moves do not open a coach card and receive no inferred approval or synthesized score.
-- The card presents the backend-owned title and summary first, then played versus best retained SAN, mover-perspective score and expectation comparison, phase, and explicitly server-accounted time.
+- The card presents the backend-owned review title first. When an exact explanation companion exists, its headline follows immediately; an ambiguous or below-threshold comparison warning precedes every mechanical fact. The backend-owned review summary then leads into played versus best retained SAN, mover-perspective score and expectation comparison, phase, and explicitly server-accounted time.
+- Mechanical facts are grouped only under the supplied `policy`, `best_move`, `played_move`, `comparison`, and `context` scopes. The compact rows preserve the exact supplied sentence. Codes, values, contract lineage, and the complete claim boundary remain behind Detailed Evidence.
 - Previous and Next critical-moment controls show the position before the played move and highlight that played root on the floating board. Each open game keeps its own current moment.
 - `Show best line` and `Show played line` are explicit retained-line previews. They highlight the corresponding retained root; ParlAWL does not simulate a complete search tree or run an engine.
 - Detailed Evidence expands in place and keeps the frozen backend status, raw numeric fields, retained UCI lines, FEN, schema, and source-report lineage copyable.
@@ -110,6 +113,22 @@ An unknown deep source status fails closed as `evidence unavailable`; its raw re
 - The loader rejects an unsupported schema or claim boundary, filename/source-report mismatch, duplicate source game, invalid FEN/UCI, inconsistent counts or moment attachments, and sidecars whose SAN/UCI replay differs from the joined report.
 - Sidecars with no matching Report-v2 game are ignored for tabs and reported once as loader diagnostics. An existing game with no sidecar keeps the other review modes and shows the missing summary state.
 - Backend-provided titles such as `Critical error`, `Missed opportunity`, `Engine’s first choice`, `Unclear at this depth`, and `Small engine difference` are displayed verbatim. C++ does not reclassify statuses or invent prose.
+
+## Mechanical-explanation companion boundary
+
+- `--game-review-explanation-directory` optionally loads caller-prebuilt `game-review-mechanical-explanation-v1-<64 lowercase hex>.json` companions. The viewer does not invoke Python or reproduce their chess mechanics.
+- A companion attaches only after both its `source_game_id` and `source_report_id` match the display sidecar. Each moment then requires the same `review_index`, `ply`, and frozen display-to-comparison status mapping; a count, pair, or confidence contradiction rejects the companion enhancement and leaves the existing Coach Review intact.
+- Companion filenames are checked against `source_report_id`; duplicate source games are rejected. Orphan and mismatched companions are diagnostics and never attach.
+- `ambiguous_engine_stability` and `below_policy_threshold` use a neutral warning ahead of mechanical facts. An observable capture, check, pin, fork, material fact, or server-accounted timing fact never overrides that comparison warning.
+- Supplied mechanics are presented as published board facts only. The UI does not convert them into player intent, causal explanations, skill judgments, complete error coverage, forced lines, or objective chess truth.
+
+## Coverage-index boundary
+
+- `--game-review-coverage-index` optionally loads one caller-prebuilt `chess-game-review-coverage-index-v1` file. The index is a delivery inventory, has no local paths, and is joined to a game only by exact `source_game_id`.
+- For `review_available`, the entry's display and optional explanation filenames are locators. After the source-game join, each locator and source-report lineage must match the already loaded sidecar before content attaches; the filename is never treated as game identity. If the index lists a review but no exact display sidecar joins, the Coach panel shows a local “Review summary unavailable in this view” delivery warning instead of the contradictory backend “Review available” detail.
+- `analysis_incomplete` displays its backend label and detail as a warning and does not expose nonexistent review content.
+- `no_selected_report_available` displays the backend label `No deep review available` and its backend detail verbatim. `screening_status=not_established_by_delivery_index` remains visible in the tooltip and detailed delivery record. The UI never renames absence to clean, perfect, safe, mistake-free, screened-no-moment, or any equivalent quality claim.
+- Omitting the coverage index preserves the existing display-v1 behavior. With an index loaded, a non-`review_available` entry refuses contradictory selective deep-review content instead of pretending that delivery exists. Visual Map and Detailed Evidence still retain their local mechanical/shallow replay, while floating boards and Notes continue unchanged.
 
 ## Boundaries
 

@@ -817,7 +817,8 @@ void PuzzleRunnerWindow::onOpenPlayerStatisticsRequested()
         QStringLiteral("sqlite3"), Qt::CaseInsensitive) == 0;
     if (explorer) {
         if (!openPlayerGameExplorer(
-                path, QString(), QString(), QString(), QString(), &errorMessage)) {
+                path, QString(), QString(), QString(), QString(), QString(), QString(),
+                &errorMessage)) {
             QMessageBox::warning(this, QStringLiteral("player statistics"), errorMessage);
             return;
         }
@@ -878,6 +879,8 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     const QString &sourceGameId,
     const QString &selectiveReportDirectory,
     const QString &gameReviewDirectory,
+    const QString &gameReviewExplanationDirectory,
+    const QString &gameReviewCoverageIndex,
     QString *errorMessage)
 {
     if (errorMessage != nullptr) {
@@ -910,6 +913,24 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
             return false;
         }
     }
+    std::optional<GameReviewMechanicalExplanationCatalog> gameReviewExplanations;
+    if (!gameReviewExplanationDirectory.isEmpty()) {
+        gameReviewExplanations = GameReviewMechanicalExplanationCatalog::fromDirectory(
+            gameReviewExplanationDirectory,
+            errorMessage);
+        if (!gameReviewExplanations.has_value()) {
+            return false;
+        }
+    }
+    std::optional<GameReviewCoverageIndex> gameReviewCoverage;
+    if (!gameReviewCoverageIndex.isEmpty()) {
+        gameReviewCoverage = GameReviewCoverageIndex::fromFile(
+            gameReviewCoverageIndex,
+            errorMessage);
+        if (!gameReviewCoverage.has_value()) {
+            return false;
+        }
+    }
     if (m_gameExplorerWindow == nullptr
         || !m_gameExplorerWindow->loadExplorerDatabase(
             absoluteSqlitePath,
@@ -922,6 +943,19 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
     }
     m_selectiveDeepReports = std::move(deepReports);
     m_gameReviewDisplays = std::move(gameReviewDisplays);
+    m_gameReviewExplanations = std::move(gameReviewExplanations);
+    m_gameReviewCoverage = std::move(gameReviewCoverage);
+
+    if (m_gameReviewCoverage.has_value()) {
+        const QString coverageMessage = QStringLiteral(
+            "loaded coverage delivery index for %1 source games: %2 review available, %3 analysis incomplete, %4 with no selected Report-v2 delivered; delivery inventory only")
+                .arg(m_gameReviewCoverage->counts.value(QStringLiteral("source_games")))
+                .arg(m_gameReviewCoverage->counts.value(QStringLiteral("review_available")))
+                .arg(m_gameReviewCoverage->counts.value(QStringLiteral("analysis_incomplete")))
+                .arg(m_gameReviewCoverage->counts.value(
+                    QStringLiteral("no_selected_report_available")));
+        appendLogMessage(timestamped(coverageMessage));
+    }
 
     if (m_gameReviewDisplays.has_value()) {
         QSet<QString> reportGames;
@@ -943,15 +977,40 @@ bool PuzzleRunnerWindow::openPlayerGameExplorer(
         }
     }
 
+    if (m_gameReviewExplanations.has_value()) {
+        QSet<QString> displayGames;
+        if (m_gameReviewDisplays.has_value()) {
+            const QStringList ids = m_gameReviewDisplays->sourceGameIds();
+            displayGames = QSet<QString>(ids.cbegin(), ids.cend());
+        }
+        int orphanCount = 0;
+        for (const QString &gameId : m_gameReviewExplanations->sourceGameIds()) {
+            if (!displayGames.contains(gameId)) {
+                ++orphanCount;
+            }
+        }
+        if (orphanCount > 0) {
+            appendLogMessage(timestamped(QStringLiteral(
+                "ignored %1 orphan mechanical explanation companion%2 with no joined Coach Review display")
+                    .arg(orphanCount)
+                    .arg(orphanCount == 1 ? QString() : QStringLiteral("s"))));
+        }
+    }
+
     appendLogMessage(timestamped(
         m_selectiveDeepReports.has_value()
             ? QStringLiteral(
-                  "opened local read-only player analysis data with %1 exact-join selective deep reports and %2 Coach Review projection%3; ParlAWL ran no engine, network, or source replay")
+                  "opened local read-only player analysis data with %1 exact-join selective deep reports, %2 Coach Review projection%3, and %4 mechanical explanation companion%5; ParlAWL ran no engine, network, or source replay")
                   .arg(m_selectiveDeepReports->reportCount())
                   .arg(m_gameReviewDisplays.has_value()
                            ? m_gameReviewDisplays->reviewCount() : 0)
                   .arg(m_gameReviewDisplays.has_value()
                            && m_gameReviewDisplays->reviewCount() == 1
+                       ? QString() : QStringLiteral("s"))
+                  .arg(m_gameReviewExplanations.has_value()
+                           ? m_gameReviewExplanations->explanationCount() : 0)
+                  .arg(m_gameReviewExplanations.has_value()
+                           && m_gameReviewExplanations->explanationCount() == 1
                        ? QString() : QStringLiteral("s"))
             : QStringLiteral(
                   "opened local read-only player analysis data; ParlAWL ran no engine, network, or source replay")));
@@ -1032,6 +1091,12 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
             mechanical.selectiveDeepReview = *review;
         }
     }
+    const GameReviewCoverageEntry *coverageEntry = m_gameReviewCoverage.has_value()
+        ? m_gameReviewCoverage->entryForGame(sourceGameId) : nullptr;
+    if (coverageEntry != nullptr
+        && coverageEntry->reviewStatus != QStringLiteral("review_available")) {
+        mechanical.selectiveDeepReview.reset();
+    }
     const GameReviewDisplay *gameReviewDisplay = nullptr;
     if (m_gameReviewDisplays.has_value()) {
         gameReviewDisplay = m_gameReviewDisplays->reviewForGame(sourceGameId);
@@ -1044,6 +1109,64 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
                     "Coach Review sidecar source_report_id does not match the joined Report-v2 game."));
             }
         }
+    }
+    if (coverageEntry != nullptr) {
+        const bool coverageAllowsReview =
+            coverageEntry->reviewStatus == QStringLiteral("review_available")
+            && coverageEntry->displayReviewAvailable
+            && coverageEntry->displayFileName.has_value();
+        if (!coverageAllowsReview) {
+            gameReviewDisplay = nullptr;
+        } else if (gameReviewDisplay != nullptr) {
+            const bool locatorMatches = m_gameReviewDisplays.has_value()
+                && m_gameReviewDisplays->fileNameForGame(sourceGameId)
+                    == *coverageEntry->displayFileName;
+            const bool reportMatches = coverageEntry->sourceReportId.has_value()
+                && *coverageEntry->sourceReportId == gameReviewDisplay->sourceReportId;
+            const bool countMatches = coverageEntry->selectedMomentCount.has_value()
+                && *coverageEntry->selectedMomentCount
+                    == gameReviewDisplay->criticalMoments.size();
+            if (!locatorMatches || !reportMatches || !countMatches) {
+                appendLogMessage(timestamped(QStringLiteral(
+                    "ignored Coach Review display for %1 because its coverage-index locator or lineage did not match")
+                        .arg(sourceGameId)));
+                gameReviewDisplay = nullptr;
+            }
+        }
+    }
+    const GameReviewMechanicalExplanation *gameReviewExplanation = nullptr;
+    if (gameReviewDisplay != nullptr && m_gameReviewExplanations.has_value()) {
+        gameReviewExplanation =
+            m_gameReviewExplanations->explanationForGame(sourceGameId);
+        if (gameReviewExplanation != nullptr) {
+            QString joinError;
+            const bool coverageMatches = coverageEntry == nullptr
+                || (coverageEntry->mechanicalExplanationAvailable
+                    && coverageEntry->mechanicalExplanationFileName.has_value()
+                    && m_gameReviewExplanations->fileNameForGame(sourceGameId)
+                        == *coverageEntry->mechanicalExplanationFileName);
+            if (!coverageMatches || !gameReviewExplanation->matchesDisplay(
+                    *gameReviewDisplay, &joinError)) {
+                appendLogMessage(timestamped(QStringLiteral(
+                    "ignored mechanical explanation companion for %1: %2")
+                        .arg(sourceGameId,
+                            coverageMatches ? joinError
+                                : QStringLiteral("coverage-index locator did not match"))));
+                gameReviewExplanation = nullptr;
+            }
+        }
+    }
+    const GameReviewCoverageEntry *coveragePresentation = coverageEntry;
+    QString coachReviewUnavailableMessage;
+    if (coverageEntry != nullptr
+        && coverageEntry->reviewStatus == QStringLiteral("review_available")
+        && gameReviewDisplay == nullptr) {
+        appendLogMessage(timestamped(QStringLiteral(
+            "coverage index lists a review for %1, but no exact display sidecar was joined")
+                .arg(sourceGameId)));
+        coachReviewUnavailableMessage = QStringLiteral(
+            "Review summary unavailable in this view\n"
+            "The coverage index lists a review, but its exact display sidecar did not join.");
     }
     if (breakdown->engineEvidence.has_value()) {
         const PlayerStatisticsEngineGameEvidence &source = *breakdown->engineEvidence;
@@ -1117,7 +1240,9 @@ bool PuzzleRunnerWindow::openPlayerGameBreakdown(
     }
 
     if (m_gameReviewHubWindow == nullptr
-        || !m_gameReviewHubWindow->openGame(*replay, &details, gameReviewDisplay)) {
+        || !m_gameReviewHubWindow->openGame(
+            *replay, &details, gameReviewDisplay, gameReviewExplanation,
+            coveragePresentation, coachReviewUnavailableMessage)) {
         return fail(details.isEmpty()
                 ? QStringLiteral("The game could not be opened in Review Hub.")
                 : details);

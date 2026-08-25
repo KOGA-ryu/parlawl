@@ -511,7 +511,10 @@ GameReviewHubWindow::~GameReviewHubWindow()
 bool GameReviewHubWindow::openGame(
     const AnnotatedReplayPack &pack,
     QString *errorMessage,
-    const GameReviewDisplay *display)
+    const GameReviewDisplay *display,
+    const GameReviewMechanicalExplanation *explanation,
+    const GameReviewCoverageEntry *coverage,
+    const QString &coachReviewUnavailableMessage)
 {
     if (errorMessage != nullptr) {
         errorMessage->clear();
@@ -542,6 +545,24 @@ bool GameReviewHubWindow::openGame(
             }
         }
     }
+    if (explanation != nullptr) {
+        QString detail;
+        if (display == nullptr || !explanation->matchesDisplay(*display, &detail)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = QStringLiteral(
+                    "Mechanical explanation companion does not match Coach Review: %1")
+                        .arg(detail);
+            }
+            return false;
+        }
+    }
+    if (coverage != nullptr && coverage->sourceGameId != pack.sourceGameId()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral(
+                "Coverage index entry does not match the exact replay game.");
+        }
+        return false;
+    }
     if (m_games.contains(pack.sourceGameId())) {
         activateGame(pack.sourceGameId());
         return true;
@@ -552,6 +573,13 @@ bool GameReviewHubWindow::openGame(
     if (display != nullptr) {
         openGame->display = *display;
     }
+    if (explanation != nullptr) {
+        openGame->explanation = *explanation;
+    }
+    if (coverage != nullptr) {
+        openGame->coverage = *coverage;
+    }
+    openGame->coachReviewUnavailableMessage = coachReviewUnavailableMessage;
     openGame->session.load(openGame->pack);
     openGame->reviewPanel = new GameReviewPanel(m_gameTabs);
     openGame->reviewPanel->setObjectName(QStringLiteral("reviewHubGamePage"));
@@ -729,7 +757,10 @@ void GameReviewHubWindow::refreshGame(OpenGame *openGame)
     openGame->reviewPanel->setReplayState(
         openGame->pack, openGame->session, openGame->variationAnchorPly);
     openGame->reviewPanel->setGameReviewDisplay(
-        openGame->display.has_value() ? &*openGame->display : nullptr);
+        openGame->display.has_value() ? &*openGame->display : nullptr,
+        openGame->explanation.has_value() ? &*openGame->explanation : nullptr,
+        openGame->coverage.has_value() ? &*openGame->coverage : nullptr,
+        openGame->coachReviewUnavailableMessage);
     openGame->boardWindow->setReplayState(
         openGame->session, openGame->variationAnchorPly);
     const bool canBack = openGame->session.inVariation()

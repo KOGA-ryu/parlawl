@@ -338,6 +338,89 @@ QByteArray strictGameReviewSidecarFixture()
     return json;
 }
 
+QByteArray strictMechanicalExplanationSidecarFixture()
+{
+    QByteArray json = QByteArrayLiteral("{")
+        + QByteArrayLiteral("\"claim_boundary\":{\"causal_or_intent_explanation\":false,\"engine_evaluation_recomputed\":false,\"line_is_forced_or_complete\":false,\"mechanical_board_facts_only\":true,\"new_engine_network_database_or_write_work\":false,\"objective_chess_truth\":false,\"published_selective_lines_only\":true,\"quiet_engine_preferences_fully_explained\":false,\"source_report_replay_reperformed\":false},")
+        + QByteArrayLiteral("\"contract_version\":\"chess-game-review-mechanical-explanation-v1\",")
+        + QByteArrayLiteral("\"moments\":[{\"comparison_status\":\"confirmed_under_engine_contract\",\"facts\":[{\"code\":\"retained_line_comparison\",\"scope\":\"comparison\",\"text\":\"The published lines retain a confirmed comparison.\",\"values\":{\"threshold_millionths\":25000}}],\"headline\":\"The retained lines preserve the published comparison.\",\"mechanical_fact_status\":\"observed\",\"ply\":1,\"review_index\":1}],")
+        + QByteArrayLiteral("\"source_game_id\":\"chesscom-game-v1:@GAME@\",")
+        + QByteArrayLiteral("\"source_report_id\":\"chess-selective-game-analysis-report-v2:@REPORT@\"}\n");
+    json.replace("@REPORT@", QByteArray(64, 'a'));
+    json.replace("@GAME@", QByteArray(64, 'b'));
+    return json;
+}
+
+QByteArray strictCoverageIndexFixture()
+{
+    QByteArray json = QByteArrayLiteral("{")
+        + QByteArrayLiteral("\"claim_boundary\":{\"absent_report_means_mistake_free\":false,\"absent_report_proves_screening_completed\":false,\"coverage_index_authenticates_source_replay\":false,\"delivery_inventory_only\":true,\"engine_network_or_database_work\":false,\"source_unavailable_games_invented\":false},")
+        + QByteArrayLiteral("\"contract_version\":\"chess-game-review-coverage-index-v1\",")
+        + QByteArrayLiteral("\"counts\":{\"analysis_incomplete\":0,\"mechanical_explanation_available\":0,\"no_selected_report_available\":1,\"report_available\":0,\"review_available\":0,\"selected_moments\":0,\"source_games\":1,\"source_unavailable\":0},")
+        + QByteArrayLiteral("\"coverage_id\":\"chess-game-review-coverage-index-v1:@COVERAGE@\",")
+        + QByteArrayLiteral("\"entries\":[{\"canonical_game_url\":\"https://www.chess.com/game/live/1\",\"display_filename\":null,\"display_review_available\":false,\"mechanical_explanation_available\":false,\"mechanical_explanation_filename\":null,\"report_available\":false,\"review_status\":\"no_selected_report_available\",\"screening_status\":\"not_established_by_delivery_index\",\"selected_moment_count\":null,\"source_game_id\":\"chesscom-game-v1:@GAME@\",\"source_ordinal\":1,\"source_report_id\":null,\"status_detail\":\"No selected Report-v2 file was delivered for this game; this does not mean the game was mistake-free.\",\"status_label\":\"No deep review available\"}],")
+        + QByteArrayLiteral("\"source_pgn_sha256\":\"@PGN@\"}\n");
+    json.replace("@COVERAGE@", QByteArray(64, 'c'));
+    json.replace("@GAME@", QByteArray(64, 'b'));
+    json.replace("@PGN@", QByteArray(64, 'd'));
+    return json;
+}
+
+parlawl::puzzle_runner::GameReviewMechanicalExplanation
+gameReviewExplanationFixture(
+    const parlawl::puzzle_runner::GameReviewDisplay &review)
+{
+    using namespace parlawl::puzzle_runner;
+    GameReviewMechanicalExplanation explanation;
+    explanation.contractVersion =
+        QStringLiteral("chess-game-review-mechanical-explanation-v1");
+    explanation.sourceGameId = review.sourceGameId;
+    explanation.sourceReportId = review.sourceReportId;
+    explanation.claimBoundary = QJsonObject {
+        {QStringLiteral("causal_or_intent_explanation"), false},
+        {QStringLiteral("engine_evaluation_recomputed"), false},
+        {QStringLiteral("line_is_forced_or_complete"), false},
+        {QStringLiteral("mechanical_board_facts_only"), true},
+        {QStringLiteral("new_engine_network_database_or_write_work"), false},
+        {QStringLiteral("objective_chess_truth"), false},
+        {QStringLiteral("published_selective_lines_only"), true},
+        {QStringLiteral("quiet_engine_preferences_fully_explained"), false},
+        {QStringLiteral("source_report_replay_reperformed"), false},
+    };
+
+    GameReviewMechanicalMoment first;
+    first.reviewIndex = 1;
+    first.ply = 3;
+    first.headline = QStringLiteral(
+        "The preferred move retains the stronger published line.");
+    first.comparisonStatus = QStringLiteral("confirmed_under_engine_contract");
+    first.mechanicalFactStatus = QStringLiteral("observed");
+    first.facts.append(GameReviewMechanicalFact {
+        QStringLiteral("best_move_check"),
+        QStringLiteral("best_move"),
+        QStringLiteral("The preferred move gives check immediately."),
+        QJsonObject {{QStringLiteral("san"), QStringLiteral("d4")},
+                     {QStringLiteral("uci"), QStringLiteral("d2d4")}},
+    });
+    explanation.moments.append(first);
+
+    GameReviewMechanicalMoment second;
+    second.reviewIndex = 2;
+    second.ply = 4;
+    second.headline = QStringLiteral(
+        "No single mechanical cause is established by the retained lines.");
+    second.comparisonStatus = QStringLiteral("below_policy_threshold");
+    second.mechanicalFactStatus = QStringLiteral("not_observed");
+    second.facts.append(GameReviewMechanicalFact {
+        QStringLiteral("engine_difference_below_threshold"),
+        QStringLiteral("policy"),
+        QStringLiteral("The retained comparison remains below the published policy threshold."),
+        QJsonObject {{QStringLiteral("threshold_millionths"), 25'000}},
+    });
+    explanation.moments.append(second);
+    return explanation;
+}
+
 } // namespace
 
 class TestUnitPuzzlePanels : public QObject
@@ -882,6 +965,181 @@ void TestUnitPuzzlePanels::gameReviewDisplayCatalogEnforcesFrozenSidecarContract
         canonicalDirectory, &error);
     QVERIFY(!rejected.has_value());
     QVERIFY(error.contains(QStringLiteral("schema"), Qt::CaseInsensitive));
+
+    QTemporaryDir explanationDirectory;
+    QVERIFY(explanationDirectory.isValid());
+    const QString explanationPath = explanationDirectory.filePath(
+        QStringLiteral("game-review-mechanical-explanation-v1-%1.json").arg(digest));
+    const auto writeExplanation = [&explanationPath](const QByteArray &bytes) {
+        QFile file(explanationPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        return file.write(bytes) == bytes.size() && file.flush();
+    };
+    QVERIFY(writeExplanation(strictMechanicalExplanationSidecarFixture()));
+    const QString canonicalExplanationDirectory =
+        QFileInfo(explanationDirectory.path()).canonicalFilePath();
+    const auto explanations =
+        parlawl::puzzle_runner::GameReviewMechanicalExplanationCatalog::fromDirectory(
+            canonicalExplanationDirectory, &error);
+    QVERIFY2(explanations.has_value(), qPrintable(error));
+    QCOMPARE(explanations->explanationCount(), 1);
+    QCOMPARE(explanations->momentCount(), 1);
+    const auto *explanation = explanations->explanationForGame(sourceGameId);
+    QVERIFY(explanation != nullptr);
+    QVERIFY(explanation->matchesDisplay(*review, &error));
+    auto mismatched = *explanation;
+    mismatched.moments[0].ply = 2;
+    QVERIFY(!mismatched.matchesDisplay(*review, &error));
+    QVERIFY(error.contains(QStringLiteral("review_index/ply")));
+    auto contradictory = *explanation;
+    contradictory.moments[0].comparisonStatus =
+        QStringLiteral("ambiguous_engine_stability");
+    QVERIFY(!contradictory.matchesDisplay(*review, &error));
+    QVERIFY(error.contains(QStringLiteral("contradicts")));
+
+    QJsonDocument wrongContract =
+        QJsonDocument::fromJson(strictMechanicalExplanationSidecarFixture());
+    QJsonObject explanationRoot = wrongContract.object();
+    explanationRoot.insert(
+        QStringLiteral("contract_version"),
+        QStringLiteral("chess-game-review-mechanical-explanation-v2"));
+    QVERIFY(writeExplanation(
+        QJsonDocument(explanationRoot).toJson(QJsonDocument::Compact)));
+    const auto rejectedExplanation =
+        parlawl::puzzle_runner::GameReviewMechanicalExplanationCatalog::fromDirectory(
+            canonicalExplanationDirectory, &error);
+    QVERIFY(!rejectedExplanation.has_value());
+    QVERIFY(error.contains(QStringLiteral("contract"), Qt::CaseInsensitive));
+
+    const QString realDirectory = qEnvironmentVariable(
+        "PARLAWL_REAL_GAME_REVIEW_EXPLANATION_DIR");
+    if (!realDirectory.isEmpty()) {
+        const auto realCatalog =
+            parlawl::puzzle_runner::GameReviewMechanicalExplanationCatalog::fromDirectory(
+                realDirectory, &error);
+        QVERIFY2(realCatalog.has_value(), qPrintable(error));
+        QCOMPARE(realCatalog->explanationCount(), 77);
+        QCOMPARE(realCatalog->momentCount(), 128);
+        QHash<QString, int> comparisonCounts;
+        QHash<QString, int> mechanicalCounts;
+        for (const QString &gameId : realCatalog->sourceGameIds()) {
+            const auto *item = realCatalog->explanationForGame(gameId);
+            QVERIFY(item != nullptr);
+            for (const auto &moment : item->moments) {
+                ++comparisonCounts[moment.comparisonStatus];
+                ++mechanicalCounts[moment.mechanicalFactStatus];
+            }
+        }
+        QCOMPARE(mechanicalCounts.value(QStringLiteral("observed")), 104);
+        QCOMPARE(mechanicalCounts.value(QStringLiteral("not_observed")), 24);
+        QCOMPARE(comparisonCounts.value(QStringLiteral("confirmed_under_engine_contract")), 81);
+        QCOMPARE(comparisonCounts.value(QStringLiteral("ambiguous_engine_stability")), 38);
+        QCOMPARE(comparisonCounts.value(QStringLiteral("below_policy_threshold")), 8);
+        QCOMPARE(comparisonCounts.value(QStringLiteral("played_move_matches_best")), 1);
+    }
+
+    QTemporaryDir coverageDirectory;
+    QVERIFY(coverageDirectory.isValid());
+    const QString coveragePath = coverageDirectory.filePath(
+        QStringLiteral("coverage.json"));
+    QFile coverageFile(coveragePath);
+    QVERIFY(coverageFile.open(QIODevice::WriteOnly));
+    const QByteArray coverageBytes = strictCoverageIndexFixture();
+    QCOMPARE(coverageFile.write(coverageBytes), coverageBytes.size());
+    QVERIFY(coverageFile.flush());
+    coverageFile.close();
+    const auto coverage = parlawl::puzzle_runner::GameReviewCoverageIndex::fromFile(
+        QFileInfo(coveragePath).canonicalFilePath(), &error);
+    QVERIFY2(coverage.has_value(), qPrintable(error));
+    QCOMPARE(coverage->entries.size(), 1);
+    const auto *coverageEntry = coverage->entryForGame(sourceGameId);
+    QVERIFY(coverageEntry != nullptr);
+    QCOMPARE(coverageEntry->statusLabel,
+        QStringLiteral("No deep review available"));
+    QCOMPARE(coverageEntry->screeningStatus,
+        QStringLiteral("not_established_by_delivery_index"));
+
+    QJsonDocument incompleteDocument =
+        QJsonDocument::fromJson(strictCoverageIndexFixture());
+    QJsonObject incompleteRoot = incompleteDocument.object();
+    QJsonObject incompleteCounts =
+        incompleteRoot.value(QStringLiteral("counts")).toObject();
+    incompleteCounts.insert(QStringLiteral("analysis_incomplete"), 1);
+    incompleteCounts.insert(QStringLiteral("no_selected_report_available"), 0);
+    incompleteCounts.insert(QStringLiteral("report_available"), 1);
+    incompleteCounts.insert(QStringLiteral("selected_moments"), 1);
+    incompleteRoot.insert(QStringLiteral("counts"), incompleteCounts);
+    QJsonArray incompleteEntries =
+        incompleteRoot.value(QStringLiteral("entries")).toArray();
+    QJsonObject incompleteEntry = incompleteEntries.first().toObject();
+    incompleteEntry.insert(QStringLiteral("report_available"), true);
+    incompleteEntry.insert(QStringLiteral("review_status"),
+        QStringLiteral("analysis_incomplete"));
+    incompleteEntry.insert(QStringLiteral("screening_status"),
+        QStringLiteral("selected_report_available"));
+    incompleteEntry.insert(QStringLiteral("selected_moment_count"), 1);
+    incompleteEntry.insert(QStringLiteral("source_report_id"),
+        QStringLiteral("chess-selective-game-analysis-report-v2:")
+            + QString(64, QLatin1Char('a')));
+    incompleteEntry.insert(QStringLiteral("status_label"),
+        QStringLiteral("Analysis incomplete"));
+    incompleteEntry.insert(QStringLiteral("status_detail"), QStringLiteral(
+        "A selected source report exists, but its display review is missing."));
+    incompleteEntries[0] = incompleteEntry;
+    incompleteRoot.insert(QStringLiteral("entries"), incompleteEntries);
+    QVERIFY(coverageFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray incompleteBytes =
+        QJsonDocument(incompleteRoot).toJson(QJsonDocument::Compact);
+    QCOMPARE(coverageFile.write(incompleteBytes), incompleteBytes.size());
+    QVERIFY(coverageFile.flush());
+    coverageFile.close();
+    QVERIFY2(parlawl::puzzle_runner::GameReviewCoverageIndex::fromFile(
+        QFileInfo(coveragePath).canonicalFilePath(), &error).has_value(),
+        qPrintable(error));
+    incompleteEntry.insert(QStringLiteral("status_detail"),
+        QStringLiteral("No issues found."));
+    incompleteEntries[0] = incompleteEntry;
+    incompleteRoot.insert(QStringLiteral("entries"), incompleteEntries);
+    QVERIFY(coverageFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray overstatedBytes =
+        QJsonDocument(incompleteRoot).toJson(QJsonDocument::Compact);
+    QCOMPARE(coverageFile.write(overstatedBytes), overstatedBytes.size());
+    QVERIFY(coverageFile.flush());
+    coverageFile.close();
+    QVERIFY(!parlawl::puzzle_runner::GameReviewCoverageIndex::fromFile(
+        QFileInfo(coveragePath).canonicalFilePath(), &error).has_value());
+    QVERIFY(error.contains(QStringLiteral("wording")));
+
+    QJsonDocument falseClaim = QJsonDocument::fromJson(strictCoverageIndexFixture());
+    QJsonObject coverageRoot = falseClaim.object();
+    QJsonObject coverageBoundary =
+        coverageRoot.value(QStringLiteral("claim_boundary")).toObject();
+    coverageBoundary.insert(QStringLiteral("absent_report_means_mistake_free"), true);
+    coverageRoot.insert(QStringLiteral("claim_boundary"), coverageBoundary);
+    QVERIFY(coverageFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QByteArray falseClaimBytes =
+        QJsonDocument(coverageRoot).toJson(QJsonDocument::Compact);
+    QCOMPARE(coverageFile.write(falseClaimBytes), falseClaimBytes.size());
+    QVERIFY(coverageFile.flush());
+    coverageFile.close();
+    QVERIFY(!parlawl::puzzle_runner::GameReviewCoverageIndex::fromFile(
+        QFileInfo(coveragePath).canonicalFilePath(), &error).has_value());
+    QVERIFY(error.contains(QStringLiteral("claim boundary"), Qt::CaseInsensitive));
+
+    const QString realCoveragePath = qEnvironmentVariable(
+        "PARLAWL_REAL_GAME_REVIEW_COVERAGE_INDEX");
+    if (!realCoveragePath.isEmpty()) {
+        const auto realCoverage =
+            parlawl::puzzle_runner::GameReviewCoverageIndex::fromFile(
+                realCoveragePath, &error);
+        QVERIFY2(realCoverage.has_value(), qPrintable(error));
+        QCOMPARE(realCoverage->entries.size(), 179);
+        QCOMPARE(realCoverage->counts.value(QStringLiteral("review_available")), 77);
+        QCOMPARE(realCoverage->counts.value(
+            QStringLiteral("no_selected_report_available")), 102);
+        QCOMPARE(realCoverage->counts.value(QStringLiteral("analysis_incomplete")), 0);
+        QCOMPARE(realCoverage->counts.value(QStringLiteral("selected_moments")), 128);
+    }
 }
 
 void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigation()
@@ -891,6 +1149,7 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
         mechanicalGameWithDeepFixture(), &error);
     QVERIFY2(pack.has_value(), qPrintable(error));
     auto review = gameReviewDisplayFixture(*pack);
+    const auto explanation = gameReviewExplanationFixture(review);
     parlawl::puzzle_runner::ReplaySession session;
     session.load(*pack);
     QVERIFY(session.seekMainlinePly(3));
@@ -898,7 +1157,7 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     GameReviewPanel panel;
     panel.resize(680, 840);
     panel.setReplayState(*pack, session, 0);
-    panel.setGameReviewDisplay(&review);
+    panel.setGameReviewDisplay(&review, &explanation);
     panel.show();
     QCoreApplication::processEvents();
 
@@ -935,6 +1194,21 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     const auto *card = coach->findChild<QFrame *>(QStringLiteral("coachReviewCard"));
     QVERIFY(card != nullptr);
     QVERIFY(card->styleSheet().contains(QStringLiteral("#4a6a88")));
+    const auto *mechanicalHeadline = coach->findChild<QLabel *>(
+        QStringLiteral("coachMechanicalHeadline"));
+    const auto *comparisonWarning = coach->findChild<QLabel *>(
+        QStringLiteral("coachMechanicalComparison"));
+    const auto *policyFact = coach->findChild<QLabel *>(
+        QStringLiteral("mechanicalFact_engine_difference_below_threshold"));
+    QVERIFY(mechanicalHeadline != nullptr);
+    QVERIFY(comparisonWarning != nullptr);
+    QVERIFY(policyFact != nullptr);
+    QCOMPARE(mechanicalHeadline->text(), explanation.moments.at(1).headline);
+    QCOMPARE(comparisonWarning->text(),
+        QStringLiteral("Comparison confidence · below_policy_threshold"));
+    QVERIFY(comparisonWarning->isVisible());
+    QCOMPARE(policyFact->text(), explanation.moments.at(1).facts.first().text);
+    QCOMPARE(policyFact->textFormat(), Qt::PlainText);
 
     QSignalSpy momentSpy(coach, &CoachReviewPanel::criticalMomentRequested);
     auto *previous = coach->findChild<QPushButton *>(
@@ -943,6 +1217,8 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     QTest::mouseClick(previous, Qt::LeftButton);
     QCOMPARE(coach->currentReviewIndex(), 1);
     QCOMPARE(title->text(), QStringLiteral("Critical error"));
+    QCOMPARE(mechanicalHeadline->text(), explanation.moments.at(0).headline);
+    QVERIFY(!comparisonWarning->isVisible());
     QCOMPARE(momentSpy.count(), 1);
     QCOMPARE(momentSpy.first().at(0).toInt(), 3);
     QCOMPARE(momentSpy.first().at(1).toString(), review.moves.at(2).beforeFen);
@@ -962,6 +1238,15 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     QVERIFY(details->toPlainText().contains(
         QStringLiteral("Best, not a complete search tree")));
     QVERIFY(details->toPlainText().contains(QString::fromUtf8("♘  2. Nf3")));
+    QVERIFY(details->toPlainText().contains(
+        QStringLiteral("The preferred move gives check immediately.")));
+    QVERIFY(details->toPlainText().contains(
+        QStringLiteral("values  {\"san\":\"d4\",\"uci\":\"d2d4\"}")));
+    const auto *outerDetails = panel.findChild<QTextEdit *>(
+        QStringLiteral("detailedEvidenceView"));
+    QVERIFY(outerDetails != nullptr);
+    QVERIFY(outerDetails->toPlainText().contains(
+        explanation.moments.at(0).headline));
 
     QSignalSpy lineSpy(coach, &CoachReviewPanel::linePreviewRequested);
     auto *bestLine = coach->findChild<QPushButton *>(
@@ -1003,6 +1288,35 @@ void TestUnitPuzzlePanels::coachReviewUsesBackendWordingDetailsAndFocusNavigatio
     QCOMPARE(focusStartPause->text(), QStringLiteral("Pause"));
     QTest::mouseClick(focusStartPause, Qt::LeftButton);
     QCOMPARE(focusStartPause->text(), QStringLiteral("Start"));
+
+    parlawl::puzzle_runner::GameReviewCoverageEntry unavailable;
+    unavailable.sourceGameId = review.sourceGameId;
+    unavailable.reviewStatus = QStringLiteral("no_selected_report_available");
+    unavailable.screeningStatus =
+        QStringLiteral("not_established_by_delivery_index");
+    unavailable.statusLabel = QStringLiteral("No deep review available");
+    unavailable.statusDetail = QStringLiteral(
+        "No selected Report-v2 file was delivered for this game; this does not mean the game was mistake-free.");
+    panel.setGameReviewDisplay(nullptr, nullptr, &unavailable);
+    QCoreApplication::processEvents();
+    const auto *unavailableLabel = coach->findChild<QLabel *>(
+        QStringLiteral("coachReviewUnavailable"));
+    QVERIFY(unavailableLabel != nullptr);
+    QCOMPARE(unavailableLabel->text(),
+        unavailable.statusLabel + QLatin1Char('\n') + unavailable.statusDetail);
+    QVERIFY(unavailableLabel->toolTip().contains(
+        QStringLiteral("not_established_by_delivery_index")));
+    QVERIFY(!unavailableLabel->text().contains(QStringLiteral("safe"), Qt::CaseInsensitive));
+
+    const QString localUnavailable = QStringLiteral(
+        "Review summary unavailable in this view\n"
+        "The coverage index lists a review, but its exact display sidecar did not join.");
+    panel.setGameReviewDisplay(
+        nullptr, nullptr, &unavailable, localUnavailable);
+    QCoreApplication::processEvents();
+    QCOMPARE(unavailableLabel->text(), localUnavailable);
+    QVERIFY(unavailableLabel->toolTip().contains(
+        QStringLiteral("no review content was attached")));
 }
 
 void TestUnitPuzzlePanels::floatingBoardOffersThemesAndPinnedNotes()

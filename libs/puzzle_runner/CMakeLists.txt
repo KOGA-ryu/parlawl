@@ -9,6 +9,10 @@ add_library(puzzle_runner STATIC
     fixture_puzzle_source.h
     game_review_display.cpp
     game_review_display.h
+    game_review_coverage.cpp
+    game_review_coverage.h
+    game_review_explanation.cpp
+    game_review_explanation.h
     game_state_store.cpp
     game_state_store.h
     pgn_utils.cpp

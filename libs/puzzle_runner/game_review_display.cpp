@@ -830,6 +830,7 @@ std::optional<GameReviewDisplayCatalog> GameReviewDisplayCatalog::fromDirectory(
             return std::nullopt;
         }
         catalog.m_reviewsByGame.insert(review.sourceGameId, review);
+        catalog.m_fileNamesByGame.insert(review.sourceGameId, fileInfo.fileName());
     }
     return catalog;
 }

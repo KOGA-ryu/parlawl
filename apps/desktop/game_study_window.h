@@ -7,6 +7,8 @@
 
 #include "annotated_replay_pack.h"
 #include "game_review_display.h"
+#include "game_review_coverage.h"
+#include "game_review_explanation.h"
 #include "replay_session.h"
 
 class BoardWidget;
@@ -87,7 +89,10 @@ public:
     bool openGame(
         const parlawl::puzzle_runner::AnnotatedReplayPack &pack,
         QString *errorMessage = nullptr,
-        const parlawl::puzzle_runner::GameReviewDisplay *display = nullptr);
+        const parlawl::puzzle_runner::GameReviewDisplay *display = nullptr,
+        const parlawl::puzzle_runner::GameReviewMechanicalExplanation *explanation = nullptr,
+        const parlawl::puzzle_runner::GameReviewCoverageEntry *coverage = nullptr,
+        const QString &coachReviewUnavailableMessage = QString());
     [[nodiscard]] int openGameCount() const;
     [[nodiscard]] QString activeGameId() const;
     [[nodiscard]] GameBoardWindow *boardWindowForGame(const QString &sourceGameId) const;
@@ -107,6 +112,9 @@ private:
     struct OpenGame {
         parlawl::puzzle_runner::AnnotatedReplayPack pack;
         std::optional<parlawl::puzzle_runner::GameReviewDisplay> display;
+        std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanation> explanation;
+        std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry> coverage;
+        QString coachReviewUnavailableMessage;
         parlawl::puzzle_runner::ReplaySession session;
         int variationAnchorPly = 0;
         GameReviewPanel *reviewPanel = nullptr;

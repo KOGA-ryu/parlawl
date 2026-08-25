@@ -16,6 +16,8 @@ struct StartupPreflight {
     bool sourceGameIdPresent = false;
     bool selectiveReportDirectoryPresent = false;
     bool gameReviewDirectoryPresent = false;
+    bool gameReviewExplanationDirectoryPresent = false;
+    bool gameReviewCoverageIndexPresent = false;
     QString error;
 };
 
@@ -89,7 +91,17 @@ StartupPreflight preflightStartupArguments(int argc, char *argv[])
                 &index,
                 argument,
                 QStringLiteral("--game-review-directory"),
-                &result.gameReviewDirectoryPresent)) {
+                &result.gameReviewDirectoryPresent)
+            || markValueOption(
+                &index,
+                argument,
+                QStringLiteral("--game-review-explanation-directory"),
+                &result.gameReviewExplanationDirectoryPresent)
+            || markValueOption(
+                &index,
+                argument,
+                QStringLiteral("--game-review-coverage-index"),
+                &result.gameReviewCoverageIndexPresent)) {
             continue;
         }
     }
@@ -98,9 +110,11 @@ StartupPreflight preflightStartupArguments(int argc, char *argv[])
         && !result.playerExplorerPresent
         && (result.playerIdPresent || result.sourceGameIdPresent
             || result.selectiveReportDirectoryPresent
-            || result.gameReviewDirectoryPresent)) {
+            || result.gameReviewDirectoryPresent
+            || result.gameReviewExplanationDirectoryPresent
+            || result.gameReviewCoverageIndexPresent)) {
         result.error = QStringLiteral(
-            "--player-id, --source-game-id, --selective-report-directory, and --game-review-directory require --player-explorer");
+            "review data options require --player-explorer");
     }
     if (result.error.isEmpty()
         && result.sourceGameIdPresent
@@ -122,7 +136,9 @@ void printStartupHelp(const char *program)
         "  --player-id <player-id>                   Select an exact player from --player-explorer.\n"
         "  --source-game-id <source-game-id>         Open an exact game for --player-id at its report start position.\n"
         "  --selective-report-directory <directory>  Join bounded selective deep Report-v2 files read-only.\n"
-        "  --game-review-directory <directory>       Join display-v1 Coach Review sidecars read-only.\n",
+        "  --game-review-directory <directory>       Join display-v1 Coach Review sidecars read-only.\n"
+        "  --game-review-explanation-directory <directory>  Join mechanical explanation-v1 companions read-only.\n"
+        "  --game-review-coverage-index <file>        Join the optional coverage delivery index read-only.\n",
         program != nullptr ? program : "parlawl");
 }
 
@@ -169,12 +185,22 @@ int main(int argc, char *argv[])
         QStringLiteral("game-review-directory"),
         QStringLiteral("Join display-v1 Coach Review sidecars read-only."),
         QStringLiteral("absolute-directory"));
+    const QCommandLineOption gameReviewExplanationDirectoryOption(
+        QStringLiteral("game-review-explanation-directory"),
+        QStringLiteral("Join mechanical explanation-v1 companions read-only."),
+        QStringLiteral("absolute-directory"));
+    const QCommandLineOption gameReviewCoverageIndexOption(
+        QStringLiteral("game-review-coverage-index"),
+        QStringLiteral("Join the optional coverage delivery index read-only."),
+        QStringLiteral("absolute-file"));
     parser.addOptions({
         playerExplorerOption,
         playerIdOption,
         sourceGameIdOption,
         selectiveReportDirectoryOption,
         gameReviewDirectoryOption,
+        gameReviewExplanationDirectoryOption,
+        gameReviewCoverageIndexOption,
     });
     parser.process(app);
 
@@ -183,10 +209,15 @@ int main(int argc, char *argv[])
     const QString sourceGameId = parser.value(sourceGameIdOption);
     const QString selectiveReportDirectory = parser.value(selectiveReportDirectoryOption);
     const QString gameReviewDirectory = parser.value(gameReviewDirectoryOption);
+    const QString gameReviewExplanationDirectory =
+        parser.value(gameReviewExplanationDirectoryOption);
+    const QString gameReviewCoverageIndex = parser.value(gameReviewCoverageIndexOption);
     if (explorerPath.isEmpty() && (!playerId.isEmpty() || !sourceGameId.isEmpty()
-            || !selectiveReportDirectory.isEmpty() || !gameReviewDirectory.isEmpty())) {
+            || !selectiveReportDirectory.isEmpty() || !gameReviewDirectory.isEmpty()
+            || !gameReviewExplanationDirectory.isEmpty()
+            || !gameReviewCoverageIndex.isEmpty())) {
         qCritical().noquote()
-            << QStringLiteral("--player-id, --source-game-id, --selective-report-directory, and --game-review-directory require --player-explorer");
+            << QStringLiteral("review data options require --player-explorer");
         return 2;
     }
     if (!sourceGameId.isEmpty() && playerId.isEmpty()) {
@@ -204,6 +235,8 @@ int main(int argc, char *argv[])
                 sourceGameId,
                 selectiveReportDirectory,
                 gameReviewDirectory,
+                gameReviewExplanationDirectory,
+                gameReviewCoverageIndex,
                 &errorMessage)) {
             qCritical().noquote()
                 << QStringLiteral("player explorer startup failed: %1").arg(errorMessage);

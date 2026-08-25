@@ -7,6 +7,8 @@
 #include "puzzle_types.h"
 #include "annotated_replay_pack.h"
 #include "game_review_display.h"
+#include "game_review_coverage.h"
+#include "game_review_explanation.h"
 #include "replay_session.h"
 
 class QLabel;
@@ -20,6 +22,7 @@ class QPushButton;
 class QCheckBox;
 class QComboBox;
 class QTextEdit;
+class QVBoxLayout;
 
 namespace parlawl::puzzle_runner {
 class ReviewEngineAdapter;
@@ -126,7 +129,12 @@ class CoachReviewPanel : public QWidget
 
 public:
     explicit CoachReviewPanel(QWidget *parent = nullptr);
-    void setReview(const parlawl::puzzle_runner::GameReviewDisplay *review, int currentPly);
+    void setReview(
+        const parlawl::puzzle_runner::GameReviewDisplay *review,
+        const parlawl::puzzle_runner::GameReviewMechanicalExplanation *explanation,
+        const parlawl::puzzle_runner::GameReviewCoverageEntry *coverage,
+        int currentPly,
+        const QString &unavailableMessage = QString());
     [[nodiscard]] bool hasMomentAtPly(int ply) const;
     bool selectMomentAtPly(int ply);
     [[nodiscard]] int currentReviewIndex() const;
@@ -152,8 +160,11 @@ private:
     void stepFocusRead(int delta);
     void setFocusPlaybackRunning(bool running);
     QString detailedEvidenceText() const;
+    void rebuildMechanicalFacts();
 
     std::optional<parlawl::puzzle_runner::GameReviewDisplay> m_review;
+    std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanation> m_explanation;
+    std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry> m_coverage;
     int m_currentMomentVectorIndex = 0;
     QLabel *m_unavailableLabel;
     QFrame *m_card;
@@ -161,6 +172,12 @@ private:
     QLabel *m_timingChip;
     QLabel *m_counterChip;
     QLabel *m_titleLabel;
+    QFrame *m_mechanicalFrame;
+    QLabel *m_mechanicalHeadlineLabel;
+    QLabel *m_mechanicalComparisonLabel;
+    QLabel *m_mechanicalStatusLabel;
+    QWidget *m_mechanicalFactsWidget;
+    QVBoxLayout *m_mechanicalFactsLayout;
     QLabel *m_summaryLabel;
     QLabel *m_comparisonLabel;
     QLabel *m_scoreLabel;
@@ -198,7 +215,10 @@ public:
         const parlawl::puzzle_runner::ReplaySession &session,
         int variationAnchorPly);
     void setGameReviewDisplay(
-        const parlawl::puzzle_runner::GameReviewDisplay *review);
+        const parlawl::puzzle_runner::GameReviewDisplay *review,
+        const parlawl::puzzle_runner::GameReviewMechanicalExplanation *explanation = nullptr,
+        const parlawl::puzzle_runner::GameReviewCoverageEntry *coverage = nullptr,
+        const QString &unavailableMessage = QString());
     void setEmptyState();
 
 signals:
@@ -222,6 +242,12 @@ private:
     QTextEdit *m_detailedEvidenceView;
     CoachReviewPanel *m_coachReviewPanel;
     int m_currentReplayPly = 0;
+    QString m_baseDetailedEvidenceText;
+    std::optional<parlawl::puzzle_runner::GameReviewDisplay> m_review;
+    std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanation> m_explanation;
+    std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry> m_coverage;
+
+    void refreshDetailedEvidence();
 };
 
 class MetadataCard : public QGroupBox

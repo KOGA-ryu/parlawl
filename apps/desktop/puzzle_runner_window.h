@@ -15,6 +15,8 @@
 #include "source_game.h"
 #include "annotated_replay_pack.h"
 #include "game_review_display.h"
+#include "game_review_coverage.h"
+#include "game_review_explanation.h"
 #include "replay_session.h"
 
 class AnalysisOrchestrator;
@@ -59,6 +61,8 @@ public:
         const QString &sourceGameId = QString(),
         const QString &selectiveReportDirectory = QString(),
         const QString &gameReviewDirectory = QString(),
+        const QString &gameReviewExplanationDirectory = QString(),
+        const QString &gameReviewCoverageIndex = QString(),
         QString *errorMessage = nullptr);
     void surfaceGameStudyWorkspace();
     void surfaceGameExplorerWorkspace();
@@ -158,6 +162,9 @@ private:
     std::optional<parlawl::puzzle_runner::AnnotatedReplayPack> m_annotatedReplayPack;
     std::optional<parlawl::puzzle_runner::SelectiveDeepReportCatalog> m_selectiveDeepReports;
     std::optional<parlawl::puzzle_runner::GameReviewDisplayCatalog> m_gameReviewDisplays;
+    std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanationCatalog>
+        m_gameReviewExplanations;
+    std::optional<parlawl::puzzle_runner::GameReviewCoverageIndex> m_gameReviewCoverage;
     parlawl::puzzle_runner::ReplaySession m_replaySession;
     int m_replayVariationAnchorPly = 0;
     int m_preReplayInfoTabIndex = 0;

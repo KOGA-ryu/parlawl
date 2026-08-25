@@ -739,6 +739,57 @@ QString detailedMoveEvidenceText(
     return lines.join(QLatin1Char('\n'));
 }
 
+QString mechanicalScopeTitle(const QString &scope)
+{
+    if (scope == QStringLiteral("policy")) return QStringLiteral("Policy");
+    if (scope == QStringLiteral("best_move")) return QStringLiteral("Best move");
+    if (scope == QStringLiteral("played_move")) return QStringLiteral("Played move");
+    if (scope == QStringLiteral("comparison")) return QStringLiteral("Comparison");
+    if (scope == QStringLiteral("context")) return QStringLiteral("Context");
+    return scope;
+}
+
+QString compactJsonObject(const QJsonObject &object)
+{
+    return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
+}
+
+QString mechanicalEvidenceText(
+    const parlawl::puzzle_runner::GameReviewMechanicalExplanation &explanation,
+    const parlawl::puzzle_runner::GameReviewMechanicalMoment &moment)
+{
+    QStringList lines {
+        QStringLiteral("MECHANICAL EXPLANATION"),
+        moment.headline,
+        QStringLiteral("  Comparison status      %1").arg(moment.comparisonStatus),
+        QStringLiteral("  Mechanical fact status %1").arg(moment.mechanicalFactStatus),
+    };
+    const QStringList scopes {
+        QStringLiteral("policy"), QStringLiteral("best_move"),
+        QStringLiteral("played_move"), QStringLiteral("comparison"),
+        QStringLiteral("context")};
+    for (const QString &scope : scopes) {
+        bool headingAdded = false;
+        for (const auto &fact : moment.facts) {
+            if (fact.scope != scope) continue;
+            if (!headingAdded) {
+                lines << QString() << mechanicalScopeTitle(scope).toUpper();
+                headingAdded = true;
+            }
+            lines << QStringLiteral("  %1").arg(fact.text)
+                  << QStringLiteral("    code    %1").arg(fact.code)
+                  << QStringLiteral("    values  %1").arg(compactJsonObject(fact.values));
+        }
+    }
+    lines << QString()
+          << QStringLiteral("COMPANION SOURCE")
+          << QStringLiteral("  Contract       %1").arg(explanation.contractVersion)
+          << QStringLiteral("  Source report  %1").arg(explanation.sourceReportId)
+          << QStringLiteral("  Claim boundary %1")
+                 .arg(compactJsonObject(explanation.claimBoundary));
+    return lines.join(QLatin1Char('\n'));
+}
+
 class InlineMoveDetail final : public QFrame
 {
 public:
@@ -2136,6 +2187,12 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     , m_timingChip(new QLabel(m_card))
     , m_counterChip(new QLabel(m_card))
     , m_titleLabel(new QLabel(m_card))
+    , m_mechanicalFrame(new QFrame(m_card))
+    , m_mechanicalHeadlineLabel(new QLabel(m_mechanicalFrame))
+    , m_mechanicalComparisonLabel(new QLabel(m_mechanicalFrame))
+    , m_mechanicalStatusLabel(new QLabel(m_mechanicalFrame))
+    , m_mechanicalFactsWidget(new QWidget(m_mechanicalFrame))
+    , m_mechanicalFactsLayout(new QVBoxLayout(m_mechanicalFactsWidget))
     , m_summaryLabel(new QLabel(m_card))
     , m_comparisonLabel(new QLabel(m_card))
     , m_scoreLabel(new QLabel(m_card))
@@ -2210,6 +2267,32 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
     }
     m_scoreLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     cardLayout->addWidget(m_titleLabel);
+
+    m_mechanicalFrame->setObjectName(QStringLiteral("coachMechanicalExplanation"));
+    auto *mechanicalLayout = new QVBoxLayout(m_mechanicalFrame);
+    mechanicalLayout->setContentsMargins(10, 9, 10, 9);
+    mechanicalLayout->setSpacing(7);
+    m_mechanicalHeadlineLabel->setObjectName(QStringLiteral("coachMechanicalHeadline"));
+    m_mechanicalComparisonLabel->setObjectName(QStringLiteral("coachMechanicalComparison"));
+    m_mechanicalStatusLabel->setObjectName(QStringLiteral("coachMechanicalStatus"));
+    for (QLabel *label : {m_mechanicalHeadlineLabel, m_mechanicalComparisonLabel,
+                          m_mechanicalStatusLabel}) {
+        label->setTextFormat(Qt::PlainText);
+        label->setWordWrap(true);
+        label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    }
+    m_mechanicalComparisonLabel->setProperty("uiRole", QStringLiteral("comparisonWarning"));
+    m_mechanicalStatusLabel->setProperty("uiRole", QStringLiteral("mechanicalStatus"));
+    m_mechanicalStatusLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+    m_mechanicalFactsLayout->setContentsMargins(0, 0, 0, 0);
+    m_mechanicalFactsLayout->setSpacing(5);
+    mechanicalLayout->addWidget(m_mechanicalHeadlineLabel);
+    mechanicalLayout->addWidget(m_mechanicalComparisonLabel);
+    mechanicalLayout->addWidget(m_mechanicalStatusLabel, 0, Qt::AlignLeft);
+    mechanicalLayout->addWidget(m_mechanicalFactsWidget);
+    m_mechanicalFrame->hide();
+    cardLayout->addWidget(m_mechanicalFrame);
     cardLayout->addWidget(m_summaryLabel);
     cardLayout->addWidget(m_comparisonLabel);
     cardLayout->addWidget(m_scoreLabel);
@@ -2293,6 +2376,12 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
         "QLabel#coachReviewUnavailable { color: #98a3af; background: #20252b; border: 0; border-radius: 8px; padding: 14px; }"
         "QLabel[uiRole=\"chip\"] { color: #b8c1cc; background: #252b33; border: 0; border-radius: 6px; padding: 4px 7px; }"
         "QLabel#coachReviewTitle { color: #f0f3f6; }"
+        "QFrame#coachMechanicalExplanation { background: #171c22; border: 0; border-radius: 8px; }"
+        "QLabel#coachMechanicalHeadline { color: #edf2f7; font-size: 15px; font-weight: 600; }"
+        "QLabel#coachMechanicalComparison { color: #b9cae0; background: #27384b; border: 0; border-radius: 6px; padding: 6px 8px; }"
+        "QLabel#coachMechanicalStatus { color: #aeb8c5; background: #242b33; border: 0; border-radius: 5px; padding: 3px 6px; }"
+        "QLabel[uiRole=\"mechanicalScope\"] { color: #8f9ba8; font-size: 11px; font-weight: 600; }"
+        "QLabel[uiRole=\"mechanicalFact\"] { color: #d4dbe4; background: #1d232a; border: 0; border-radius: 5px; padding: 6px 8px; }"
         "QLabel#coachReviewSummary { color: #dfe5eb; font-size: 15px; }"
         "QLabel#coachReviewMoveComparison { color: #d5dce5; font-weight: 600; }"
         "QLabel#coachReviewScoreComparison { color: #aeb9c7; font-size: 12px; }"
@@ -2400,23 +2489,56 @@ CoachReviewPanel::CoachReviewPanel(QWidget *parent)
         updateFocusRead();
         setFocusPlaybackRunning(true);
     });
-    setReview(nullptr, 0);
+    setReview(nullptr, nullptr, nullptr, 0);
 }
 
 void CoachReviewPanel::setReview(
     const parlawl::puzzle_runner::GameReviewDisplay *review,
-    int currentPly)
+    const parlawl::puzzle_runner::GameReviewMechanicalExplanation *explanation,
+    const parlawl::puzzle_runner::GameReviewCoverageEntry *coverage,
+    int currentPly,
+    const QString &unavailableMessage)
 {
     const QString previousSource = m_review.has_value() ? m_review->sourceGameId : QString();
     if (review == nullptr) {
         m_review.reset();
+        m_explanation.reset();
+        m_coverage = coverage != nullptr
+            ? std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry>(*coverage)
+            : std::nullopt;
         m_card->hide();
+        if (!unavailableMessage.isEmpty()) {
+            m_unavailableLabel->setText(unavailableMessage);
+            m_unavailableLabel->setToolTip(QStringLiteral(
+                "Local sidecar join diagnostic; no review content was attached."));
+            m_unavailableLabel->setStyleSheet(
+                QStringLiteral("color: #d8c6a4; background: #302a22; border: 0; border-left: 3px solid #9a7449; border-radius: 8px; padding: 14px;"));
+        } else if (m_coverage.has_value()) {
+            m_unavailableLabel->setText(
+                m_coverage->statusLabel + QLatin1Char('\n') + m_coverage->statusDetail);
+            m_unavailableLabel->setToolTip(
+                QStringLiteral("screening_status: %1").arg(m_coverage->screeningStatus));
+            m_unavailableLabel->setStyleSheet(
+                m_coverage->reviewStatus == QStringLiteral("analysis_incomplete")
+                    ? QStringLiteral("color: #d8c6a4; background: #302a22; border: 0; border-left: 3px solid #9a7449; border-radius: 8px; padding: 14px;")
+                    : QStringLiteral("color: #b8c2ce; background: #20252b; border: 0; border-left: 3px solid #516476; border-radius: 8px; padding: 14px;"));
+        } else {
+            m_unavailableLabel->setText(QStringLiteral("Review summary not generated"));
+            m_unavailableLabel->setToolTip(QString());
+            m_unavailableLabel->setStyleSheet(QString());
+        }
         m_unavailableLabel->show();
         setFocusPlaybackRunning(false);
         return;
     }
     const bool changedGame = previousSource != review->sourceGameId;
     m_review = *review;
+    m_explanation = explanation != nullptr
+        ? std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanation>(*explanation)
+        : std::nullopt;
+    m_coverage = coverage != nullptr
+        ? std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry>(*coverage)
+        : std::nullopt;
     if (changedGame) m_currentMomentVectorIndex = 0;
     if (const auto *moment = m_review->firstMomentAtPly(currentPly); moment != nullptr) {
         m_currentMomentVectorIndex = moment->reviewIndex - 1;
@@ -2495,6 +2617,7 @@ void CoachReviewPanel::refreshCard()
         "Mover-perspective engine scores and retained expectation loss."));
     m_contextLabel->setText(QStringLiteral("%1 · %2")
         .arg(moment.playerUsername, moment.phase));
+    rebuildMechanicalFacts();
     m_previousMomentButton->setEnabled(m_currentMomentVectorIndex > 0);
     m_nextMomentButton->setEnabled(
         m_currentMomentVectorIndex + 1 < m_review->criticalMoments.size());
@@ -2514,6 +2637,70 @@ void CoachReviewPanel::refreshCard()
         : QStringLiteral("QFrame#coachReviewCard { background: #1e2024; border: 0; border-left: 3px solid #8a6a4f; }"));
 }
 
+void CoachReviewPanel::rebuildMechanicalFacts()
+{
+    while (QLayoutItem *item = m_mechanicalFactsLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget(); widget != nullptr) {
+            widget->hide();
+            widget->deleteLater();
+        }
+        delete item;
+    }
+    if (!m_review.has_value() || !m_explanation.has_value()
+        || m_review->criticalMoments.isEmpty()) {
+        m_mechanicalFrame->hide();
+        return;
+    }
+    const auto &displayMoment =
+        m_review->criticalMoments.at(m_currentMomentVectorIndex);
+    const auto *moment = m_explanation->moment(
+        displayMoment.reviewIndex, displayMoment.ply);
+    if (moment == nullptr) {
+        m_mechanicalFrame->hide();
+        return;
+    }
+
+    m_mechanicalHeadlineLabel->setText(moment->headline);
+    const bool warning =
+        moment->comparisonStatus == QStringLiteral("ambiguous_engine_stability")
+        || moment->comparisonStatus == QStringLiteral("below_policy_threshold");
+    m_mechanicalComparisonLabel->setText(
+        QStringLiteral("Comparison confidence · %1").arg(moment->comparisonStatus));
+    m_mechanicalComparisonLabel->setVisible(warning);
+    m_mechanicalStatusLabel->setText(
+        QStringLiteral("Mechanical facts · %1").arg(moment->mechanicalFactStatus));
+    m_mechanicalStatusLabel->setMinimumWidth(
+        m_mechanicalStatusLabel->fontMetrics().horizontalAdvance(
+            m_mechanicalStatusLabel->text()) + 22);
+
+    const QStringList scopes {
+        QStringLiteral("policy"), QStringLiteral("best_move"),
+        QStringLiteral("played_move"), QStringLiteral("comparison"),
+        QStringLiteral("context")};
+    for (const QString &scope : scopes) {
+        bool headingAdded = false;
+        for (const auto &fact : moment->facts) {
+            if (fact.scope != scope) continue;
+            if (!headingAdded) {
+                auto *heading = new QLabel(mechanicalScopeTitle(scope), m_mechanicalFactsWidget);
+                heading->setTextFormat(Qt::PlainText);
+                heading->setProperty("uiRole", QStringLiteral("mechanicalScope"));
+                heading->setObjectName(QStringLiteral("mechanicalScope_%1").arg(scope));
+                m_mechanicalFactsLayout->addWidget(heading);
+                headingAdded = true;
+            }
+            auto *row = new QLabel(fact.text, m_mechanicalFactsWidget);
+            row->setTextFormat(Qt::PlainText);
+            row->setWordWrap(true);
+            row->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            row->setProperty("uiRole", QStringLiteral("mechanicalFact"));
+            row->setObjectName(QStringLiteral("mechanicalFact_%1").arg(fact.code));
+            m_mechanicalFactsLayout->addWidget(row);
+        }
+    }
+    m_mechanicalFrame->show();
+}
+
 QString CoachReviewPanel::detailedEvidenceText() const
 {
     if (!m_review.has_value() || m_review->criticalMoments.isEmpty()) return {};
@@ -2525,7 +2712,7 @@ QString CoachReviewPanel::detailedEvidenceText() const
     const auto optionalNumber = [](const std::optional<qint64> &value) {
         return value.has_value() ? QString::number(*value) : QStringLiteral("unavailable");
     };
-    return QStringList {
+    QStringList lines {
         moment.title,
         moment.summary,
         QString(),
@@ -2563,7 +2750,15 @@ QString CoachReviewPanel::detailedEvidenceText() const
         QStringLiteral("  Display schema  %1").arg(m_review->displaySchema),
         QStringLiteral("  Source report   %1").arg(m_review->sourceReportId),
         QStringLiteral("  Backend display projection only; no complete-game error coverage or safety claim."),
-    }.join(QLatin1Char('\n'));
+    };
+    if (m_explanation.has_value()) {
+        if (const auto *mechanical = m_explanation->moment(
+                moment.reviewIndex, moment.ply);
+            mechanical != nullptr) {
+            lines << QString() << mechanicalEvidenceText(*m_explanation, *mechanical);
+        }
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 void CoachReviewPanel::updateFocusRead()
@@ -2706,15 +2901,29 @@ void GameReviewPanel::setReplayState(
         session.inVariation(),
         variationAnchorPly);
     m_evidencePanel->setReplayState(pack, session, variationAnchorPly);
-    m_detailedEvidenceView->setPlainText(
-        detailedMoveEvidenceText(pack, session));
+    m_baseDetailedEvidenceText = detailedMoveEvidenceText(pack, session);
+    refreshDetailedEvidence();
     m_splitter->setSizes({52, 708});
 }
 
 void GameReviewPanel::setGameReviewDisplay(
-    const parlawl::puzzle_runner::GameReviewDisplay *review)
+    const parlawl::puzzle_runner::GameReviewDisplay *review,
+    const parlawl::puzzle_runner::GameReviewMechanicalExplanation *explanation,
+    const parlawl::puzzle_runner::GameReviewCoverageEntry *coverage,
+    const QString &unavailableMessage)
 {
-    m_coachReviewPanel->setReview(review, m_currentReplayPly);
+    m_review = review != nullptr
+        ? std::optional<parlawl::puzzle_runner::GameReviewDisplay>(*review)
+        : std::nullopt;
+    m_explanation = explanation != nullptr
+        ? std::optional<parlawl::puzzle_runner::GameReviewMechanicalExplanation>(*explanation)
+        : std::nullopt;
+    m_coverage = coverage != nullptr
+        ? std::optional<parlawl::puzzle_runner::GameReviewCoverageEntry>(*coverage)
+        : std::nullopt;
+    m_coachReviewPanel->setReview(
+        review, explanation, coverage, m_currentReplayPly, unavailableMessage);
+    refreshDetailedEvidence();
 }
 
 void GameReviewPanel::setEmptyState()
@@ -2722,7 +2931,37 @@ void GameReviewPanel::setEmptyState()
     m_evidencePanel->setEmptyState();
     m_detailedEvidenceView->setPlainText(
         QStringLiteral("Select a game and move to inspect its evidence."));
-    m_coachReviewPanel->setReview(nullptr, 0);
+    m_baseDetailedEvidenceText.clear();
+    m_review.reset();
+    m_explanation.reset();
+    m_coverage.reset();
+    m_coachReviewPanel->setReview(nullptr, nullptr, nullptr, 0);
+}
+
+void GameReviewPanel::refreshDetailedEvidence()
+{
+    QString text = m_baseDetailedEvidenceText;
+    if (m_review.has_value() && m_explanation.has_value()) {
+        if (const auto *displayMoment = m_review->firstMomentAtPly(m_currentReplayPly);
+            displayMoment != nullptr) {
+            if (const auto *mechanical = m_explanation->moment(
+                    displayMoment->reviewIndex, displayMoment->ply);
+                mechanical != nullptr) {
+                if (!text.isEmpty()) text += QStringLiteral("\n\n");
+                text += mechanicalEvidenceText(*m_explanation, *mechanical);
+            }
+        }
+    }
+    if (!m_review.has_value() && m_coverage.has_value()) {
+        if (!text.isEmpty()) text += QStringLiteral("\n\n");
+        text += QStringList {
+            QStringLiteral("COACH REVIEW DELIVERY"),
+            m_coverage->statusLabel,
+            m_coverage->statusDetail,
+            QStringLiteral("screening_status  %1").arg(m_coverage->screeningStatus),
+        }.join(QLatin1Char('\n'));
+    }
+    m_detailedEvidenceView->setPlainText(text);
 }
 
 MetadataCard::MetadataCard(QWidget *parent)

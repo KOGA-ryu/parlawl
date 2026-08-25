@@ -135,6 +135,10 @@ public:
 
     [[nodiscard]] const GameReviewDisplay *reviewForGame(
         const QString &sourceGameId) const;
+    [[nodiscard]] QString fileNameForGame(const QString &sourceGameId) const
+    {
+        return m_fileNamesByGame.value(sourceGameId);
+    }
     [[nodiscard]] int reviewCount() const { return m_reviewsByGame.size(); }
     [[nodiscard]] QStringList sourceGameIds() const { return m_reviewsByGame.keys(); }
     [[nodiscard]] const QString &directoryPath() const { return m_directoryPath; }
@@ -142,6 +146,7 @@ public:
 private:
     QString m_directoryPath;
     QHash<QString, GameReviewDisplay> m_reviewsByGame;
+    QHash<QString, QString> m_fileNamesByGame;
 };
 
 } // namespace parlawl::puzzle_runner
