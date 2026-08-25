@@ -606,8 +606,10 @@ bool validateBoardStructureMetrics(
 bool validateBoardStructurePlayer(
     const QJsonObject &player,
     qint64 globalGames,
+    QHash<QString, QJsonObject> *headToHeadByOpponent,
     QString *errorMessage)
 {
+    const QString playerId = player.value(QStringLiteral("player_id")).toString();
     qint64 games = 0;
     qint64 white = 0;
     qint64 black = 0;
@@ -616,6 +618,9 @@ bool validateBoardStructurePlayer(
     qint64 losses = 0;
     qint64 opponents = 0;
     qint64 score = 0;
+    qint64 largestOpponentGames = 0;
+    qint64 largestOpponentShare = 0;
+    qint64 opponentHhi = 0;
     if (!boundedText(player.value(QStringLiteral("player_id")), 128)
         || !exactInteger(player.value(QStringLiteral("game_count")), 1, globalGames, &games)
         || !exactInteger(player.value(QStringLiteral("white_game_count")), 0, games, &white)
@@ -628,6 +633,11 @@ bool validateBoardStructurePlayer(
         || !exactInteger(player.value(QStringLiteral("score_rate_ppm")), 0, kPpm, &score)
         || score != roundedSignedPpm(2 * wins + draws, 2 * games)
         || !exactInteger(player.value(QStringLiteral("distinct_opponent_count")), 1, games, &opponents)
+        || !boundedText(player.value(QStringLiteral("largest_opponent_id")), 128)
+        || player.value(QStringLiteral("largest_opponent_id")).toString() == playerId
+        || !exactInteger(player.value(QStringLiteral("largest_opponent_game_count")), 1, games, &largestOpponentGames)
+        || !exactInteger(player.value(QStringLiteral("largest_opponent_game_share_ppm")), 0, kPpm, &largestOpponentShare)
+        || !exactInteger(player.value(QStringLiteral("opponent_hhi_ppm")), 0, kPpm, &opponentHhi)
         || !validateBoardStructureMetrics(
             player.value(QStringLiteral("metrics")).toArray(),
             games,
@@ -635,6 +645,92 @@ bool validateBoardStructurePlayer(
         setError(errorMessage, QStringLiteral("BoardStructure player summary is invalid"));
         return false;
     }
+
+    const QJsonValue headToHeadValue = player.value(QStringLiteral("head_to_head"));
+    if (!headToHeadValue.isArray()
+        || headToHeadValue.toArray().size() != opponents) {
+        setError(errorMessage, QStringLiteral("BoardStructure head-to-head rows are incomplete"));
+        return false;
+    }
+    const QJsonArray headToHead = headToHeadValue.toArray();
+    QHash<QString, QJsonObject> parsedRows;
+    QString previousOpponent;
+    QString computedLargestOpponent;
+    qint64 computedLargestOpponentGames = -1;
+    qint64 gameTotal = 0;
+    qint64 whiteTotal = 0;
+    qint64 blackTotal = 0;
+    qint64 winTotal = 0;
+    qint64 drawTotal = 0;
+    qint64 lossTotal = 0;
+    qint64 squaredGameTotal = 0;
+    for (const QJsonValue &value : headToHead) {
+        if (!value.isObject()) {
+            setError(errorMessage, QStringLiteral("BoardStructure head-to-head row is malformed"));
+            return false;
+        }
+        const QJsonObject row = value.toObject();
+        const QString opponentId = row.value(QStringLiteral("opponent_id")).toString();
+        const QString unorderedPairId = row.value(
+            QStringLiteral("unordered_pair_id")).toString();
+        qint64 rowGames = 0;
+        qint64 rowWhite = 0;
+        qint64 rowBlack = 0;
+        qint64 rowWins = 0;
+        qint64 rowDraws = 0;
+        qint64 rowLosses = 0;
+        qint64 rowScore = 0;
+        if (row.value(QStringLiteral("player_id")).toString() != playerId
+            || !boundedText(row.value(QStringLiteral("opponent_id")), 128)
+            || opponentId == playerId
+            || parsedRows.contains(opponentId)
+            || (!previousOpponent.isEmpty() && opponentId <= previousOpponent)
+            || !boundedText(row.value(QStringLiteral("unordered_pair_id")), 128)
+            || !unorderedPairId.startsWith(
+                QStringLiteral("chess-unordered-player-pair-v1:"))
+            || !exactInteger(row.value(QStringLiteral("game_count")), 1, games, &rowGames)
+            || !exactInteger(row.value(QStringLiteral("white_game_count")), 0, rowGames, &rowWhite)
+            || !exactInteger(row.value(QStringLiteral("black_game_count")), 0, rowGames, &rowBlack)
+            || rowWhite + rowBlack != rowGames
+            || !exactInteger(row.value(QStringLiteral("win_count")), 0, rowGames, &rowWins)
+            || !exactInteger(row.value(QStringLiteral("draw_count")), 0, rowGames, &rowDraws)
+            || !exactInteger(row.value(QStringLiteral("loss_count")), 0, rowGames, &rowLosses)
+            || rowWins + rowDraws + rowLosses != rowGames
+            || !exactInteger(row.value(QStringLiteral("score_rate_ppm")), 0, kPpm, &rowScore)
+            || rowScore != roundedSignedPpm(2 * rowWins + rowDraws, 2 * rowGames)) {
+            setError(errorMessage, QStringLiteral(
+                "BoardStructure head-to-head rows are duplicated, unordered, unbound, or inconsistent"));
+            return false;
+        }
+        parsedRows.insert(opponentId, row);
+        previousOpponent = opponentId;
+        if (rowGames > computedLargestOpponentGames
+            || (rowGames == computedLargestOpponentGames
+                && opponentId < computedLargestOpponent)) {
+            computedLargestOpponent = opponentId;
+            computedLargestOpponentGames = rowGames;
+        }
+        gameTotal += rowGames;
+        whiteTotal += rowWhite;
+        blackTotal += rowBlack;
+        winTotal += rowWins;
+        drawTotal += rowDraws;
+        lossTotal += rowLosses;
+        squaredGameTotal += rowGames * rowGames;
+    }
+    if (gameTotal != games || whiteTotal != white || blackTotal != black
+        || winTotal != wins || drawTotal != draws || lossTotal != losses
+        || player.value(QStringLiteral("largest_opponent_id")).toString()
+            != computedLargestOpponent
+        || largestOpponentGames != computedLargestOpponentGames
+        || largestOpponentShare != roundedSignedPpm(largestOpponentGames, games)
+        || opponentHhi != roundedSignedPpm(
+            squaredGameTotal, games * games)) {
+        setError(errorMessage, QStringLiteral(
+            "BoardStructure opponent concentration does not conserve"));
+        return false;
+    }
+    *headToHeadByOpponent = parsedRows;
     return true;
 }
 
@@ -673,6 +769,16 @@ bool validateBoardStructureSnapshot(
     qint64 whiteWins = 0;
     qint64 draws = 0;
     qint64 blackWins = 0;
+    qint64 unorderedPairs = 0;
+    qint64 largestPlayerGames = 0;
+    qint64 largestPlayerGameShare = 0;
+    qint64 largestPlayerExposureShare = 0;
+    qint64 playerExposureHhi = 0;
+    qint64 largestPairGames = 0;
+    qint64 largestPairGameShare = 0;
+    qint64 pairHhi = 0;
+    const QJsonArray largestPairPlayerIds = global.value(
+        QStringLiteral("largest_pair_player_ids")).toArray();
     if (!exactInteger(global.value(QStringLiteral("game_count")), 1, 5'000, &games)
         || !exactInteger(global.value(QStringLiteral("player_game_count")), 2, 10'000, &playerGames)
         || playerGames != 2 * games
@@ -681,6 +787,24 @@ bool validateBoardStructureSnapshot(
         || !exactInteger(global.value(QStringLiteral("draw_game_count")), 0, games, &draws)
         || !exactInteger(global.value(QStringLiteral("black_win_game_count")), 0, games, &blackWins)
         || whiteWins + draws + blackWins != games
+        || !exactInteger(global.value(QStringLiteral("unordered_pair_count")), 1, games, &unorderedPairs)
+        || !boundedText(global.value(QStringLiteral("largest_player_id")), 128)
+        || !exactInteger(global.value(QStringLiteral("largest_player_game_count")), 1, games, &largestPlayerGames)
+        || !exactInteger(global.value(QStringLiteral("largest_player_game_share_ppm")), 0, kPpm, &largestPlayerGameShare)
+        || !exactInteger(global.value(QStringLiteral("largest_player_exposure_share_ppm")), 0, kPpm, &largestPlayerExposureShare)
+        || !exactInteger(global.value(QStringLiteral("player_exposure_hhi_ppm")), 0, kPpm, &playerExposureHhi)
+        || !boundedText(global.value(QStringLiteral("largest_unordered_pair_id")), 128)
+        || !global.value(QStringLiteral("largest_unordered_pair_id")).toString().startsWith(
+            QStringLiteral("chess-unordered-player-pair-v1:"))
+        || !global.value(QStringLiteral("largest_pair_player_ids")).isArray()
+        || largestPairPlayerIds.size() != 2
+        || !boundedText(largestPairPlayerIds.at(0), 128)
+        || !boundedText(largestPairPlayerIds.at(1), 128)
+        || largestPairPlayerIds.at(0).toString()
+            >= largestPairPlayerIds.at(1).toString()
+        || !exactInteger(global.value(QStringLiteral("largest_pair_game_count")), 1, games, &largestPairGames)
+        || !exactInteger(global.value(QStringLiteral("largest_pair_game_share_ppm")), 0, kPpm, &largestPairGameShare)
+        || !exactInteger(global.value(QStringLiteral("pair_hhi_ppm")), 0, kPpm, &pairHhi)
         || !validateBoardStructureMetrics(
             global.value(QStringLiteral("metrics")).toArray(),
             playerGames,
@@ -695,25 +819,144 @@ bool validateBoardStructureSnapshot(
         return false;
     }
     QHash<QString, QJsonObject> parsedPlayers;
+    QHash<QString, QHash<QString, QJsonObject>> headToHeadByPlayer;
     QString previousPlayer;
     qint64 playerGameTotal = 0;
+    qint64 playerWhiteTotal = 0;
+    qint64 playerBlackTotal = 0;
+    qint64 playerWinTotal = 0;
+    qint64 playerDrawTotal = 0;
+    qint64 playerLossTotal = 0;
+    qint64 squaredPlayerGameTotal = 0;
+    QString computedLargestPlayer;
+    qint64 computedLargestPlayerGames = -1;
     for (const QJsonValue &value : playerRows) {
         const QJsonObject player = value.toObject();
         const QString playerId = player.value(QStringLiteral("player_id")).toString();
+        QHash<QString, QJsonObject> headToHead;
         if ((!previousPlayer.isEmpty() && playerId <= previousPlayer)
             || parsedPlayers.contains(playerId)
-            || !validateBoardStructurePlayer(player, games, errorMessage)) {
+            || !validateBoardStructurePlayer(
+                player, games, &headToHead, errorMessage)) {
             setError(errorMessage, QStringLiteral("BoardStructure player rows are duplicated, unordered, or invalid"));
             return false;
         }
         previousPlayer = playerId;
         parsedPlayers.insert(playerId, player);
+        headToHeadByPlayer.insert(playerId, headToHead);
         const qint64 playerGameCount = static_cast<qint64>(
             player.value(QStringLiteral("game_count")).toDouble());
         playerGameTotal += playerGameCount;
+        playerWhiteTotal += static_cast<qint64>(
+            player.value(QStringLiteral("white_game_count")).toDouble());
+        playerBlackTotal += static_cast<qint64>(
+            player.value(QStringLiteral("black_game_count")).toDouble());
+        playerWinTotal += static_cast<qint64>(
+            player.value(QStringLiteral("win_count")).toDouble());
+        playerDrawTotal += static_cast<qint64>(
+            player.value(QStringLiteral("draw_count")).toDouble());
+        playerLossTotal += static_cast<qint64>(
+            player.value(QStringLiteral("loss_count")).toDouble());
+        squaredPlayerGameTotal += playerGameCount * playerGameCount;
+        if (playerGameCount > computedLargestPlayerGames
+            || (playerGameCount == computedLargestPlayerGames
+                && playerId < computedLargestPlayer)) {
+            computedLargestPlayer = playerId;
+            computedLargestPlayerGames = playerGameCount;
+        }
     }
-    if (playerGameTotal != playerGames) {
+    if (playerGameTotal != playerGames
+        || playerWhiteTotal != games || playerBlackTotal != games
+        || playerWinTotal != whiteWins + blackWins
+        || playerDrawTotal != 2 * draws
+        || playerLossTotal != whiteWins + blackWins
+        || global.value(QStringLiteral("largest_player_id")).toString()
+            != computedLargestPlayer
+        || largestPlayerGames != computedLargestPlayerGames
+        || largestPlayerGameShare != roundedSignedPpm(largestPlayerGames, games)
+        || largestPlayerExposureShare
+            != roundedSignedPpm(largestPlayerGames, playerGames)
+        || playerExposureHhi != roundedSignedPpm(
+            squaredPlayerGameTotal, playerGames * playerGames)) {
         setError(errorMessage, QStringLiteral("BoardStructure player games do not conserve"));
+        return false;
+    }
+
+    struct PairCount {
+        QString playerA;
+        QString playerB;
+        QString unorderedPairId;
+        qint64 games;
+    };
+    QVector<PairCount> pairs;
+    QSet<QString> pairIds;
+    qint64 pairGameTotal = 0;
+    qint64 squaredPairGameTotal = 0;
+    for (auto player = headToHeadByPlayer.cbegin();
+         player != headToHeadByPlayer.cend(); ++player) {
+        for (auto opponent = player.value().cbegin();
+             opponent != player.value().cend(); ++opponent) {
+            const QString &playerId = player.key();
+            const QString &opponentId = opponent.key();
+            if (!headToHeadByPlayer.contains(opponentId)
+                || !headToHeadByPlayer.value(opponentId).contains(playerId)) {
+                setError(errorMessage, QStringLiteral(
+                    "BoardStructure head-to-head opponents are not reciprocal"));
+                return false;
+            }
+            if (playerId >= opponentId) {
+                continue;
+            }
+            const QJsonObject row = opponent.value();
+            const QJsonObject reciprocal = headToHeadByPlayer.value(
+                opponentId).value(playerId);
+            const QString unorderedPairId = row.value(
+                QStringLiteral("unordered_pair_id")).toString();
+            const qint64 pairGames = static_cast<qint64>(
+                row.value(QStringLiteral("game_count")).toDouble());
+            if (unorderedPairId != reciprocal.value(
+                    QStringLiteral("unordered_pair_id")).toString()
+                || pairIds.contains(unorderedPairId)
+                || pairGames != static_cast<qint64>(
+                    reciprocal.value(QStringLiteral("game_count")).toDouble())
+                || row.value(QStringLiteral("white_game_count")).toDouble()
+                    != reciprocal.value(QStringLiteral("black_game_count")).toDouble()
+                || row.value(QStringLiteral("black_game_count")).toDouble()
+                    != reciprocal.value(QStringLiteral("white_game_count")).toDouble()
+                || row.value(QStringLiteral("win_count")).toDouble()
+                    != reciprocal.value(QStringLiteral("loss_count")).toDouble()
+                || row.value(QStringLiteral("draw_count")).toDouble()
+                    != reciprocal.value(QStringLiteral("draw_count")).toDouble()
+                || row.value(QStringLiteral("loss_count")).toDouble()
+                    != reciprocal.value(QStringLiteral("win_count")).toDouble()) {
+                setError(errorMessage, QStringLiteral(
+                    "BoardStructure reciprocal head-to-head rows differ"));
+                return false;
+            }
+            pairIds.insert(unorderedPairId);
+            pairs.append({playerId, opponentId, unorderedPairId, pairGames});
+            pairGameTotal += pairGames;
+            squaredPairGameTotal += pairGames * pairGames;
+        }
+    }
+    std::sort(pairs.begin(), pairs.end(), [](const PairCount &left, const PairCount &right) {
+        if (left.games != right.games) {
+            return left.games > right.games;
+        }
+        return left.unorderedPairId < right.unorderedPairId;
+    });
+    const PairCount &largestPair = pairs.first();
+    if (pairs.size() != unorderedPairs || pairGameTotal != games
+        || global.value(QStringLiteral("largest_unordered_pair_id")).toString()
+            != largestPair.unorderedPairId
+        || largestPairPlayerIds.at(0).toString() != largestPair.playerA
+        || largestPairPlayerIds.at(1).toString() != largestPair.playerB
+        || largestPairGames != largestPair.games
+        || largestPairGameShare != roundedSignedPpm(largestPairGames, games)
+        || pairHhi != roundedSignedPpm(
+            squaredPairGameTotal, games * games)) {
+        setError(errorMessage, QStringLiteral(
+            "BoardStructure unordered-pair concentration does not conserve"));
         return false;
     }
     *playersById = parsedPlayers;
@@ -1124,6 +1367,8 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_opponentHintLabel(new QLabel(this))
     , m_structureStatusLabel(new QLabel(this))
     , m_structureSummaryLabel(new QLabel(this))
+    , m_structureConcentrationLabel(new QLabel(this))
+    , m_structureHeadToHeadLabel(new QLabel(QStringLiteral("Head-to-head results"), this))
     , m_detailTabs(new QTabWidget(this))
     , m_phaseTable(new QTableWidget(this))
     , m_decisionContextTable(new QTableWidget(this))
@@ -1133,6 +1378,7 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     , m_longestTable(new QTableWidget(this))
     , m_structureMetricTable(new QTableWidget(this))
     , m_structureCastlingTable(new QTableWidget(this))
+    , m_structureHeadToHeadTable(new QTableWidget(this))
     , m_updatingExplorerFilters(false)
 {
     setMinimumWidth(520);
@@ -1256,6 +1502,11 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         m_structureCastlingTable,
         {QStringLiteral("Castling"), QStringLiteral("Rate"),
          QStringLiteral("Observed / N/A"), QStringLiteral("Paired vs opponent")});
+    configureTable(
+        m_structureHeadToHeadTable,
+        {QStringLiteral("Opponent"), QStringLiteral("Games"),
+         QStringLiteral("White games"), QStringLiteral("Black games"),
+         QStringLiteral("Wins-Draws-Losses"), QStringLiteral("Score rate")});
     for (QTableWidget *table : {m_phaseTable, m_decisionContextTable}) {
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -1351,7 +1602,11 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     auto *structureLayout = new QVBoxLayout(structurePage);
     structureLayout->setContentsMargins(8, 8, 8, 8);
     structureLayout->setSpacing(8);
-    for (QLabel *label : {m_structureStatusLabel, m_structureSummaryLabel}) {
+    for (QLabel *label : {
+             m_structureStatusLabel,
+             m_structureSummaryLabel,
+             m_structureConcentrationLabel,
+         }) {
         label->setTextFormat(Qt::PlainText);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         label->setWordWrap(true);
@@ -1359,6 +1614,8 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
     }
     m_structureStatusLabel->setObjectName(QStringLiteral("playerStatisticsStructureStatus"));
     m_structureSummaryLabel->setObjectName(QStringLiteral("playerStatisticsStructureSummary"));
+    m_structureConcentrationLabel->setObjectName(
+        QStringLiteral("playerStatisticsStructureConcentration"));
     auto *structureHint = new QLabel(
         QStringLiteral(
             "Display-only mechanical postgame descriptions labeled for the complete target corpus; "
@@ -1384,6 +1641,21 @@ PlayerStatisticsPanel::PlayerStatisticsPanel(QWidget *parent)
         0, QHeaderView::ResizeToContents);
     m_structureCastlingTable->setMaximumHeight(145);
     structureLayout->addWidget(m_structureCastlingTable);
+    QFont structureHeadingFont = m_structureHeadToHeadLabel->font();
+    structureHeadingFont.setBold(true);
+    m_structureHeadToHeadLabel->setFont(structureHeadingFont);
+    structureLayout->addWidget(m_structureHeadToHeadLabel);
+    m_structureHeadToHeadTable->setObjectName(
+        QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
+    m_structureHeadToHeadTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::Stretch);
+    for (int column = 1;
+         column < m_structureHeadToHeadTable->columnCount(); ++column) {
+        m_structureHeadToHeadTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
+    }
+    m_structureHeadToHeadTable->setMaximumHeight(180);
+    structureLayout->addWidget(m_structureHeadToHeadTable);
 
     m_detailTabs->setObjectName(QStringLiteral("playerStatisticsDetailTabs"));
     m_detailTabs->addTab(overviewPage, QStringLiteral("Overview"));
@@ -1952,8 +2224,13 @@ void PlayerStatisticsPanel::clearSnapshot()
         QStringLiteral("No BoardStructure player statistics loaded."));
     m_structureSummaryLabel->setText(
         QStringLiteral("This tab reports descriptive mechanical structure only, never engine evaluation or pregame prediction."));
+    m_structureConcentrationLabel->setText(
+        QStringLiteral("Concentration information will appear after a BoardStructure snapshot is loaded."));
     m_structureMetricTable->setRowCount(0);
     m_structureCastlingTable->setRowCount(0);
+    m_structureHeadToHeadTable->setRowCount(0);
+    m_structureHeadToHeadLabel->setVisible(false);
+    m_structureHeadToHeadTable->setVisible(false);
     m_detailTabs->setTabEnabled(m_detailTabs->count() - 1, false);
 }
 
@@ -2868,8 +3145,13 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
     if (m_structureSnapshot.isEmpty()) {
         m_structureStatusLabel->setText(
             QStringLiteral("No BoardStructure player statistics loaded."));
+        m_structureConcentrationLabel->setText(
+            QStringLiteral("Concentration information will appear after a BoardStructure snapshot is loaded."));
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
+        m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadTable->setVisible(false);
         return;
     }
     const QString playerId = selectedPlayerId();
@@ -2879,8 +3161,13 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
             QStringLiteral("No BoardStructure summary is available for %1.").arg(playerId));
         m_structureSummaryLabel->setText(
             QStringLiteral("The player selector may contain players from a different loaded explorer or timing snapshot."));
+        m_structureConcentrationLabel->setText(
+            QStringLiteral("No opponent concentration is available for this player."));
         m_structureMetricTable->setRowCount(0);
         m_structureCastlingTable->setRowCount(0);
+        m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadTable->setVisible(false);
         return;
     }
     const QJsonObject view = globalView
@@ -2911,6 +3198,35 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
                     QStringLiteral("draw_game_count")).toDouble())))
                 .arg(numberText(static_cast<qint64>(view.value(
                     QStringLiteral("black_win_game_count")).toDouble()))));
+        const QJsonArray largestPairPlayers = view.value(
+            QStringLiteral("largest_pair_player_ids")).toArray();
+        m_structureConcentrationLabel->setText(
+            QStringLiteral(
+                "Player concentration · largest %1: %2 games (%3 of games; %4 of player exposures) · exposure HHI %5\n"
+                "Pair concentration · %6 unordered pairs · largest %7 / %8: %9 games (%10) · pair HHI %11")
+                .arg(view.value(QStringLiteral("largest_player_id")).toString())
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("largest_player_game_count")).toDouble())))
+                .arg(coverageText(view.value(
+                    QStringLiteral("largest_player_game_share_ppm"))))
+                .arg(coverageText(view.value(
+                    QStringLiteral("largest_player_exposure_share_ppm"))))
+                .arg(coverageText(view.value(
+                    QStringLiteral("player_exposure_hhi_ppm"))))
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("unordered_pair_count")).toDouble())))
+                .arg(largestPairPlayers.at(0).toString())
+                .arg(largestPairPlayers.at(1).toString())
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("largest_pair_game_count")).toDouble())))
+                .arg(coverageText(view.value(
+                    QStringLiteral("largest_pair_game_share_ppm"))))
+                .arg(coverageText(view.value(QStringLiteral("pair_hhi_ppm")))));
+        m_structureConcentrationLabel->setToolTip(
+            view.value(QStringLiteral("largest_unordered_pair_id")).toString());
+        m_structureHeadToHeadTable->setRowCount(0);
+        m_structureHeadToHeadLabel->setVisible(false);
+        m_structureHeadToHeadTable->setVisible(false);
     } else {
         m_structureSummaryLabel->setText(
             QStringLiteral("%1 · %2 games · %3 White / %4 Black · %5-%6-%7 · score %8% · %9 opponents")
@@ -2931,6 +3247,50 @@ void PlayerStatisticsPanel::rebuildBoardStructureView()
                     QStringLiteral("score_rate_ppm")).toDouble() / 10'000.0, 'f', 1))
                 .arg(numberText(static_cast<qint64>(view.value(
                     QStringLiteral("distinct_opponent_count")).toDouble()))));
+        m_structureConcentrationLabel->setText(
+            QStringLiteral(
+                "Opponent concentration · largest %1: %2 games (%3) · opponent HHI %4")
+                .arg(view.value(QStringLiteral("largest_opponent_id")).toString())
+                .arg(numberText(static_cast<qint64>(view.value(
+                    QStringLiteral("largest_opponent_game_count")).toDouble())))
+                .arg(coverageText(view.value(
+                    QStringLiteral("largest_opponent_game_share_ppm"))))
+                .arg(coverageText(view.value(QStringLiteral("opponent_hhi_ppm")))));
+        m_structureConcentrationLabel->setToolTip(QString());
+
+        const QJsonArray headToHead = view.value(
+            QStringLiteral("head_to_head")).toArray();
+        m_structureHeadToHeadTable->clearContents();
+        m_structureHeadToHeadTable->setRowCount(headToHead.size());
+        for (qsizetype row = 0; row < headToHead.size(); ++row) {
+            const QJsonObject result = headToHead.at(row).toObject();
+            auto *opponentItem = readOnlyItem(
+                result.value(QStringLiteral("opponent_id")).toString());
+            opponentItem->setToolTip(
+                result.value(QStringLiteral("unordered_pair_id")).toString());
+            m_structureHeadToHeadTable->setItem(row, 0, opponentItem);
+            m_structureHeadToHeadTable->setItem(row, 1, new NumericTableWidgetItem(
+                static_cast<qint64>(result.value(
+                    QStringLiteral("game_count")).toDouble())));
+            m_structureHeadToHeadTable->setItem(row, 2, new NumericTableWidgetItem(
+                static_cast<qint64>(result.value(
+                    QStringLiteral("white_game_count")).toDouble())));
+            m_structureHeadToHeadTable->setItem(row, 3, new NumericTableWidgetItem(
+                static_cast<qint64>(result.value(
+                    QStringLiteral("black_game_count")).toDouble())));
+            m_structureHeadToHeadTable->setItem(row, 4, readOnlyItem(
+                QStringLiteral("%1-%2-%3")
+                    .arg(numberText(static_cast<qint64>(result.value(
+                        QStringLiteral("win_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(result.value(
+                        QStringLiteral("draw_count")).toDouble())))
+                    .arg(numberText(static_cast<qint64>(result.value(
+                        QStringLiteral("loss_count")).toDouble())))));
+            m_structureHeadToHeadTable->setItem(row, 5, readOnlyItem(
+                coverageText(result.value(QStringLiteral("score_rate_ppm")))));
+        }
+        m_structureHeadToHeadLabel->setVisible(true);
+        m_structureHeadToHeadTable->setVisible(true);
     }
 
     struct StructureRow {

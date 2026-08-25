@@ -252,29 +252,28 @@ qint64 structurePlayerNumerator(const QString &code, bool alpha)
     return alpha ? 1 : 0;
 }
 
-QJsonObject structureMetric(const QString &code, bool alpha)
+QJsonObject structureMetric(const QString &code, bool alpha, qint64 games)
 {
-    const qint64 numerator = structurePlayerNumerator(code, alpha);
-    const qint64 pairedDifference = (
-        numerator - structurePlayerNumerator(code, !alpha)) * 1'000'000;
+    const qint64 value = structurePlayerNumerator(code, alpha);
+    const qint64 numerator = value * games;
     return QJsonObject {
         {QStringLiteral("aggregate_status"), QStringLiteral("observed")},
-        {QStringLiteral("aggregate_value_ppm"), numerator * 1'000'000},
-        {QStringLiteral("denominator_sum"), 1},
-        {QStringLiteral("mean_player_minus_opponent_ppm"), pairedDifference},
+        {QStringLiteral("aggregate_value_ppm"), value * 1'000'000},
+        {QStringLiteral("denominator_sum"), games},
+        {QStringLiteral("mean_player_minus_opponent_ppm"), 0},
         {QStringLiteral("metric_code"), code},
         {QStringLiteral("not_applicable_player_game_count"), 0},
         {QStringLiteral("numerator_sum"), numerator},
-        {QStringLiteral("observed_player_game_count"), 1},
-        {QStringLiteral("paired_player_game_count"), 1},
+        {QStringLiteral("observed_player_game_count"), games},
+        {QStringLiteral("paired_player_game_count"), games},
     };
 }
 
-QJsonArray structurePlayerMetrics(bool alpha)
+QJsonArray structurePlayerMetrics(bool alpha, qint64 games)
 {
     QJsonArray output;
     for (const QString &code : structureMetricCodes()) {
-        output.append(structureMetric(code, alpha));
+        output.append(structureMetric(code, alpha, games));
     }
     return output;
 }
@@ -283,41 +282,145 @@ QJsonArray structureGlobalMetrics()
 {
     QJsonArray output;
     for (const QString &code : structureMetricCodes()) {
-        const qint64 numerator = structurePlayerNumerator(code, true)
-            + structurePlayerNumerator(code, false);
+        const qint64 numerator = 3 * structurePlayerNumerator(code, true)
+            + 7 * structurePlayerNumerator(code, false);
         output.append(QJsonObject {
             {QStringLiteral("aggregate_status"), QStringLiteral("observed")},
-            {QStringLiteral("aggregate_value_ppm"), numerator * 500'000},
-            {QStringLiteral("denominator_sum"), 2},
+            {QStringLiteral("aggregate_value_ppm"), numerator * 100'000},
+            {QStringLiteral("denominator_sum"), 10},
             {QStringLiteral("mean_player_minus_opponent_ppm"), 0},
             {QStringLiteral("metric_code"), code},
             {QStringLiteral("not_applicable_player_game_count"), 0},
             {QStringLiteral("numerator_sum"), numerator},
-            {QStringLiteral("observed_player_game_count"), 2},
-            {QStringLiteral("paired_player_game_count"), 2},
+            {QStringLiteral("observed_player_game_count"), 10},
+            {QStringLiteral("paired_player_game_count"), 10},
         });
     }
     return output;
 }
 
-QJsonObject structurePlayer(const QString &playerId, bool alpha)
+QString structurePairId(QChar digestCharacter)
 {
+    return QStringLiteral("chess-unordered-player-pair-v1:")
+        + QString(64, digestCharacter);
+}
+
+QJsonObject structureHeadToHeadRow(
+    const QString &playerId,
+    const QString &opponentId,
+    const QString &pairId,
+    qint64 games,
+    qint64 white,
+    qint64 black,
+    qint64 wins,
+    qint64 draws,
+    qint64 losses)
+{
+    const qint64 score = ((2 * wins + draws) * 1'000'000 + games)
+        / (2 * games);
     return QJsonObject {
-        {QStringLiteral("black_game_count"), alpha ? 0 : 1},
-        {QStringLiteral("distinct_opponent_count"), 1},
-        {QStringLiteral("draw_count"), 0},
-        {QStringLiteral("game_count"), 1},
-        {QStringLiteral("loss_count"), alpha ? 0 : 1},
-        {QStringLiteral("metrics"), structurePlayerMetrics(alpha)},
+        {QStringLiteral("black_game_count"), black},
+        {QStringLiteral("draw_count"), draws},
+        {QStringLiteral("game_count"), games},
+        {QStringLiteral("loss_count"), losses},
+        {QStringLiteral("opponent_id"), opponentId},
         {QStringLiteral("player_id"), playerId},
-        {QStringLiteral("score_rate_ppm"), alpha ? 1'000'000 : 0},
-        {QStringLiteral("white_game_count"), alpha ? 1 : 0},
-        {QStringLiteral("win_count"), alpha ? 1 : 0},
+        {QStringLiteral("score_rate_ppm"), score},
+        {QStringLiteral("unordered_pair_id"), pairId},
+        {QStringLiteral("white_game_count"), white},
+        {QStringLiteral("win_count"), wins},
+    };
+}
+
+QJsonObject structurePlayer(const QString &playerId, const QJsonArray &headToHead)
+{
+    qint64 games = 0;
+    qint64 white = 0;
+    qint64 black = 0;
+    qint64 wins = 0;
+    qint64 draws = 0;
+    qint64 losses = 0;
+    qint64 squaredGames = 0;
+    qint64 largestOpponentGames = -1;
+    QString largestOpponent;
+    for (const QJsonValue &value : headToHead) {
+        const QJsonObject row = value.toObject();
+        const qint64 rowGames = static_cast<qint64>(
+            row.value(QStringLiteral("game_count")).toDouble());
+        const QString opponent = row.value(QStringLiteral("opponent_id")).toString();
+        games += rowGames;
+        white += static_cast<qint64>(row.value(
+            QStringLiteral("white_game_count")).toDouble());
+        black += static_cast<qint64>(row.value(
+            QStringLiteral("black_game_count")).toDouble());
+        wins += static_cast<qint64>(row.value(
+            QStringLiteral("win_count")).toDouble());
+        draws += static_cast<qint64>(row.value(
+            QStringLiteral("draw_count")).toDouble());
+        losses += static_cast<qint64>(row.value(
+            QStringLiteral("loss_count")).toDouble());
+        squaredGames += rowGames * rowGames;
+        if (rowGames > largestOpponentGames
+            || (rowGames == largestOpponentGames && opponent < largestOpponent)) {
+            largestOpponent = opponent;
+            largestOpponentGames = rowGames;
+        }
+    }
+    return QJsonObject {
+        {QStringLiteral("black_game_count"), black},
+        {QStringLiteral("distinct_opponent_count"), headToHead.size()},
+        {QStringLiteral("distinct_utc_day_count"), 1},
+        {QStringLiteral("draw_count"), draws},
+        {QStringLiteral("game_count"), games},
+        {QStringLiteral("head_to_head"), headToHead},
+        {QStringLiteral("largest_opponent_game_count"), largestOpponentGames},
+        {QStringLiteral("largest_opponent_game_share_ppm"),
+            (largestOpponentGames * 1'000'000 + games / 2) / games},
+        {QStringLiteral("largest_opponent_id"), largestOpponent},
+        {QStringLiteral("loss_count"), losses},
+        {QStringLiteral("metrics"), structurePlayerMetrics(
+            playerId == QStringLiteral("alpha"), games)},
+        {QStringLiteral("opponent_hhi_ppm"),
+            (squaredGames * 1'000'000 + games * games / 2) / (games * games)},
+        {QStringLiteral("player_id"), playerId},
+        {QStringLiteral("score_rate_ppm"),
+            ((2 * wins + draws) * 1'000'000 + games) / (2 * games)},
+        {QStringLiteral("white_game_count"), white},
+        {QStringLiteral("win_count"), wins},
     };
 }
 
 QByteArray structureSnapshotBytes()
 {
+    const QString alphaBetaPair = structurePairId(QLatin1Char('d'));
+    const QString alphaGammaPair = structurePairId(QLatin1Char('a'));
+    const QString betaDeltaPair = structurePairId(QLatin1Char('b'));
+    const QJsonArray alphaRows {
+        structureHeadToHeadRow(
+            QStringLiteral("alpha"), QStringLiteral("beta"), alphaBetaPair,
+            1, 1, 0, 1, 0, 0),
+        structureHeadToHeadRow(
+            QStringLiteral("alpha"), QStringLiteral("gamma"), alphaGammaPair,
+            2, 1, 1, 0, 1, 1),
+    };
+    const QJsonArray betaRows {
+        structureHeadToHeadRow(
+            QStringLiteral("beta"), QStringLiteral("alpha"), alphaBetaPair,
+            1, 0, 1, 0, 0, 1),
+        structureHeadToHeadRow(
+            QStringLiteral("beta"), QStringLiteral("delta"), betaDeltaPair,
+            2, 1, 1, 1, 0, 1),
+    };
+    const QJsonArray deltaRows {
+        structureHeadToHeadRow(
+            QStringLiteral("delta"), QStringLiteral("beta"), betaDeltaPair,
+            2, 1, 1, 1, 0, 1),
+    };
+    const QJsonArray gammaRows {
+        structureHeadToHeadRow(
+            QStringLiteral("gamma"), QStringLiteral("alpha"), alphaGammaPair,
+            2, 1, 1, 1, 1, 0),
+    };
     const QJsonObject root {
         {QStringLiteral("claim_boundary"), QJsonObject {
             {QStringLiteral("board_metrics_are_postgame_mechanical_descriptions"), true},
@@ -334,17 +437,38 @@ QByteArray structureSnapshotBytes()
         {QStringLiteral("display_schema"), QStringLiteral(
             "chess-board-structure-player-statistics-display-v1")},
         {QStringLiteral("global_statistics"), QJsonObject {
+            {QStringLiteral("black_player_game_count"), 5},
             {QStringLiteral("black_win_game_count"), 0},
-            {QStringLiteral("distinct_player_count"), 2},
-            {QStringLiteral("draw_game_count"), 0},
-            {QStringLiteral("game_count"), 1},
+            {QStringLiteral("distinct_opponent_count"), 4},
+            {QStringLiteral("distinct_player_count"), 4},
+            {QStringLiteral("draw_game_count"), 1},
+            {QStringLiteral("game_count"), 5},
+            {QStringLiteral("largest_pair_game_count"), 2},
+            {QStringLiteral("largest_pair_game_share_ppm"), 400'000},
+            {QStringLiteral("largest_pair_player_ids"), QJsonArray {
+                QStringLiteral("alpha"), QStringLiteral("gamma")}},
+            {QStringLiteral("largest_player_exposure_share_ppm"), 300'000},
+            {QStringLiteral("largest_player_game_count"), 3},
+            {QStringLiteral("largest_player_game_share_ppm"), 600'000},
+            {QStringLiteral("largest_player_id"), QStringLiteral("alpha")},
+            {QStringLiteral("largest_unordered_pair_id"), alphaGammaPair},
             {QStringLiteral("metrics"), structureGlobalMetrics()},
-            {QStringLiteral("player_game_count"), 2},
-            {QStringLiteral("white_win_game_count"), 1},
+            {QStringLiteral("pair_hhi_ppm"), 360'000},
+            {QStringLiteral("player_exposure_hhi_ppm"), 260'000},
+            {QStringLiteral("player_game_count"), 10},
+            {QStringLiteral("player_game_draw_count"), 2},
+            {QStringLiteral("player_game_loss_count"), 4},
+            {QStringLiteral("player_game_win_count"), 4},
+            {QStringLiteral("unordered_pair_count"), 3},
+            {QStringLiteral("utc_day_count"), 1},
+            {QStringLiteral("white_player_game_count"), 5},
+            {QStringLiteral("white_win_game_count"), 4},
         }},
         {QStringLiteral("players"), QJsonArray {
-            structurePlayer(QStringLiteral("alpha"), true),
-            structurePlayer(QStringLiteral("beta"), false),
+            structurePlayer(QStringLiteral("alpha"), alphaRows),
+            structurePlayer(QStringLiteral("beta"), betaRows),
+            structurePlayer(QStringLiteral("delta"), deltaRows),
+            structurePlayer(QStringLiteral("gamma"), gammaRows),
         }},
         {QStringLiteral("source_plan_v2_id"), QStringLiteral("chess-cohort-source-chunk-plan-v2:fixture")},
     };
@@ -814,17 +938,38 @@ void TestUnitPlayerStatisticsPanel::loadsBoardStructureAlongsideExplorerAndSwitc
     const QLabel *summary = panel.findChild<QLabel *>(
         QStringLiteral("playerStatisticsStructureSummary"));
     QVERIFY(summary != nullptr);
-    QVERIFY(summary->text().contains(QStringLiteral("alpha · 1 games")));
+    QVERIFY(summary->text().contains(QStringLiteral("alpha · 3 games")));
+    const QLabel *concentration = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsStructureConcentration"));
+    QVERIFY(concentration != nullptr);
+    QVERIFY(concentration->text().contains(QStringLiteral("largest gamma: 2 games (66.7%)")));
+    QVERIFY(concentration->text().contains(QStringLiteral("opponent HHI 55.6%")));
     const QTableWidget *metrics = panel.findChild<QTableWidget *>(
         QStringLiteral("playerStatisticsBoardStructureTable"));
     QVERIFY(metrics != nullptr);
     QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("100.0%")));
-    QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("1 obs")));
+    QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("3 obs")));
     QVERIFY(metrics->item(8, 1)->toolTip().contains(QStringLiteral("not engine evaluation"), Qt::CaseInsensitive));
+    const QTableWidget *headToHead = panel.findChild<QTableWidget *>(
+        QStringLiteral("playerStatisticsBoardStructureHeadToHeadTable"));
+    QVERIFY(headToHead != nullptr);
+    QCOMPARE(headToHead->rowCount(), 2);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("beta"));
+    QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("1"));
+    QCOMPARE(headToHead->item(1, 0)->text(), QStringLiteral("gamma"));
+    QCOMPARE(headToHead->item(1, 1)->text(), QStringLiteral("2"));
+    QCOMPARE(headToHead->item(1, 4)->text(), QStringLiteral("0-1-1"));
+    QCOMPARE(headToHead->item(1, 5)->text(), QStringLiteral("25.0%"));
 
     QVERIFY(panel.selectPlayer(QStringLiteral("beta")));
-    QVERIFY(summary->text().contains(QStringLiteral("beta · 1 games")));
+    QVERIFY(summary->text().contains(QStringLiteral("beta · 3 games")));
     QVERIFY(metrics->item(0, 1)->text().contains(QStringLiteral("0.0%")));
+    QVERIFY(concentration->text().contains(QStringLiteral("largest delta: 2 games (66.7%)")));
+    QCOMPARE(headToHead->rowCount(), 2);
+    QCOMPARE(headToHead->item(0, 0)->text(), QStringLiteral("alpha"));
+    QCOMPARE(headToHead->item(0, 1)->text(), QStringLiteral("1"));
+    QCOMPARE(headToHead->item(1, 0)->text(), QStringLiteral("delta"));
+    QCOMPARE(headToHead->item(1, 1)->text(), QStringLiteral("2"));
 
     QPushButton *structureButton = nullptr;
     for (QPushButton *button : panel.findChildren<QPushButton *>()) {
@@ -848,6 +993,14 @@ void TestUnitPlayerStatisticsPanel::rejectsBrokenBoardStructureWithoutReplacingS
         QStringLiteral("playerStatisticsBoardStructureTable"));
     QVERIFY(metrics != nullptr);
     const QString stableCell = metrics->item(0, 1)->text();
+    const QLabel *concentration = panel.findChild<QLabel *>(
+        QStringLiteral("playerStatisticsStructureConcentration"));
+    QVERIFY(concentration != nullptr);
+    QVERIFY(concentration->text().contains(
+        QStringLiteral("largest alpha: 3 games (60.0% of games; 30.0% of player exposures)")));
+    QVERIFY(concentration->text().contains(
+        QStringLiteral("largest alpha / gamma: 2 games (40.0%)")));
+    QVERIFY(concentration->text().contains(QStringLiteral("pair HHI 36.0%")));
 
     QJsonObject wrongSchema = QJsonDocument::fromJson(structureSnapshotBytes()).object();
     wrongSchema.insert(QStringLiteral("display_schema"), QStringLiteral("unsupported"));
@@ -867,6 +1020,97 @@ void TestUnitPlayerStatisticsPanel::rejectsBrokenBoardStructureWithoutReplacingS
     QVERIFY(!panel.loadBoardStructureSnapshot(
         QJsonDocument(broken).toJson(QJsonDocument::Compact), &error));
     QVERIFY(error.contains(QStringLiteral("BoardStructure"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject wrongReciprocalId = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    QJsonArray players = wrongReciprocalId.value(QStringLiteral("players")).toArray();
+    QJsonObject alpha = players.at(0).toObject();
+    QJsonArray alphaRows = alpha.value(QStringLiteral("head_to_head")).toArray();
+    QJsonObject alphaBeta = alphaRows.at(0).toObject();
+    alphaBeta.insert(QStringLiteral("unordered_pair_id"), structurePairId(QLatin1Char('f')));
+    alphaRows.replace(0, alphaBeta);
+    alpha.insert(QStringLiteral("head_to_head"), alphaRows);
+    players.replace(0, alpha);
+    wrongReciprocalId.insert(QStringLiteral("players"), players);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(wrongReciprocalId).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("reciprocal"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject brokenReciprocalAlgebra = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    players = brokenReciprocalAlgebra.value(QStringLiteral("players")).toArray();
+    QJsonObject beta = players.at(1).toObject();
+    QJsonArray betaRows = beta.value(QStringLiteral("head_to_head")).toArray();
+    QJsonObject betaAlpha = betaRows.at(0).toObject();
+    betaAlpha.insert(QStringLiteral("white_game_count"), 1);
+    betaAlpha.insert(QStringLiteral("black_game_count"), 0);
+    betaRows.replace(0, betaAlpha);
+    QJsonObject betaDelta = betaRows.at(1).toObject();
+    betaDelta.insert(QStringLiteral("white_game_count"), 0);
+    betaDelta.insert(QStringLiteral("black_game_count"), 2);
+    betaRows.replace(1, betaDelta);
+    beta.insert(QStringLiteral("head_to_head"), betaRows);
+    players.replace(1, beta);
+    brokenReciprocalAlgebra.insert(QStringLiteral("players"), players);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(brokenReciprocalAlgebra).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("reciprocal"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject wrongLargestOpponent = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    players = wrongLargestOpponent.value(QStringLiteral("players")).toArray();
+    alpha = players.at(0).toObject();
+    alpha.insert(QStringLiteral("largest_opponent_id"), QStringLiteral("beta"));
+    players.replace(0, alpha);
+    wrongLargestOpponent.insert(QStringLiteral("players"), players);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(wrongLargestOpponent).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("BoardStructure"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject wrongPlayerTieBreak = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    global = wrongPlayerTieBreak.value(QStringLiteral("global_statistics")).toObject();
+    global.insert(QStringLiteral("largest_player_id"), QStringLiteral("beta"));
+    wrongPlayerTieBreak.insert(QStringLiteral("global_statistics"), global);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(wrongPlayerTieBreak).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("player games"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject wrongPairTieBreak = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    global = wrongPairTieBreak.value(QStringLiteral("global_statistics")).toObject();
+    global.insert(QStringLiteral("largest_unordered_pair_id"), structurePairId(QLatin1Char('b')));
+    global.insert(QStringLiteral("largest_pair_player_ids"), QJsonArray {
+        QStringLiteral("beta"), QStringLiteral("delta")});
+    wrongPairTieBreak.insert(QStringLiteral("global_statistics"), global);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(wrongPairTieBreak).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("unordered-pair"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject brokenPlayerHhi = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    global = brokenPlayerHhi.value(QStringLiteral("global_statistics")).toObject();
+    global.insert(QStringLiteral("player_exposure_hhi_ppm"), 260'001);
+    brokenPlayerHhi.insert(QStringLiteral("global_statistics"), global);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(brokenPlayerHhi).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("player games"), Qt::CaseInsensitive));
+    QCOMPARE(metrics->item(0, 1)->text(), stableCell);
+
+    QJsonObject brokenPairHhi = QJsonDocument::fromJson(
+        structureSnapshotBytes()).object();
+    global = brokenPairHhi.value(QStringLiteral("global_statistics")).toObject();
+    global.insert(QStringLiteral("pair_hhi_ppm"), 360'001);
+    brokenPairHhi.insert(QStringLiteral("global_statistics"), global);
+    QVERIFY(!panel.loadBoardStructureSnapshot(
+        QJsonDocument(brokenPairHhi).toJson(QJsonDocument::Compact), &error));
+    QVERIFY(error.contains(QStringLiteral("unordered-pair"), Qt::CaseInsensitive));
     QCOMPARE(metrics->item(0, 1)->text(), stableCell);
 }
 

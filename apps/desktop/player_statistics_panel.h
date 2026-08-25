@@ -175,6 +175,8 @@ private:
     QLabel *m_opponentHintLabel;
     QLabel *m_structureStatusLabel;
     QLabel *m_structureSummaryLabel;
+    QLabel *m_structureConcentrationLabel;
+    QLabel *m_structureHeadToHeadLabel;
     QTabWidget *m_detailTabs;
     QTableWidget *m_phaseTable;
     QTableWidget *m_decisionContextTable;
@@ -184,6 +186,7 @@ private:
     QTableWidget *m_longestTable;
     QTableWidget *m_structureMetricTable;
     QTableWidget *m_structureCastlingTable;
+    QTableWidget *m_structureHeadToHeadTable;
     QJsonObject m_snapshot;
     QHash<QString, QJsonObject> m_playersById;
     QJsonObject m_structureSnapshot;
